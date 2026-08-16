@@ -1,0 +1,810 @@
+@model OrganizationDetailViewModel
+@{
+    var org = Model.Organization;
+    var agent = Model.Agent;
+    var sub = Model.Subscription;
+    ViewData["Title"] = org.Name;
+
+    var series = Model.CallSeries.ToList();
+    var peak = Math.Max(1, series.Count == 0 ? 1 : series.Max());
+    var thisMonth = DateTime.UtcNow.Month;
+
+    var periodStart = sub?.CurrentPeriodStart ?? DateTime.UtcNow.Date;
+    var periodEnd = sub?.CurrentPeriodEnd ?? DateTime.UtcNow.Date.AddMonths(1);
+}
+
+<div class="page-head">
+    <div>
+        <h1>@org.Name</h1>
+        <p>
+            @org.Industry · @org.Timezone · joined @Display.Day(org.CreatedAt)
+            @if (!string.IsNullOrWhiteSpace(org.Email)) { <text> · @org.Email</text> }
+        </p>
+        <div class="actions" style="margin-top:10px;">
+            @if (org.IsActive)
+            {
+                <span class="chip ok">Account active</span>
+            }
+            else
+            {
+                <span class="chip danger">Account disabled</span>
+            }
+            <span class="@Display.BillingChip(org)">@Display.BillingLabel(org)</span>
+            <span class="chip @(org.IsAgentConnected ? "accent" : "")">
+                @(org.IsAgentConnected ? "Agent connected" : "Agent not connected")
+            </span>
+        </div>
+    </div>
+    <div class="actions">
+        <a class="btn outline" asp-action="Index">Back</a>
+    </div>
+</div>
+
+@if (!org.IsActive)
+{
+    <div class="banner problem">
+        This account is disabled@(string.IsNullOrWhiteSpace(org.SuspendedReason) ? "" : $" — {org.SuspendedReason}")@(org.SuspendedAt.HasValue ? $" (since {Display.Day(org.SuspendedAt)})" : "").
+        Its users cannot sign in and its AI agent will not answer calls.
+    </div>
+}
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">Revenue</div>
+        <div class="value">@org.Revenue.ToString("N0")</div>
+        <div class="hint">@org.Currency · @org.Revenue30d.ToString("N0") in 30 days</div>
+    </div>
+    <div class="stat">
+        <div class="label">Outstanding</div>
+        <div class="value">@org.Outstanding.ToString("N0")</div>
+        <div class="hint">unpaid appointments</div>
+    </div>
+    <div class="stat">
+        <div class="label">Calls</div>
+        <div class="value">@org.TotalCalls</div>
+        <div class="hint">@org.Calls30d in 30 days · last @Display.Ago(org.LastCallAt)</div>
+    </div>
+    <div class="stat">
+        <div class="label">Missed / transferred</div>
+        <div class="value">@org.MissedCalls / @org.TransferredCalls</div>
+        <div class="hint">of @org.TotalCalls calls</div>
+    </div>
+    <div class="stat">
+        <div class="label">Appointments</div>
+        <div class="value">@org.AppointmentCount</div>
+        <div class="hint">@org.UpcomingAppointments upcoming</div>
+    </div>
+    <div class="stat">
+        <div class="label">Customers / users</div>
+        <div class="value">@org.CustomerCount / @org.UserCount</div>
+        <div class="hint">tenant records</div>
+    </div>
+</div>
+
+<div class="grid two">
+
+    @* ---------- Retell AI ---------- *@
+    <div class="card">
+        <h2>Retell AI connection</h2>
+        <p class="sub">Managed here only — the tenant has no access to this.</p>
+
+        @if (!Model.RetellApiKeyConfigured)
+        {
+            <div class="banner problem" style="margin-bottom:14px;">
+                No platform Retell API key is set, so agents cannot be created.
+                <a asp-controller="Retell" asp-action="Index">Configure it</a>.
+            </div>
+        }
+
+        @if (agent?.IsConnected == true)
+        {
+            <div class="kv"><span>Agent id</span><span class="mono">@agent.RetellAgentId</span></div>
+            <div class="kv"><span>LLM id</span><span class="mono">@(agent.RetellLlmId ?? "—")</span></div>
+            <div class="kv"><span>Phone number</span><span class="mono">@(agent.RetellPhoneNumber ?? "not set")</span></div>
+            <div class="kv"><span>Transfer number</span><span class="mono">@(agent.TransferNumber ?? "not set")</span></div>
+            <div class="kv"><span>Voice / language</span><span>@agent.Voice · @agent.Language</span></div>
+            <div class="kv"><span>Last synced</span><span>@Display.When(agent.LastSyncedAt)</span></div>
+
+            <div class="actions" style="margin-top:14px;">
+                <form class="inline" method="post" asp-controller="Retell" asp-action="Resync"
+                      asp-route-orgId="@org.Id" asp-route-returnTo="details">
+                    @Html.AntiForgeryToken()
+                    <button class="btn" type="submit">Re-sync</button>
+                </form>
+                <form class="inline" method="post" asp-controller="Retell" asp-action="Disconnect"
+                      asp-route-orgId="@org.Id" asp-route-returnTo="details"
+                      onsubmit="return confirm('Disconnect @org.Name from Retell? Its AI agent will stop answering calls.');">
+                    @Html.AntiForgeryToken()
+                    <button class="btn danger" type="submit">Disconnect</button>
+                </form>
+            </div>
+            <p class="note">
+                Re-sync pushes the tenant's current knowledge base, services, products, greeting and
+                transfer number to the existing agent. Disconnecting detaches the agent from this
+                tenant; the agent itself remains on the Retell account.
+            </p>
+        }
+        else
+        {
+            <p class="note" style="margin-top:0;">
+                This organization has no AI agent yet. Connecting creates its Retell LLM and agent from
+                the tenant's knowledge base, services, products and greeting.
+            </p>
+            <form method="post" asp-controller="Retell" asp-action="Connect"
+                  asp-route-orgId="@org.Id" asp-route-returnTo="details">
+                @Html.AntiForgeryToken()
+                <button class="btn" type="submit" disabled="@(!Model.RetellApiKeyConfigured)">Connect to Retell</button>
+            </form>
+        }
+    </div>
+
+    @* ---------- Phone numbers ---------- *@
+    <div class="card">
+        <h2>Phone numbers</h2>
+        <p class="sub">Read-only for the tenant — both numbers are set here.</p>
+
+        @if (agent is null)
+        {
+            <p class="note" style="margin-top:0;">
+                This organization has no agent configuration yet. Connect it to Retell first, then
+                its numbers can be set here.
+            </p>
+        }
+        else
+        {
+            <form method="post" asp-controller="Retell" asp-action="SaveNumbers" asp-route-orgId="@org.Id">
+                @Html.AntiForgeryToken()
+                <div class="field">
+                    <label for="RetellPhoneNumber">Retell phone number (the AI answers this)</label>
+                    <input type="text" id="RetellPhoneNumber" name="RetellPhoneNumber"
+                           value="@agent.RetellPhoneNumber" placeholder="+15551234567" />
+                    <div class="help">
+                        Must already exist on the Retell account. International format only. One number
+                        can serve only one organization.
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="TransferNumber">Transfer number (human fallback)</label>
+                    <input type="text" id="TransferNumber" name="TransferNumber"
+                           value="@agent.TransferNumber" placeholder="+15551234567" />
+                    <div class="help">Dialled when the agent hands a live caller to a person. Leave blank to disable transfers.</div>
+                </div>
+                <button class="btn" type="submit">Save numbers</button>
+            </form>
+            <p class="note">
+                @if (agent.IsConnected)
+                {
+                    <text>Saving re-syncs the agent immediately, so the change takes effect on Retell straight away.</text>
+                }
+                else
+                {
+                    <text>Saving stores the numbers; they take effect when this organization is connected to Retell.</text>
+                }
+            </p>
+        }
+    </div>
+
+    @* ---------- Subscription ---------- *@
+    <div class="card">
+        <h2>Subscription</h2>
+        <p class="sub">
+            @if (sub is null)
+            {
+                <text>No subscription yet — the account is not billed and will never be disabled automatically.</text>
+            }
+            else
+            {
+                <text>@Display.BillingDetail(org)</text>
+            }
+        </p>
+
+        @* A tier sets every number below at once. Editing them by hand afterwards is still allowed —
+           the subscription holds its own copy — but starting from a tier keeps customers comparable. *@
+        @if (Model.Plans.Count > 0)
+        {
+            <form method="post" asp-action="AssignPlan" asp-route-id="@org.Id" style="margin-bottom:18px;">
+                @Html.AntiForgeryToken()
+                <div class="field">
+                    <label for="PlanId">Put this customer on a tier</label>
+                    <select id="PlanId" name="PlanId">
+                        @foreach (var plan in Model.Plans)
+                        {
+                            <option value="@plan.Id" selected="@(sub?.PlanId == plan.Id)">
+                                @plan.Name — @Display.Money(plan.Amount, plan.Currency) / @plan.BillingCycle.ToLowerInvariant(),
+                                @(plan.IncludedMinutes > 0 ? $"{plan.IncludedMinutes:N0} min included" : "unmetered")
+                            </option>
+                        }
+                    </select>
+                    <div class="help">Leave the overrides blank to use the tier's own numbers.</div>
+                </div>
+                <div class="row">
+                    <div class="field">
+                        <label for="OverrideAmount">Price override</label>
+                        <input type="number" step="0.01" min="0" id="OverrideAmount" name="Amount" placeholder="tier price" />
+                    </div>
+                    <div class="field">
+                        <label for="OverrideMinutes">Minutes override</label>
+                        <input type="number" step="1" min="0" id="OverrideMinutes" name="IncludedMinutes" placeholder="tier allowance" />
+                    </div>
+                    <div class="field">
+                        <label for="OverrideRate">Extra-minute rate override</label>
+                        <input type="number" step="0.0001" min="0" id="OverrideRate" name="OverageRatePerMinute" placeholder="tier rate" />
+                    </div>
+                </div>
+                <button class="btn" type="submit">Apply tier</button>
+            </form>
+        }
+
+        <form method="post" asp-controller="Billing" asp-action="SaveSubscription">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="OrganizationId" value="@org.Id" />
+            <div class="row">
+                <div class="field">
+                    <label for="PlanName">Plan</label>
+                    <input type="text" id="PlanName" name="PlanName" value="@(sub?.PlanName ?? "Standard")" />
+                </div>
+                <div class="field">
+                    <label for="BillingCycle">Billing cycle</label>
+                    <select id="BillingCycle" name="BillingCycle">
+                        @foreach (var cycle in BillingCycles.All)
+                        {
+                            <option value="@cycle" selected="@(sub?.BillingCycle == cycle)">@cycle</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <div class="row">
+                <div class="field">
+                    <label for="Amount">Amount per cycle</label>
+                    <input type="number" step="0.01" min="0" id="Amount" name="Amount" value="@(sub?.Amount ?? 0)" />
+                </div>
+                <div class="field">
+                    <label for="Currency">Currency</label>
+                    <input type="text" id="Currency" name="Currency" value="@(sub?.Currency ?? org.Currency)" />
+                </div>
+            </div>
+            <div class="row">
+                <div class="field">
+                    <label for="CurrentPeriodStart">Period start</label>
+                    <input type="date" id="CurrentPeriodStart" name="CurrentPeriodStart" value="@periodStart.ToString("yyyy-MM-dd")" />
+                </div>
+                <div class="field">
+                    <label for="CurrentPeriodEnd">Period end</label>
+                    <input type="date" id="CurrentPeriodEnd" name="CurrentPeriodEnd" value="@periodEnd.ToString("yyyy-MM-dd")" />
+                </div>
+            </div>
+            <div class="row">
+                <div class="field">
+                    <label for="GraceDays">Grace days after the period ends</label>
+                    <input type="number" min="0" max="90" id="GraceDays" name="GraceDays" value="@(sub?.GraceDays ?? 7)" />
+                    <div class="help">The account counts as overdue only once these days have passed.</div>
+                </div>
+                <div class="field">
+                    <label for="IncludedMinutes">AI minutes included per period</label>
+                    <input type="number" min="0" step="1" id="IncludedMinutes" name="IncludedMinutes" value="@(sub?.IncludedMinutes ?? 0)" />
+                    <div class="help">Shown on the tenant's dashboard as the minutes balance. 0 hides the balance.</div>
+                </div>
+                <div class="field">
+                    <label for="OverageRatePerMinute">Price per extra minute</label>
+                    <input type="number" min="0" step="0.0001" id="OverageRatePerMinute" name="OverageRatePerMinute" value="@(sub?.OverageRatePerMinute ?? 0)" />
+                    <div class="help">Totalled when the period closes and added to the next invoice.</div>
+                </div>
+            </div>
+            <label class="check">
+                <input type="checkbox" name="AutoSuspend" value="true" checked="@(sub?.AutoSuspend ?? true)" />
+                <span>Disable this account automatically once the grace period lapses.</span>
+            </label>
+            <input type="hidden" name="AutoSuspend" value="false" />
+            <div class="field">
+                <label for="Notes">Notes</label>
+                <textarea id="Notes" name="Notes">@sub?.Notes</textarea>
+            </div>
+            <button class="btn" type="submit">@(sub is null ? "Create subscription" : "Save subscription")</button>
+        </form>
+    </div>
+
+    @* ---------- Minutes & collection ---------- *@
+    <div class="card">
+        <h2>Minutes &amp; collection</h2>
+        <p class="sub">
+            Usage in the period now running, and how this customer is being charged for it.
+        </p>
+
+        @if (sub is null)
+        {
+            <p class="note" style="margin-top:0;">No subscription yet, so nothing is being metered or collected.</p>
+        }
+        else
+        {
+            <div class="kv">
+                <span>Used this period</span>
+                <span>
+                    @org.MinutesUsedThisPeriod.ToString("N0") min
+                    @if (org.IsMetered) { <text> of @org.IncludedMinutes.ToString("N0")</text> }
+                </span>
+            </div>
+
+            @if (org.IsMetered)
+            {
+                var meterClass = org.MinutesOver > 0 ? "meter over" : org.UsageRatio > 0.8 ? "meter warn" : "meter";
+                <div class="@meterClass"><span style="width:@((org.UsageRatio * 100).ToString("0.#"))%"></span></div>
+                @if (org.MinutesOver > 0)
+                {
+                    <p class="meter-note over">
+                        @org.MinutesOver.ToString("N0") minutes over the allowance so far — about
+                        @Display.Money(org.MinutesOver * org.OverageRatePerMinute, sub.Currency), which goes
+                        on the next invoice when the period closes.
+                    </p>
+                }
+                else
+                {
+                    <p class="meter-note">
+                        @((org.IncludedMinutes - org.MinutesUsedThisPeriod).ToString("N0")) minutes left in this period.
+                    </p>
+                }
+            }
+            else
+            {
+                <p class="meter-note">Flat fee — minutes are recorded but never charged.</p>
+            }
+
+            <div class="kv" style="margin-top:12px;">
+                <span>Carried to the next invoice</span>
+                <span>
+                    @if (sub.PendingOverageAmount > 0)
+                    {
+                        <text>@Display.Money(sub.PendingOverageAmount, sub.Currency) (@sub.PendingOverageMinutes.ToString("N0") min)</text>
+                    }
+                    else
+                    {
+                        <text>Nothing outstanding</text>
+                    }
+                </span>
+            </div>
+            <div class="kv">
+                <span>Collection</span>
+                <span>
+                    @if (sub.IsStripeLinked)
+                    {
+                        <span class="chip ok">Stripe — @(sub.StripeStatus ?? "active")</span>
+                    }
+                    else if (sub.HasStripeCustomer)
+                    {
+                        <span class="chip warn">Stripe customer, no subscription</span>
+                    }
+                    else
+                    {
+                        <span class="chip">Manual</span>
+                    }
+                </span>
+            </div>
+
+            @if (!Model.StripeConfigured)
+            {
+                <p class="note">Stripe is not connected, so payment has to be recorded by hand below.</p>
+            }
+            else
+            {
+                <div class="actions" style="margin-top:14px;">
+                    @if (!sub.IsStripeLinked)
+                    {
+                        <form method="post" asp-action="Subscribe" asp-route-id="@org.Id" style="display:inline;"
+                              onsubmit="return confirm('Subscribe @org.Name in Stripe? This charges the card already on file.');">
+                            @Html.AntiForgeryToken()
+                            <button class="btn" type="submit">Subscribe in Stripe</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <form method="post" asp-action="CancelSubscription" asp-route-id="@org.Id" style="display:inline;"
+                              onsubmit="return confirm('Cancel @org.Name&#39;s Stripe subscription? Nothing further will be collected automatically.');">
+                            @Html.AntiForgeryToken()
+                            <button class="btn danger" type="submit">Cancel Stripe subscription</button>
+                        </form>
+                    }
+
+                    <form method="post" asp-action="SendInvoice" asp-route-id="@org.Id" style="display:inline;"
+                          onsubmit="return confirm('Email a Stripe invoice to @org.Name? It will include the plan charge and any carried-over minutes.');">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="daysUntilDue" value="14" />
+                        <input type="hidden" name="includePlanCharge" value="true" />
+                        <button class="btn outline" type="submit">Email an invoice</button>
+                    </form>
+                </div>
+                <div class="help" style="margin-top:8px;">
+                    “Subscribe in Stripe” charges a card on file automatically each cycle. “Email an
+                    invoice” raises a one-off invoice the customer pays by link — for those who do not
+                    pay by card.
+                </div>
+            }
+        }
+    </div>
+
+    @* ---------- Agent restriction ---------- *@
+    <div class="card">
+        <h2>AI agent</h2>
+        <p class="sub">
+            Restricting stops the agent taking calls — its number is detached and its live-call tools
+            are refused — while leaving sign-in working, so the customer can still see why and pay.
+        </p>
+
+        <div class="kv">
+            <span>Agent</span>
+            <span>
+                @if (org.AgentRestricted)
+                {
+                    <span class="chip danger">Restricted</span>
+                }
+                else if (org.IsAgentConnected)
+                {
+                    <span class="chip ok">Taking calls</span>
+                }
+                else
+                {
+                    <span class="chip">Not connected</span>
+                }
+            </span>
+        </div>
+        @if (org.AgentRestricted)
+        {
+            <div class="kv"><span>Restricted at</span><span>@Display.When(org.AgentRestrictedAt)</span></div>
+            <div class="kv"><span>Reason</span><span>@(org.AgentRestrictedReason ?? "—")</span></div>
+        }
+
+        <div style="margin-top:14px;">
+            @if (org.AgentRestricted)
+            {
+                <form method="post" asp-action="ReleaseAgent" asp-route-id="@org.Id">
+                    @Html.AntiForgeryToken()
+                    <button class="btn" type="submit">Let the agent take calls again</button>
+                </form>
+            }
+            else
+            {
+                <form method="post" asp-action="RestrictAgent" asp-route-id="@org.Id"
+                      onsubmit="return confirm('Stop @org.Name&#39;s agent taking calls? Their staff can still sign in.');">
+                    @Html.AntiForgeryToken()
+                    <div class="field">
+                        <label for="agentReason">Reason (shown to the customer)</label>
+                        <input type="text" id="agentReason" name="reason" placeholder="Unpaid balance" />
+                    </div>
+                    <button class="btn danger" type="submit">Stop the agent taking calls</button>
+                </form>
+            }
+        </div>
+    </div>
+
+    @* ---------- Record payment ---------- *@
+    <div class="card">
+        <h2>Record a payment</h2>
+        <p class="sub">Payment is recorded by hand; recording one rolls the billing period forward.</p>
+
+        @if (sub is null)
+        {
+            <p class="note" style="margin-top:0;">Create a subscription first — there is no period to bill against.</p>
+        }
+        else
+        {
+            <form method="post" asp-controller="Billing" asp-action="RecordPayment">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="OrganizationId" value="@org.Id" />
+                <div class="row">
+                    <div class="field">
+                        <label for="PaymentAmount">Amount (@sub.Currency)</label>
+                        <input type="number" step="0.01" min="0.01" id="PaymentAmount" name="Amount" value="@sub.Amount" required />
+                    </div>
+                    <div class="field">
+                        <label for="PaidAt">Paid on</label>
+                        <input type="date" id="PaidAt" name="PaidAt" value="@DateTime.UtcNow.ToString("yyyy-MM-dd")" required />
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="field">
+                        <label for="Method">Method</label>
+                        <select id="Method" name="Method">
+                            @foreach (var method in PaymentMethods.All)
+                            {
+                                <option value="@method">@method</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="Reference">Reference</label>
+                        <input type="text" id="Reference" name="Reference" placeholder="Invoice or transaction id" />
+                    </div>
+                </div>
+                <label class="check">
+                    <input type="checkbox" name="AdvancePeriod" value="true" checked />
+                    <span>Extend the billing period to @Display.Day(sub.NextPeriodEnd()).</span>
+                </label>
+                <input type="hidden" name="AdvancePeriod" value="false" />
+                <div class="field">
+                    <label for="PaymentNotes">Notes</label>
+                    <textarea id="PaymentNotes" name="Notes"></textarea>
+                </div>
+                <button class="btn" type="submit">Record payment</button>
+            </form>
+        }
+    </div>
+
+    @* ---------- Account status ---------- *@
+    <div class="card">
+        <h2>Account status</h2>
+        <p class="sub">Disabling blocks sign-in, token refresh and the AI agent's live-call tools.</p>
+
+        <div class="kv"><span>Status</span><span>@(org.IsActive ? "Active" : "Disabled")</span></div>
+        @if (!org.IsActive)
+        {
+            <div class="kv"><span>Disabled at</span><span>@Display.When(org.SuspendedAt)</span></div>
+            <div class="kv"><span>Reason</span><span>@(org.SuspendedReason ?? "—")</span></div>
+        }
+        <div class="kv"><span>Auto-disable when overdue</span><span>@(sub?.AutoSuspend == true ? "On" : "Off")</span></div>
+        <div class="kv"><span>Paid through</span><span>@(org.PaidThrough.HasValue ? Display.Day(org.PaidThrough) : "—")</span></div>
+
+        <div style="margin-top:14px;">
+            @if (org.IsActive)
+            {
+                <form method="post" asp-action="Disable" asp-route-id="@org.Id"
+                      onsubmit="return confirm('Disable @org.Name? Its users will be signed out of the tenant app and its AI agent will stop answering.');">
+                    @Html.AntiForgeryToken()
+                    <div class="field">
+                        <label for="reason">Reason</label>
+                        <input type="text" id="reason" name="reason" placeholder="Non-payment" />
+                    </div>
+                    <button class="btn danger" type="submit">Disable account</button>
+                </form>
+            }
+            else
+            {
+                <form method="post" asp-action="Enable" asp-route-id="@org.Id">
+                    @Html.AntiForgeryToken()
+                    <button class="btn" type="submit">Re-enable account</button>
+                </form>
+            }
+        </div>
+    </div>
+
+    @* ---------- Closed periods ---------- *@
+    <div class="card">
+        <h2>Metered periods</h2>
+        <p class="sub">
+            What each closed period allowed, what was used, and what the overrun came to. This is the
+            record every overage charge is explained from — it is never recalculated afterwards.
+        </p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Period</th>
+                    <th>Plan</th>
+                    <th class="num">Included</th>
+                    <th class="num">Used</th>
+                    <th class="num">Over</th>
+                    <th class="num">Overage</th>
+                    <th>Charged</th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.UsagePeriods.Count == 0)
+                {
+                    <tr><td colspan="7" class="empty">No period has closed yet.</td></tr>
+                }
+                @foreach (var period in Model.UsagePeriods)
+                {
+                    <tr>
+                        <td>@Display.Day(period.PeriodStart) – @Display.Day(period.PeriodEnd)</td>
+                        <td>@period.PlanName</td>
+                        <td class="num">@(period.IncludedMinutes > 0 ? period.IncludedMinutes.ToString("N0") : "—")</td>
+                        <td class="num">@period.MinutesUsed.ToString("N0")</td>
+                        <td class="num">@(period.OverageMinutes > 0 ? period.OverageMinutes.ToString("N0") : "—")</td>
+                        <td class="num">
+                            @(period.OverageAmount > 0 ? Display.Money(period.OverageAmount, period.Currency) : "—")
+                        </td>
+                        <td>
+                            @if (period.OverageAmount <= 0)
+                            {
+                                <span class="chip">Nothing to charge</span>
+                            }
+                            else if (period.IsBilled)
+                            {
+                                <span class="chip ok">On invoice</span>
+                            }
+                            else
+                            {
+                                <span class="chip warn">Next invoice</span>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* ---------- Invoices ---------- *@
+    <div class="card">
+        <h2>Invoices</h2>
+        <p class="sub">Raised in Stripe and mirrored here, with the lines that make up each total.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Invoice</th>
+                    <th>Issued</th>
+                    <th>Status</th>
+                    <th>Lines</th>
+                    <th class="num">Total</th>
+                    <th class="num">Outstanding</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.Invoices.Count == 0)
+                {
+                    <tr><td colspan="7" class="empty">No Stripe invoices for this organization yet.</td></tr>
+                }
+                @foreach (var invoice in Model.Invoices)
+                {
+                    <tr>
+                        <td class="org-name">@(invoice.Number ?? invoice.StripeInvoiceId)</td>
+                        <td>@Display.Day(invoice.IssuedAt)</td>
+                        <td>
+                            <span class="chip @(invoice.IsPaid ? "ok" : invoice.AmountOutstanding > 0 ? "warn" : "")">@invoice.Status</span>
+                        </td>
+                        <td>
+                            @if (invoice.Lines.Count == 0)
+                            {
+                                <text>—</text>
+                            }
+                            else
+                            {
+                                @foreach (var line in invoice.Lines)
+                                {
+                                    <div style="font-size:12px;">
+                                        @line.Description
+                                        <span style="color:var(--muted);">@Display.Money(line.Amount, invoice.Currency)</span>
+                                    </div>
+                                }
+                            }
+                        </td>
+                        <td class="num">@Display.Money(invoice.Total, invoice.Currency)</td>
+                        <td class="num">@(invoice.AmountOutstanding > 0 ? Display.Money(invoice.AmountOutstanding, invoice.Currency) : "—")</td>
+                        <td class="num">
+                            @if (!string.IsNullOrWhiteSpace(invoice.HostedInvoiceUrl))
+                            {
+                                <a class="btn small outline" href="@invoice.HostedInvoiceUrl" target="_blank" rel="noreferrer">Open</a>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* ---------- Payments ---------- *@
+    <div class="card">
+        <h2>Payment history</h2>
+        <p class="sub">@Model.Payments.Count payment(s) recorded — Stripe-collected and manual together.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Paid on</th>
+                    <th class="num">Amount</th>
+                    <th>Period</th>
+                    <th>Method</th>
+                    <th>Source</th>
+                    <th>Reference</th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.Payments.Count == 0)
+                {
+                    <tr><td colspan="6" class="empty">No payments recorded yet.</td></tr>
+                }
+                @foreach (var payment in Model.Payments)
+                {
+                    <tr>
+                        <td>@Display.Day(payment.PaidAt)</td>
+                        <td class="num">@Display.Money(payment.Amount, payment.Currency)</td>
+                        <td>@Display.Day(payment.PeriodStart) – @Display.Day(payment.PeriodEnd)</td>
+                        <td>@payment.Method</td>
+                        <td>
+                            @if (payment.FromStripe)
+                            {
+                                <span class="chip ok">Stripe</span>
+                            }
+                            else
+                            {
+                                <span class="chip">Manual</span>
+                            }
+                        </td>
+                        <td>@(payment.Reference ?? "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* ---------- Calls ---------- *@
+    <div class="card">
+        <h2>Recent calls</h2>
+        <p class="sub">Call volume by month, @DateTime.UtcNow.Year.</p>
+        <div class="spark">
+            @for (var month = 1; month <= 12; month++)
+            {
+                var value = series[month - 1];
+                var height = (int)Math.Round(value / (double)peak * 100);
+                <i class="@(month == thisMonth ? "on" : "")" style="height:@(Math.Max(height, 3))%" title="@System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetAbbreviatedMonthName(month): @value"></i>
+            }
+        </div>
+        <div class="table-wrap" style="margin-top:14px;">
+            <table>
+                <thead>
+                <tr>
+                    <th>Started</th>
+                    <th>From</th>
+                    <th>Status</th>
+                    <th class="num">Duration</th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.RecentCalls.Count == 0)
+                {
+                    <tr><td colspan="4" class="empty">No calls yet.</td></tr>
+                }
+                @foreach (var call in Model.RecentCalls)
+                {
+                    <tr>
+                        <td>@Display.When(call.StartedAt)</td>
+                        <td>@call.FromNumber<small style="display:block;color:var(--muted);font-size:11.5px;">@(call.CustomerName ?? "unknown caller")</small></td>
+                        <td><span class="@Display.CallStatusChip(call.Status)">@call.Status</span></td>
+                        <td class="num">@Display.Duration(call.DurationSeconds)</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* ---------- Appointments ---------- *@
+    <div class="card">
+        <h2>Recent appointments</h2>
+        <p class="sub">Latest bookings for this tenant.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Customer</th>
+                    <th>Service</th>
+                    <th>Status</th>
+                    <th class="num">Amount</th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.RecentAppointments.Count == 0)
+                {
+                    <tr><td colspan="5" class="empty">No appointments yet.</td></tr>
+                }
+                @foreach (var appointment in Model.RecentAppointments)
+                {
+                    <tr>
+                        <td>@Display.When(appointment.StartAt)</td>
+                        <td>@(appointment.CustomerName ?? "—")</td>
+                        <td>@(appointment.ServiceName ?? "—")</td>
+                        <td>
+                            <span class="@Display.AppointmentChip(appointment.Status)">@appointment.Status</span>
+                            <small style="display:block;color:var(--muted);font-size:11.5px;">@appointment.PaymentStatus</small>
+                        </td>
+                        <td class="num">@Display.Money(appointment.Amount, org.Currency)</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>

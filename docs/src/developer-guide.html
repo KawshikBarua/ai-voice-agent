@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Frontly — Developer Documentation</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Inter, system-ui, sans-serif;
+    color: #1c1c1c; font-size: 9.8pt; line-height: 1.5; margin: 0;
+  }
+  h1,h2,h3,h4 { line-height: 1.25; }
+  h2 {
+    font-size: 16pt; margin: 0 0 10px; padding-bottom: 6px;
+    border-bottom: 2.5px solid #b7d5d4; page-break-after: avoid;
+  }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  h4 { font-size: 10pt; margin: 12px 0 4px; page-break-after: avoid; }
+  p { margin: 0 0 8px; }
+  ul, ol { margin: 0 0 9px; padding-left: 19px; }
+  li { margin-bottom: 3px; }
+  .page-break { page-break-before: always; }
+
+  .cover { height: 245mm; display: flex; flex-direction: column; justify-content: center; }
+  .badge { display:inline-block; background:#1c1c1c; color:#fff; border-radius:999px;
+           padding:5px 16px; font-size:9pt; font-weight:700; margin-bottom:20px; letter-spacing:.5px; }
+  /* align-self keeps the flex column from stretching the logo out of aspect. */
+  .cover .logo { display: block; align-self: flex-start; height: 20mm; width: auto; margin-bottom: 18px; }
+  .cover h1 { font-size: 36pt; margin: 0 0 10px; letter-spacing: -1px; }
+  .cover .sub { font-size: 13pt; color:#55555a; margin-bottom: 30px; max-width: 140mm; }
+  .cover .meta { font-size: 9pt; color:#9a9a97; border-top:1px solid #e8e8e4; padding-top:12px; }
+
+  code, .mono {
+    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-size: 8.6pt; background:#f2f2ee; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background:#1c1c1c; color:#e8e8e4; padding: 11px 13px; border-radius: 8px;
+    font-family:"Cascadia Mono", Consolas, monospace; font-size:8.1pt; line-height:1.45;
+    overflow-x:auto; margin:0 0 11px; white-space:pre-wrap; page-break-inside:avoid;
+  }
+  pre .c { color:#8fbf9f; }
+
+  table { width:100%; border-collapse:collapse; margin:0 0 12px; font-size:8.9pt; page-break-inside:avoid; }
+  th { background:#1c1c1c; color:#fff; text-align:left; padding:6px 8px; font-weight:600; }
+  td { padding:5px 8px; border-bottom:1px solid #e8e8e4; vertical-align:top; }
+  tr:nth-child(even) td { background:#fafaf8; }
+  td code { font-size:8.2pt; }
+
+  .card { background:#f7f7f4; border-radius:10px; padding:11px 14px; margin:0 0 11px; page-break-inside:avoid; }
+  .card.teal { background:#e8f2f1; } .card.mint { background:#e9f4e5; }
+  .card.yellow { background:#fdf7db; } .card.red { background:#fdecec; }
+  .card h4 { margin:0 0 4px; }
+  .card p:last-child, .card ul:last-child { margin-bottom:0; }
+
+  .toc { list-style:none; padding:0; column-count:2; column-gap:20px; }
+  .toc li { padding:5px 0; border-bottom:1px solid #eeeeea; font-size:9.6pt; break-inside:avoid; }
+  .toc span { color:#9a9a97; margin-right:8px; font-weight:600; }
+
+  .flow { list-style:none; padding:0; margin:0 0 12px; }
+  .flow li { position:relative; padding-left:26px; margin-bottom:7px; page-break-inside:avoid; }
+  .flow li::before { content:"→"; position:absolute; left:6px; color:#74c69d; font-weight:700; }
+  .muted { color:#9a9a97; font-size:8.8pt; }
+  .tag { display:inline-block; background:#e3e6f8; border-radius:4px; padding:1px 6px;
+         font-size:7.8pt; font-weight:700; margin-right:4px; }
+  .tag.get{background:#dcedd7} .tag.post{background:#e3e6f8}
+  .tag.put{background:#f8f0cf} .tag.del{background:#fdecec}
+</style>
+</head>
+<body>
+
+<!-- COVER -->
+<section class="cover">
+  <img class="logo" src="../assets/logo.png" alt="Frontly">
+  <div><span class="badge">DEVELOPER DOCUMENTATION</span></div>
+  <h1>Frontly Platform</h1>
+  <p class="sub">Architecture, data model, API reference and voice-integration walkthrough
+     for the multi-tenant AI receptionist SaaS.</p>
+  <div class="meta">
+    ASP.NET Core 8 &nbsp;·&nbsp; Dapper &nbsp;·&nbsp; SQL Server (AiDB) &nbsp;·&nbsp; React 18 + Vite<br>
+    Version 1.0 &nbsp;·&nbsp; Internal engineering document
+  </div>
+</section>
+
+<!-- CONTENTS -->
+<section class="page-break">
+  <h2>Contents</h2>
+  <ol class="toc">
+    <li><span>01</span> System overview</li>
+    <li><span>02</span> Technology stack</li>
+    <li><span>03</span> Repository layout</li>
+    <li><span>04</span> Multi-tenancy model</li>
+    <li><span>05</span> Database schema</li>
+    <li><span>06</span> Authentication &amp; authorization</li>
+    <li><span>07</span> Request pipeline</li>
+    <li><span>08</span> Internal API reference</li>
+    <li><span>09</span> Prompt architecture</li>
+    <li><span>10</span> Industry templates</li>
+    <li><span>11</span> Voice provider integration</li>
+    <li><span>12</span> Live-call tool endpoints</li>
+    <li><span>13</span> Webhooks &amp; call reconciliation</li>
+    <li><span>14</span> Background workers</li>
+    <li><span>15</span> Security model</li>
+    <li><span>16</span> Correctness &amp; edge cases</li>
+    <li><span>17</span> Frontend architecture</li>
+    <li><span>18</span> Configuration reference</li>
+    <li><span>19</span> Local setup &amp; operations</li>
+    <li><span>20</span> Known gaps &amp; roadmap</li>
+  </ol>
+</section>
+
+<!-- 01 -->
+<section class="page-break">
+  <h2>01 &nbsp;System overview</h2>
+
+  <p>A multi-tenant SaaS that answers inbound phone calls with an AI voice agent and gives each
+     tenant a dashboard for appointments, customers, catalogue, knowledge and analytics. The
+     platform is industry-independent: behaviour adapts by configuration, not by code changes.</p>
+
+  <h3>Runtime topology</h3>
+<pre>  Caller ──telephony──▶  Retell AI (STT · LLM · TTS)
+                            │  ├── live-call tool calls ──▶ POST /api/v1/ai/tools/{orgId}/*
+                            │  └── lifecycle webhooks   ──▶ POST /api/v1/webhooks/retell
+                            ▼
+                     ASP.NET Core 8 Web API  ◀── REST/JWT ── React SPA (Vite)
+                            │
+                            ▼
+                     SQL Server  ·  AiDB</pre>
+
+  <h3>Design principles</h3>
+  <ul>
+    <li><strong>The database is the source of truth.</strong> The AI never answers from memory for
+        prices, availability or bookings — it calls back into this API, which reads AiDB.</li>
+    <li><strong>Tenant isolation is structural.</strong> Every tenant-owned table carries
+        <code>OrganizationId</code>; every query filters on the value resolved from the JWT.</li>
+    <li><strong>Core AI instructions are platform-owned.</strong> Tenants supply data only; the
+        safety rules cannot be edited by them.</li>
+    <li><strong>Nothing is hard deleted.</strong> Tenant data uses <code>IsDeleted</code> soft
+        delete; audit rows are append-only.</li>
+  </ul>
+
+  <div class="card teal">
+    <h4>Two directions of traffic</h4>
+    <p>Understanding the integration means separating them. <strong>Outbound:</strong> we push
+       configuration to the voice provider (agent, prompt, tools, knowledge base).
+       <strong>Inbound:</strong> the provider calls us during and after calls (tool functions,
+       webhooks). They authenticate differently — see sections 11–13.</p>
+  </div>
+</section>
+
+<!-- 02 -->
+<section>
+  <h2>02 &nbsp;Technology stack</h2>
+  <table>
+    <tr><th style="width:20%">Layer</th><th style="width:32%">Choice</th><th>Notes</th></tr>
+    <tr><td>API</td><td>ASP.NET Core 8 Web API</td><td>Controllers, async throughout</td></tr>
+    <tr><td>Data access</td><td>Dapper 2.1</td><td>Hand-written SQL; no ORM change-tracking overhead</td></tr>
+    <tr><td>Database</td><td>SQL Server (<code>AiDB</code>)</td><td>Auto-created and migrated at startup</td></tr>
+    <tr><td>Auth</td><td>JWT Bearer + refresh tokens</td><td>BCrypt password hashing</td></tr>
+    <tr><td>Voice</td><td>Retell AI</td><td>STT, LLM orchestration, TTS, telephony</td></tr>
+    <tr><td>Frontend</td><td>React 18, Vite 6</td><td>React Router, Zustand, TanStack Query</td></tr>
+    <tr><td>Styling</td><td>Tailwind CSS v4</td><td>Design tokens in <code>index.css</code> <code>@theme</code></td></tr>
+    <tr><td>Animation</td><td>Framer Motion</td><td>Card entry, mobile drawer</td></tr>
+    <tr><td>Docs</td><td>Swagger / OpenAPI</td><td><code>/swagger</code></td></tr>
+  </table>
+
+  <div class="card yellow">
+    <h4>Not yet wired</h4>
+    <p>Redis (rate limiting is in-memory), SMTP delivery, MFA, Application Insights. Interfaces and
+       configuration keys exist; implementations are stubs. See section 20.</p>
+  </div>
+</section>
+
+<!-- 03 -->
+<section>
+  <h2>03 &nbsp;Repository layout</h2>
+<pre>ai-voice-agent/
+├─ backend/AiReceptionist.Api/
+│  ├─ Program.cs                  <span class="c">// DI, auth, CORS, rate limits, pipeline</span>
+│  ├─ Common/
+│  │  ├─ ApiResponse.cs           <span class="c">// standard envelope + PagedResult</span>
+│  │  ├─ TenantProvider.cs        <span class="c">// resolves OrganizationId from JWT</span>
+│  │  ├─ PhoneUtil.cs             <span class="c">// phone canonicalisation</span>
+│  │  ├─ TenantTime.cs            <span class="c">// tz conversion + BusinessHours parser</span>
+│  │  ├─ SqlUtil.cs               <span class="c">// LIKE wildcard escaping</span>
+│  │  └─ RetellSignature.cs       <span class="c">// webhook HMAC + tool-call token</span>
+│  ├─ Controllers/                <span class="c">// 12 controllers — see section 08</span>
+│  ├─ Data/
+│  │  ├─ DbConnectionFactory.cs
+│  │  ├─ DbInitializer.cs         <span class="c">// creates AiDB, schema, seed, migrations</span>
+│  │  └─ Repositories/            <span class="c">// 10 repositories</span>
+│  ├─ Domain/Entities.cs          <span class="c">// entities + Roles constants</span>
+│  ├─ Middleware/ExceptionMiddleware.cs
+│  └─ Services/
+│     ├─ TokenService.cs
+│     ├─ PromptBuilderService.cs  <span class="c">// prompt / knowledge split</span>
+│     ├─ IndustryTemplates.cs     <span class="c">// per-trade behaviour</span>
+│     ├─ RetellService.cs         <span class="c">// provider sync + call backfill</span>
+│     └─ RetellSyncWorker.cs      <span class="c">// background queue consumer</span>
+├─ frontend/src/
+│  ├─ api/client.js               <span class="c">// axios + refresh interceptor</span>
+│  ├─ store/auth.js               <span class="c">// Zustand persisted session</span>
+│  ├─ components/{AppLayout,ui}.jsx
+│  └─ pages/                      <span class="c">// 8 pages</span>
+└─ database/                      <span class="c">// standalone SQL scripts</span></pre>
+</section>
+
+<!-- 04 -->
+<section class="page-break">
+  <h2>04 &nbsp;Multi-tenancy model</h2>
+
+  <p>One row in <code>Organizations</code> is one tenant. Isolation is enforced at three layers.</p>
+
+  <h4>1 — Claim</h4>
+  <p><code>TokenService</code> writes an <code>orgId</code> claim into every access token.
+     <code>TenantProvider</code> reads it per request and throws
+     <code>UnauthorizedAccessException</code> if absent.</p>
+<pre>public int OrganizationId =&gt;
+    int.TryParse(Principal?.FindFirstValue("orgId"), out var id)
+        ? id : throw new UnauthorizedAccessException("Missing organization claim.");</pre>
+
+  <h4>2 — Query</h4>
+  <p>Every repository method takes <code>orgId</code> and includes it in the <code>WHERE</code>
+     clause. There is no code path that reads a tenant table without it.</p>
+
+  <h4>3 — Schema</h4>
+  <p>Every tenant-owned table has a non-nullable <code>OrganizationId</code> foreign key.</p>
+
+  <div class="card red">
+    <h4>Rule for new code</h4>
+    <p>A repository method that touches a tenant table and does <em>not</em> accept
+       <code>orgId</code> is a bug. Controllers must pass <code>_tenant.OrganizationId</code> —
+       never a value from the request body, which a client could forge.</p>
+  </div>
+
+  <h3>Inbound provider traffic</h3>
+  <p>Tool calls and webhooks arrive without a JWT, so the tenant is resolved differently:</p>
+  <ul>
+    <li><strong>Tool calls</strong> — <code>orgId</code> is a path segment in the URL registered
+        with the provider, protected by a per-tenant token (section 12).</li>
+    <li><strong>Webhooks</strong> — resolved by looking up the payload's <code>agent_id</code>
+        against <code>AgentConfig.RetellAgentId</code> (section 13).</li>
+  </ul>
+</section>
+
+<!-- 05 -->
+<section>
+  <h2>05 &nbsp;Database schema</h2>
+  <p>Twelve tables. <code>DbInitializer</code> creates the database, applies schema and additive
+     migrations, and seeds demo data on an empty database — all idempotent, run at startup.</p>
+
+  <table>
+    <tr><th style="width:22%">Table</th><th>Purpose &amp; key columns</th></tr>
+    <tr><td><code>Organizations</code></td><td>Tenant root. <code>Industry</code> drives AI behaviour; <code>BusinessHoursJson</code>, <code>Timezone</code>, <code>MaxConcurrentAppointments</code>, <code>ProductsEnabled</code>, <code>Currency</code></td></tr>
+    <tr><td><code>Users</code></td><td><code>PasswordHash</code> (BCrypt), <code>Role</code>; unique filtered index on <code>Email</code> where not deleted</td></tr>
+    <tr><td><code>RefreshTokens</code></td><td>Rotating tokens with <code>ExpiresAt</code>, <code>Revoked</code></td></tr>
+    <tr><td><code>Customers</code></td><td><code>Phone</code> canonicalised; <code>FirstVisit</code>, <code>LastVisit</code>, <code>TotalVisits</code>; index on <code>(OrganizationId, Phone)</code></td></tr>
+    <tr><td><code>Services</code></td><td><code>DurationMinutes</code>, <code>MinPrice</code>/<code>MaxPrice</code>, <code>IsEmergency</code>, <code>IsAvailable</code></td></tr>
+    <tr><td><code>Products</code></td><td><code>Sku</code>, <code>Category</code>, <code>Price</code>, <code>Quantity</code></td></tr>
+    <tr><td><code>Appointments</code></td><td>UTC <code>StartAt</code>/<code>EndAt</code>, <code>Status</code>, <code>PaymentStatus</code>, <code>Amount</code>, <code>ServiceAddress</code>, <code>IsEmergency</code>; covering index on <code>(OrganizationId, StartAt)</code></td></tr>
+    <tr><td><code>CallLogs</code></td><td><code>RetellCallId</code> (idempotency key), <code>Transcript</code>, <code>RecordingUrl</code>, <code>Summary</code>, <code>DurationSeconds</code></td></tr>
+    <tr><td><code>KnowledgeBase</code></td><td><code>Category</code> ∈ BusinessInfo · FAQ · Policy · EmergencyRule · Custom</td></tr>
+    <tr><td><code>AgentConfig</code></td><td>One per tenant (unique <code>OrganizationId</code>). Voice, language, greeting, transfer number, and provider ids: <code>RetellAgentId</code>, <code>RetellLlmId</code>, <code>RetellKnowledgeBaseId</code>, <code>LastSyncedAt</code></td></tr>
+    <tr><td><code>TimelineEvents</code></td><td>Per-customer activity feed; <code>Source</code> ∈ AI · User · System</td></tr>
+    <tr><td><code>AuditLogs</code></td><td>Append-only; not deletable by tenant users</td></tr>
+  </table>
+
+  <h3>Appointment status machine</h3>
+<pre>Scheduled ──confirm──▶ Confirmed ──complete──▶ Completed
+    │                      │                        │
+    └──────cancel──────────┴────────────────────────┘ ▶ Cancelled
+
+PaymentStatus: Unpaid ──mark-paid──▶ Paid
+               (allowed only when status is Confirmed or Completed)</pre>
+  <p class="muted">Transitioning to <code>Completed</code> also increments the customer's
+     <code>TotalVisits</code> and updates <code>FirstVisit</code>/<code>LastVisit</code> in the same
+     statement.</p>
+</section>
+
+<!-- 06 -->
+<section class="page-break">
+  <h2>06 &nbsp;Authentication &amp; authorization</h2>
+
+  <h3>Token flow</h3>
+  <ol class="flow">
+    <li><code>POST /auth/login</code> verifies the BCrypt hash and issues a short-lived access
+        token (15 min) plus a refresh token (7 days, persisted).</li>
+    <li>The SPA stores both in Zustand (persisted to localStorage) and attaches the access token
+        as a Bearer header via an axios interceptor.</li>
+    <li>On <code>401</code>, the interceptor calls <code>POST /auth/refresh</code> once, rotates
+        both tokens, and replays the original request. Concurrent 401s share one refresh promise.</li>
+    <li>Refresh <strong>rotates</strong>: the presented token is revoked and a new one issued, so a
+        stolen refresh token is single-use.</li>
+  </ol>
+
+  <h4>Access token claims</h4>
+<pre>sub   = user id          orgId = tenant id      (custom claim)
+email = user email       role  = RBAC role      jti = token id</pre>
+
+  <h3>Roles</h3>
+  <table>
+    <tr><th style="width:24%">Role</th><th>Scope</th></tr>
+    <tr><td><code>SuperAdmin</code></td><td>Platform operator. Included in every permission set, plus exclusive access to provider sync/disconnect.</td></tr>
+    <tr><td><code>OrgAdmin</code></td><td>Full control of one tenant, including organisation settings</td></tr>
+    <tr><td><code>Manager</code></td><td>Catalogue, knowledge base, agent settings, operations</td></tr>
+    <tr><td><code>Receptionist</code></td><td>Appointments and customers</td></tr>
+    <tr><td><code>ReadOnly</code></td><td>GET only</td></tr>
+  </table>
+
+  <p>Two composite constants avoid drift across controllers:</p>
+<pre>Roles.Staff      = SuperAdmin, OrgAdmin, Manager, Receptionist   <span class="c">// operations</span>
+Roles.Management = SuperAdmin, OrgAdmin, Manager                 <span class="c">// configuration</span></pre>
+
+  <div class="card yellow">
+    <h4>Lesson learned</h4>
+    <p>Roles were originally listed inline per endpoint and <code>SuperAdmin</code> was omitted,
+       making the platform operator <em>less</em> privileged than a tenant admin — buttons silently
+       returned <code>403</code>. Always use the constants for new endpoints.</p>
+  </div>
+</section>
+
+<!-- 07 -->
+<section>
+  <h2>07 &nbsp;Request pipeline</h2>
+<pre>ExceptionMiddleware   <span class="c">// maps unhandled → 500 envelope with traceId</span>
+  → Swagger
+  → ResponseCompression
+  → CORS ("Frontend" policy, origins from config)
+  → RateLimiter
+  → Authentication → Authorization
+  → MapControllers  +  /health</pre>
+
+  <h3>Response envelope</h3>
+  <p>Every endpoint returns the same shape (SRS §21):</p>
+<pre>{
+  "success":   true,
+  "message":   "Appointment created successfully.",
+  "data":      { ... },      <span class="c">// or PagedResult&lt;T&gt;</span>
+  "errors":    [],
+  "timestamp": "2026-07-25T09:14:22Z",
+  "traceId":   "0HN7GK..."   <span class="c">// correlation id, set on failures</span>
+}</pre>
+  <p>Paged endpoints wrap data as <code>{ items, page, pageSize, totalCount, totalPages }</code>.</p>
+
+  <h3>Rate limiting</h3>
+  <table>
+    <tr><th style="width:34%">Partition</th><th>Limit</th></tr>
+    <tr><td>Provider traffic (<code>/ai/tools/*</code>, <code>/webhooks/*</code>)</td><td>3,000 / minute (shared bucket)</td></tr>
+    <tr><td>All other traffic (per IP)</td><td>200 / minute</td></tr>
+    <tr><td><code>login</code> policy</td><td>10 / minute</td></tr>
+  </table>
+  <p class="muted">Provider traffic gets its own generous bucket because it originates from a small
+     number of egress IPs; sharing the per-IP bucket would throttle live calls mid-sentence.</p>
+</section>
+
+<!-- 08 -->
+<section class="page-break">
+  <h2>08 &nbsp;Internal API reference</h2>
+  <p>Base path <code>/api/v1</code>. All endpoints require a Bearer token unless noted.
+     <span class="muted">S = Roles.Staff, M = Roles.Management, SA = SuperAdmin, — = any authenticated role</span></p>
+
+  <h3>Authentication <span class="muted">— anonymous</span></h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag post">POST</span><code>/auth/login</code></td><td>Issue access + refresh tokens</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/auth/refresh</code></td><td>Rotate token pair</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/auth/logout</code></td><td>Revoke a refresh token</td></tr>
+  </table>
+
+  <h3>Dashboard</h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag get">GET</span><code>/dashboard/stats</code> —</td><td>Today/upcoming/cancelled, missed calls, revenue, outstanding, AI booking rate, 12-month series. "Today" computed in tenant timezone.</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/dashboard/counts</code> —</td><td>Sidebar badges: appointments awaiting confirmation, missed calls, customers</td></tr>
+  </table>
+
+  <h3>Appointments</h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag get">GET</span><code>/appointments</code> —</td><td>Filter by <code>from</code>, <code>to</code>, <code>status</code>; paged</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/appointments/{id}</code> —</td><td>Single, with joined customer/service/staff names</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments</code> S</td><td>Create; <code>409</code> if the slot is full</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments/{id}/confirm</code> S</td><td>Scheduled → Confirmed</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments/{id}/mark-paid</code> S</td><td>Unpaid → Paid; <code>400</code> unless Confirmed/Completed</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments/{id}/complete</code> S</td><td>→ Completed; updates visit history</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments/{id}/cancel</code> S</td><td>→ Cancelled; frees the slot</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/appointments/{id}/reschedule</code> S</td><td>Move; <code>409</code> on conflict</td></tr>
+  </table>
+
+  <h3>Customers</h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag get">GET</span><code>/customers</code> —</td><td><code>search</code> across name/phone/email; paged</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/customers/{id}</code> —</td><td>Single record</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/customers/{id}/timeline</code> —</td><td>Activity feed, newest first</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/customers</code> S</td><td>Create (phone canonicalised)</td></tr>
+    <tr><td><span class="tag put">PUT</span><code>/customers/{id}</code> S</td><td>Update</td></tr>
+    <tr><td><span class="tag del">DEL</span><code>/customers/{id}</code> M</td><td>Soft delete</td></tr>
+  </table>
+
+  <h3>Catalogue &amp; knowledge</h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag get">GET</span> <span class="tag post">POST</span> <span class="tag put">PUT</span> <span class="tag del">DEL</span> <code>/services</code> M</td><td>Service CRUD; writes trigger agent re-sync</td></tr>
+    <tr><td><span class="tag get">GET</span> <span class="tag post">POST</span> <span class="tag put">PUT</span> <span class="tag del">DEL</span> <code>/products</code> M</td><td>Product CRUD; writes trigger agent re-sync</td></tr>
+    <tr><td><span class="tag get">GET</span> <span class="tag post">POST</span> <span class="tag put">PUT</span> <span class="tag del">DEL</span> <code>/knowledge-base</code> M</td><td>Knowledge CRUD; writes trigger agent re-sync</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/knowledge-base/final-prompt</code> —</td><td>Read-only preview: system prompt, its character count, and the knowledge documents with sizes</td></tr>
+  </table>
+
+  <h3>Calls &amp; settings</h3>
+  <table>
+    <tr><th style="width:44%">Endpoint</th><th>Purpose</th></tr>
+    <tr><td><span class="tag get">GET</span><code>/calls</code> · <code>/calls/{id}</code> —</td><td>Call log with transcript, recording, summary</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/calls/sync</code> —</td><td>Reconcile missing calls from the provider (section 13)</td></tr>
+    <tr><td><span class="tag get">GET</span> <span class="tag put">PUT</span> <code>/settings/organization</code> M</td><td>Business profile, hours, timezone, concurrency</td></tr>
+    <tr><td><span class="tag get">GET</span> <span class="tag put">PUT</span> <code>/settings/agent</code> M</td><td>Voice, language, greeting, transfer number. PUT preserves provider ids.</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/retell/status</code> —</td><td>Connection state, agent/LLM/KB ids, last sync</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/retell/sync</code> SA</td><td>Create or update the provider agent</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/retell/disconnect</code> SA</td><td>Detach stored provider ids</td></tr>
+  </table>
+</section>
+
+<!-- 09 -->
+<section class="page-break">
+  <h2>09 &nbsp;Prompt architecture</h2>
+
+  <p><code>PromptBuilderService</code> splits tenant content by <em>how the model needs it</em>.
+     This is a cost decision as much as a quality one: prompt tokens are billed on every
+     conversational turn, knowledge-base content is retrieved only when relevant.</p>
+
+  <table>
+    <tr><th style="width:50%">System prompt — every turn</th><th>Knowledge base — on demand</th></tr>
+    <tr>
+      <td>Role &amp; personality<br>Critical rules<br>Industry rules<br>Conversation flow<br>Business identity<br>Business hours<br><strong>Emergency rules</strong><br>Tool usage guide</td>
+      <td>Services catalogue &amp; pricing<br>Product catalogue<br>FAQs<br>Policies<br>Long-form business info<br>Custom reference notes</td>
+    </tr>
+  </table>
+
+  <div class="card red">
+    <h4>Emergency rules stay in the prompt deliberately</h4>
+    <p>Retrieval is probabilistic — a document may not be fetched. Safety instructions
+       ("tell the caller to shut off the water main", "advise them to leave the property") must be
+       present on every turn, so they are never moved to the knowledge base.</p>
+  </div>
+
+  <h3>Interface</h3>
+<pre>Task&lt;string&gt; BuildSystemPromptAsync(int orgId);
+Task&lt;List&lt;KnowledgeDocument&gt;&gt; BuildKnowledgeDocumentsAsync(int orgId);
+
+public record KnowledgeDocument(string Title, string Text);</pre>
+
+  <h3>Composition order</h3>
+<pre>Role line ("You are a plumbing company receptionist for X, a Y business")
+  + Core rules      <span class="c">// platform-owned constant, never tenant-editable</span>
+  + Industry rules  <span class="c">// from IndustryTemplates</span>
+  + Conversation flow
+  + Business details (+ field-service note when applicable)
+  + Business hours (raw JSON)
+  + Emergency rules (KnowledgeBase category = EmergencyRule)
+  + Tool usage guide</pre>
+
+  <p>The core rules constant encodes the non-negotiables: introduce as AI, never invent prices or
+     availability, always use tools for live data, transfer when uncertain, confirm before
+     mutating, one question at a time.</p>
+
+  <p class="muted">Observed sizes on the demo tenant: system prompt ≈ 2,960 characters;
+     knowledge documents ≈ 1,340 characters across five documents. The gap widens sharply for
+     tenants with large catalogues — which is the point.</p>
+</section>
+
+<!-- 10 -->
+<section>
+  <h2>10 &nbsp;Industry templates</h2>
+
+  <p><code>IndustryTemplates.Resolve(industry)</code> maps the free-text
+     <code>Organizations.Industry</code> to an <code>IndustryProfile</code>, falling back to a
+     generic premises-based receptionist. Matching is substring-based with a synonym pass
+     ("plumber" → plumbing, "attorney" → legal, "clinic" → medical).</p>
+
+<pre>public record IndustryProfile(
+    string   Role,            <span class="c">// "a plumbing company receptionist"</span>
+    bool     IsFieldService,  <span class="c">// technician travels to the caller</span>
+    string   CustomerNoun,    <span class="c">// customer | patient | client</span>
+    string[] ConversationFlow,
+    string[] ExtraRules);</pre>
+
+  <h3>The critical axis: field service vs premises</h3>
+  <table>
+    <tr><th style="width:26%">Aspect</th><th style="width:37%">Premises-based</th><th>Field service</th></tr>
+    <tr><td>Examples</td><td>Clinics, salons, workshops, law firms</td><td>Plumbing, electrical, HVAC, locksmith, cleaning</td></tr>
+    <tr><td>Flow length</td><td>8 steps</td><td>10 steps</td></tr>
+    <tr><td>Service address</td><td>Not collected</td><td><strong>Mandatory</strong> — enforced in the tool schema and server-side</td></tr>
+    <tr><td>Urgency triage</td><td>Not prompted</td><td>Listens for leak / no power / no heat / lockout</td></tr>
+    <tr><td>Pricing language</td><td>Quoted range</td><td>Range, plus "final price depends on what the technician finds"</td></tr>
+  </table>
+
+  <p>Eleven profiles ship today: medical, dental, plumbing, electrical, HVAC, locksmith, cleaning,
+     automotive, salon, legal, consulting.</p>
+
+  <div class="card mint">
+    <h4>Adding an industry</h4>
+    <p>Add an entry to the <code>Profiles</code> dictionary with its role string, field-service
+       flag, customer noun and safety rules. No other code changes — the prompt, tool schema and
+       required-field list all derive from the profile.</p>
+  </div>
+</section>
+
+<!-- 11 -->
+<section class="page-break">
+  <h2>11 &nbsp;Voice provider integration (outbound)</h2>
+
+  <p><code>RetellService.SyncAgentAsync(orgId)</code> pushes a tenant's configuration to Retell AI.
+     It is guarded by a per-organization <code>SemaphoreSlim</code> so the manual button and the
+     background worker can never create duplicate resources.</p>
+
+  <h3>Provider endpoints called</h3>
+  <table>
+    <tr><th style="width:42%">Endpoint</th><th>Used for</th></tr>
+    <tr><td><span class="tag post">POST</span><code>/create-retell-llm</code></td><td>First sync: prompt + tools + knowledge base ids</td></tr>
+    <tr><td><span class="tag put">PATCH</span><code>/update-retell-llm/{llm_id}</code></td><td>Subsequent syncs</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/create-agent</code></td><td>First sync: voice, language, response engine, webhook</td></tr>
+    <tr><td><span class="tag put">PATCH</span><code>/update-agent/{agent_id}</code></td><td>Subsequent syncs</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/create-knowledge-base</code></td><td>Multipart upload of reference documents</td></tr>
+    <tr><td><span class="tag del">DEL</span><code>/delete-knowledge-base/{kb_id}</code></td><td>Remove the superseded knowledge base</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/v2/list-calls</code></td><td>Call reconciliation (section 13)</td></tr>
+  </table>
+  <p class="muted">Authenticated with <code>Authorization: Bearer {Retell:ApiKey}</code>. Provider
+     API calls are not separately billed; usage is billed per call minute.</p>
+
+  <h3>Sync sequence</h3>
+  <ol class="flow">
+    <li><strong>Guards</strong> — API key configured; <code>PublicBaseUrl</code> must not be
+        localhost (the provider rejects unreachable tool/webhook URLs).</li>
+    <li><strong>Knowledge base</strong> — build documents, upload as a new KB, capture its id.</li>
+    <li><strong>LLM</strong> — POST or PATCH with <code>general_prompt</code>,
+        <code>begin_message</code>, <code>general_tools</code>, <code>knowledge_base_ids</code>.</li>
+    <li><strong>Persist immediately</strong> — write ids to <code>AgentConfig</code> before doing
+        anything else, so a later failure cannot orphan a created resource.</li>
+    <li><strong>Delete the previous KB</strong> — only now, once the LLM no longer references it.</li>
+    <li><strong>Agent</strong> — POST or PATCH with voice, language,
+        <code>response_engine = { type: "retell-llm", llm_id }</code> and
+        <code>webhook_url</code>.</li>
+    <li><strong>Persist</strong> agent id and <code>LastSyncedAt</code>.</li>
+  </ol>
+
+  <div class="card yellow">
+    <h4>Ordering is a correctness requirement, not style</h4>
+    <p>Create-then-swap-then-delete guarantees the agent always references a live knowledge base.
+       Deleting first would leave a window where the agent points at nothing. Persisting ids
+       immediately after creation prevents orphaned billable resources if the process dies
+       mid-sync.</p>
+  </div>
+
+  <h3>Provider-specific gotchas</h3>
+  <ul>
+    <li><strong>E.164 only</strong> — transfer numbers must be <code>+15550100199</code>, no spaces.
+        <code>PhoneUtil.Normalize</code> is applied before sending. Fictional numbers (555 area
+        code) are rejected outright.</li>
+    <li><strong><code>transfer_call</code> requires <code>transfer_option</code></strong> —
+        omitting it fails schema validation.</li>
+    <li><strong>Voice ids are provider-prefixed</strong> — <code>openai-Nova</code>,
+        <code>11labs-Adrian</code>. <code>MapVoice</code> translates legacy bare names.</li>
+    <li><strong>Knowledge bases are immutable once indexed</strong> — content changes mean creating
+        a new one and swapping.</li>
+  </ul>
+</section>
+
+<!-- 12 -->
+<section class="page-break">
+  <h2>12 &nbsp;Live-call tool endpoints (inbound)</h2>
+
+  <p>During a call the model invokes HTTP functions registered on the LLM. These are what make the
+     AI factual — every slot and booking round-trips to AiDB.</p>
+
+  <table>
+    <tr><th style="width:30%">Tool</th><th style="width:34%">Required arguments</th><th>Behaviour</th></tr>
+    <tr><td><code>identify_customer</code></td><td>phone</td><td>Phone → email → name lookup; returns visit count</td></tr>
+    <tr><td><code>check_availability</code></td><td>date</td><td>Slots honouring business hours, capacity and past-time exclusion</td></tr>
+    <tr><td><code>book_appointment</code></td><td>name, phone, service, start_time <span class="muted">(+ service_address for field service)</span></td><td>Creates customer if new, atomic capacity-checked insert, timeline event</td></tr>
+    <tr><td><code>cancel_appointment</code></td><td>phone, name</td><td>Name verification; disambiguates by date/service</td></tr>
+    <tr><td><code>reschedule_appointment</code></td><td>phone, name, new_time</td><td>Conflict-checked move</td></tr>
+    <tr><td><code>check_appointment</code></td><td>phone</td><td>Next booking with status and payment status</td></tr>
+  </table>
+  <p class="muted">Plus provider built-ins <code>end_call</code> and <code>transfer_call</code>.</p>
+  <p>There is deliberately no pricing tool. The service and product catalogues are uploaded to the
+     knowledge base on every sync, so the model already has them in context: a round-trip per price
+     question bought nothing but a silence in the middle of the answer. Prices are therefore as at
+     the last sync — stable enough for prices, and the catalogue document says out loud that stock
+     counts are an indication rather than a promise.</p>
+
+  <h3>Authentication — the important part</h3>
+  <div class="card red">
+    <h4>Tool calls are NOT signed by the provider</h4>
+    <p>Only webhooks carry <code>X-Retell-Signature</code>. Custom function calls are plain POSTs.
+       An early implementation validated a signature on tool calls and returned <code>401</code> to
+       every one of them — calls failed mid-conversation with "a technical error".</p>
+  </div>
+
+  <p>Because we generate the tool URLs during sync, the secret travels in the URL:</p>
+<pre>token = HMACSHA256(apiKey, $"tools:{orgId}")  → hex, first 32 chars
+
+https://host/api/v1/ai/tools/1/book_appointment?k=36e98a8ba82d...</pre>
+  <p>It is unguessable without the API key, scoped per tenant, and needs no storage.
+     <code>RetellSignature.AcceptToolCall</code> accepts a valid token <em>or</em> a valid
+     signature, and rejections log which credential was missing.</p>
+
+  <h3>Response contract</h3>
+  <p>Return JSON whose <code>result</code> string is written <strong>as an instruction to the
+     model</strong>, not as UI copy — the model reads it and acts on it:</p>
+<pre>{ "result": "That time was just taken. Use check_availability to offer alternatives." }
+{ "result": "A service address is required before booking. Ask for the full street
+             address, city, and any access details such as apartment or gate code." }</pre>
+  <p>This is a server-side guardrail: even if the model calls a tool prematurely, the response
+     steers it back on track.</p>
+</section>
+
+<!-- 13 -->
+<section>
+  <h2>13 &nbsp;Webhooks &amp; call reconciliation</h2>
+
+  <h3>Webhook — <code>POST /api/v1/webhooks/retell</code></h3>
+  <p>Anonymous, verified by <code>X-Retell-Signature</code> (HMAC-SHA256 of the raw body keyed with
+     the API key). The raw stream is read before deserialisation because the signature covers the
+     exact bytes.</p>
+
+<pre>{ "event": "call_ended",
+  "call": { "call_id", "agent_id", "from_number", "transcript",
+            "recording_url", "start_timestamp", "end_timestamp",
+            "disconnection_reason", "call_analysis": { "call_summary" } } }</pre>
+
+  <ul>
+    <li><code>call_ended</code> → store the call log, match the customer by phone, write an
+        <code>AiCall</code> timeline event.</li>
+    <li><code>call_analyzed</code> → attach the summary; falls back to storing the call if the
+        earlier event was missed.</li>
+    <li>Tenant resolved via <code>agent_id</code> → <code>AgentConfig</code>. Unknown agents are
+        acknowledged with <code>200</code> so the provider stops retrying.</li>
+    <li>Duplicate deliveries are suppressed by checking <code>RetellCallId</code> first.</li>
+  </ul>
+
+  <p><code>disconnection_reason</code> maps to status: <code>dial_no_answer</code> /
+     <code>dial_busy</code> / <code>dial_failed</code> → <em>Missed</em>;
+     <code>call_transfer</code> → <em>Transferred</em>; otherwise <em>Completed</em>.</p>
+
+  <div class="card teal">
+    <h4>Reconciliation — why webhooks alone are not enough</h4>
+    <p>Webhooks are fire-and-forget. If the API or tunnel is down when a call ends, that history is
+       lost permanently. <code>BackfillCallsAsync</code> pulls the last 100 calls for the tenant's
+       agent from <code>POST /v2/list-calls</code> and inserts any whose
+       <code>RetellCallId</code> is not already stored.</p>
+    <p>It runs <strong>automatically on API startup</strong> for every connected tenant, and on
+       demand via <code>POST /calls/sync</code>. Idempotent, so it is safe to run repeatedly.</p>
+  </div>
+  <p class="muted">Web test calls have no caller ID; <code>from_number</code> is stored as
+     <code>web-call</code> and cannot be auto-linked to a customer.</p>
+</section>
+
+<!-- 14 -->
+<section class="page-break">
+  <h2>14 &nbsp;Background workers</h2>
+
+  <p><code>RetellSyncWorker</code> is a <code>BackgroundService</code> consuming an unbounded
+     <code>Channel&lt;int&gt;</code> of organization ids.</p>
+
+<pre>public interface IRetellSyncQueue {
+    void Enqueue(int orgId);
+    ChannelReader&lt;int&gt; Reader { get; }
+}</pre>
+
+  <h3>Producers</h3>
+  <p>Controllers call <code>_retellSync.Enqueue(orgId)</code> after any mutation that changes what
+     the AI should know: services, products, knowledge base entries, organization settings, agent
+     settings.</p>
+
+  <h3>Consumer behaviour</h3>
+  <ul>
+    <li>Skips tenants with no <code>RetellAgentId</code> — the worker never creates provider
+        resources implicitly; that is an explicit operator action.</li>
+    <li>On startup, enqueues every connected tenant (so a changed public URL propagates) and runs
+        call backfill for each.</li>
+    <li>Exceptions are logged and swallowed per item; one bad tenant cannot stop the loop.</li>
+  </ul>
+
+  <div class="card yellow">
+    <h4>Scaling note</h4>
+    <p>The queue is in-process and non-durable — enqueued work is lost on restart, mitigated by the
+       startup re-sync. For horizontal scaling this should move to a distributed queue so the work
+       is executed exactly once across instances.</p>
+  </div>
+</section>
+
+<!-- 15 -->
+<section>
+  <h2>15 &nbsp;Security model</h2>
+
+  <table>
+    <tr><th style="width:28%">Control</th><th>Implementation</th></tr>
+    <tr><td>Password storage</td><td>BCrypt with per-password salt</td></tr>
+    <tr><td>Access tokens</td><td>HMAC-SHA256 JWT, 15-minute lifetime, 30s clock skew</td></tr>
+    <tr><td>Refresh tokens</td><td>512-bit CSPRNG, persisted, rotated and revoked on use</td></tr>
+    <tr><td>Tenant isolation</td><td><code>orgId</code> claim + mandatory query predicate</td></tr>
+    <tr><td>RBAC</td><td><code>[Authorize(Roles = …)]</code> via shared constants</td></tr>
+    <tr><td>Webhook authenticity</td><td>HMAC-SHA256 over raw body, fixed-time comparison</td></tr>
+    <tr><td>Tool-call authenticity</td><td>Per-tenant derived token in the registered URL</td></tr>
+    <tr><td>SQL injection</td><td>Parameterised Dapper throughout; LIKE wildcards escaped</td></tr>
+    <tr><td>Rate limiting</td><td>Partitioned fixed windows, separate login policy</td></tr>
+    <tr><td>CORS</td><td>Explicit origin allow-list from configuration</td></tr>
+    <tr><td>Audit trail</td><td>Append-only <code>AuditLogs</code>; no tenant-facing delete path</td></tr>
+    <tr><td>Secrets</td><td><code>appsettings.Local.json</code> (git-ignored) or environment variables</td></tr>
+  </table>
+
+  <p>Secrets are layered: <code>appsettings.json</code> → <code>appsettings.Local.json</code> →
+     environment. <code>JWT__SECRET</code> is read from the environment in preference to config.</p>
+
+  <div class="card red">
+    <h4>Outstanding security gaps</h4>
+    <ul>
+      <li><strong>No encryption at rest.</strong> SRS §20 requires AES-256 for customer data,
+          phone numbers, emails and recordings. Everything is currently plaintext.</li>
+      <li><strong>MFA not implemented</strong> — the <code>MfaEnabled</code> column exists, unused.</li>
+      <li><strong>No email verification or password reset flow.</strong></li>
+      <li><strong>Caller verification is weak by design</strong> — cancel/reschedule check a name
+          token against the record, which is a deterrent, not authentication.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 16 -->
+<section class="page-break">
+  <h2>16 &nbsp;Correctness &amp; edge cases</h2>
+  <p>Non-obvious behaviours that exist because the naive implementation was wrong.</p>
+
+  <h3>Concurrent booking</h3>
+  <p>Check-then-insert races when two calls are live simultaneously. Booking is a single statement
+     inside a transaction using range locks:</p>
+<pre>INSERT INTO Appointments (...) OUTPUT INSERTED.Id
+SELECT @... WHERE
+  (SELECT COUNT(*) FROM Appointments WITH (UPDLOCK, HOLDLOCK)
+   WHERE OrganizationId=@o AND IsDeleted=0
+     AND Status NOT IN ('Cancelled','Missed')
+     AND StartAt &lt; @EndAt AND EndAt &gt; @StartAt)
+  &lt; (SELECT ISNULL(MaxConcurrentAppointments,1) FROM Organizations WHERE Id=@o)</pre>
+  <p>Returns <code>null</code> when the slot is full — callers translate that to <code>409</code>
+     or a spoken "that time was just taken".</p>
+
+  <h3>Time zones</h3>
+  <p>Appointments are stored in <strong>UTC</strong>; callers and the AI speak tenant-local time.
+     <code>TenantTime</code> converts at the boundary using <code>Organizations.Timezone</code>.
+     Dashboard "today" is computed from tenant-local midnight, not <code>GETUTCDATE()</code>.</p>
+
+  <h3>Phone numbers</h3>
+  <p><code>PhoneUtil.Normalize</code> reduces to <code>+</code> plus digits. Applied on every write
+     and lookup, with a trailing-nine-digit fallback so a missing country code still matches.
+     Verified: <code>+1 (555) 010-0888</code>, <code>555-010-0888</code> and
+     <code>5550100888</code> resolve to one customer.</p>
+
+  <h3>Business hours</h3>
+  <p><code>BusinessHours.For(json, dayOfWeek)</code> parses
+     <code>{"mon-fri":"09:00-17:00","sat":"10:00-14:00","sun":"closed"}</code>, supporting single
+     days, ranges and wrapped ranges. A configured JSON that omits a day means <em>closed</em>;
+     absent configuration falls back to 09:00–17:00 daily.</p>
+
+  <table>
+    <tr><th style="width:34%">Case</th><th>Handling</th></tr>
+    <tr><td>Booking in the past</td><td>Rejected against tenant-local now</td></tr>
+    <tr><td>Booking outside hours</td><td>Rejected with the actual window in the message</td></tr>
+    <tr><td>Closed day</td><td>"The business is closed on Sundays. Offer another day."</td></tr>
+    <tr><td>Multiple matching appointments</td><td>Model is told to ask which one, with the list</td></tr>
+    <tr><td>Duplicate webhook</td><td><code>RetellCallId</code> existence check</td></tr>
+    <tr><td>LIKE wildcards in caller speech</td><td><code>SqlUtil.EscapeLike</code></td></tr>
+    <tr><td>Concurrent sync</td><td>Per-org semaphore</td></tr>
+    <tr><td>Rotating tunnel URL</td><td>Startup re-sync of all connected tenants</td></tr>
+  </table>
+</section>
+
+<!-- 17 -->
+<section>
+  <h2>17 &nbsp;Frontend architecture</h2>
+
+  <table>
+    <tr><th style="width:26%">Concern</th><th>Approach</th></tr>
+    <tr><td>Routing</td><td>React Router; <code>RequireAuth</code> wraps the authenticated shell</td></tr>
+    <tr><td>Server state</td><td>TanStack Query — 30s stale time, no refetch on focus</td></tr>
+    <tr><td>Session</td><td>Zustand with <code>persist</code> (localStorage)</td></tr>
+    <tr><td>HTTP</td><td>axios, relative <code>/api/v1</code> base so any tunnel works</td></tr>
+    <tr><td>Layout</td><td><code>h-dvh</code> shell; only <code>&lt;main&gt;</code> scrolls</td></tr>
+    <tr><td>Mobile</td><td>Sidebar becomes an animated drawer below <code>md</code></td></tr>
+  </table>
+
+  <h3>Design tokens</h3>
+  <p>Defined once in <code>index.css</code> under Tailwind v4's <code>@theme</code>: page
+     <code>#b7d5d4</code>, panel <code>#f2f2ee</code>, card white, ink <code>#1c1c1c</code>, accent
+     <code>#f4ec7a</code>, plus lavender/mint/cream chips and sky/leaf chart colours.
+     Cards use a 24px radius, buttons are full pills.</p>
+
+  <h3>Cache invalidation</h3>
+  <p>Mutations invalidate the query keys they affect — for example confirming an appointment
+     invalidates <code>['appointments']</code>, <code>['dashboard']</code> and
+     <code>['sidebar-counts']</code>, so badges and figures update without a reload.</p>
+
+  <div class="card">
+    <h4>Surface failures</h4>
+    <p>Mutations must render their errors. Silent <code>catch</code> blocks previously made
+       <code>403</code> responses look like dead buttons — the appointment actions now show the
+       server message and a per-button busy state.</p>
+  </div>
+</section>
+
+<!-- 18 -->
+<section class="page-break">
+  <h2>18 &nbsp;Configuration reference</h2>
+
+  <table>
+    <tr><th style="width:38%">Key</th><th>Purpose</th></tr>
+    <tr><td><code>ConnectionStrings:AiDB</code></td><td>Application database</td></tr>
+    <tr><td><code>ConnectionStrings:Master</code></td><td>Used once to <code>CREATE DATABASE</code></td></tr>
+    <tr><td><code>Jwt:Secret</code> / <code>JWT__SECRET</code></td><td>Signing key; environment wins</td></tr>
+    <tr><td><code>Jwt:AccessTokenMinutes</code></td><td>Default 15</td></tr>
+    <tr><td><code>Jwt:RefreshTokenDays</code></td><td>Default 7</td></tr>
+    <tr><td><code>Cors:AllowedOrigins</code></td><td>SPA origin allow-list</td></tr>
+    <tr><td><code>Retell:ApiKey</code></td><td>Bearer credential <em>and</em> HMAC key for inbound verification</td></tr>
+    <tr><td><code>Retell:ApiBaseUrl</code></td><td>Default <code>https://api.retellai.com</code></td></tr>
+    <tr><td><code>Retell:WebhookBaseUrl</code></td><td><strong>Public HTTPS base</strong> for tool and webhook URLs. Must not be localhost.</td></tr>
+    <tr><td><code>Retell:DefaultVoiceId</code></td><td>Fallback voice</td></tr>
+    <tr><td><code>Retell:VerifySignature</code></td><td>Set false only for local testing</td></tr>
+  </table>
+
+  <div class="card red">
+    <h4>Never commit secrets</h4>
+    <p><code>appsettings.Local.json</code> is git-ignored and holds the API key locally. In
+       production use environment variables or a secret store. Rotate any key that has been pasted
+       into a chat, ticket or log.</p>
+  </div>
+</section>
+
+<!-- 19 -->
+<section>
+  <h2>19 &nbsp;Local setup &amp; operations</h2>
+
+  <h3>First run</h3>
+<pre><span class="c"># Backend — creates AiDB, schema and demo data automatically</span>
+cd backend/AiReceptionist.Api
+dotnet run --urls http://localhost:5200
+
+<span class="c"># Frontend — proxies /api to :5200</span>
+cd frontend
+npm install
+npm run dev</pre>
+
+  <p>Swagger at <code>http://localhost:5200/swagger</code> (plain <strong>http</strong> — https is
+     not bound). Health at <code>/health</code>.</p>
+
+  <h3>Seeded accounts</h3>
+  <table>
+    <tr><th style="width:34%">Email</th><th style="width:24%">Password</th><th>Role</th></tr>
+    <tr><td><code>superadmin@demo.com</code></td><td><code>Super123!</code></td><td>SuperAdmin</td></tr>
+    <tr><td><code>admin@demo.com</code></td><td><code>Admin123!</code></td><td>OrgAdmin</td></tr>
+  </table>
+
+  <h3>Exposing the API for voice integration</h3>
+  <p>The provider must reach this API over public HTTPS.</p>
+<pre>ngrok http 5200          <span class="c"># then set Retell:WebhookBaseUrl to the https URL</span></pre>
+  <p>Restart the API afterwards — the startup worker re-syncs every connected tenant so the agent
+     picks up the new URLs. Free tunnel URLs rotate on restart, so this is a routine step.</p>
+
+  <h3>Troubleshooting</h3>
+  <table>
+    <tr><th style="width:38%">Symptom</th><th>Cause / fix</th></tr>
+    <tr><td>Sync refuses with a localhost message</td><td><code>WebhookBaseUrl</code> unset or still localhost</td></tr>
+    <tr><td>Tool calls return 401</td><td>URL missing <code>?k=</code>; re-sync to regenerate</td></tr>
+    <tr><td>Transfer number rejected</td><td>Not valid E.164, or a fictional 555 number</td></tr>
+    <tr><td>Calls missing from the log</td><td>Webhook missed while down — run <code>POST /calls/sync</code></td></tr>
+    <tr><td>Buttons appear inert</td><td>Role lacks permission; check the error banner and role constants</td></tr>
+    <tr><td>Swagger unreachable</td><td>Using https, or hitting the SPA tunnel rather than :5200</td></tr>
+    <tr><td>SSMS cannot connect</td><td>Tick "Trust server certificate"; server name uses one backslash</td></tr>
+  </table>
+</section>
+
+<!-- 20 -->
+<section class="page-break">
+  <h2>20 &nbsp;Known gaps &amp; roadmap</h2>
+
+  <h3>Not implemented</h3>
+  <table>
+    <tr><th style="width:30%">Area</th><th>Status</th></tr>
+    <tr><td>Encryption at rest</td><td>Required by SRS §20; not started</td></tr>
+    <tr><td>Email (SMTP)</td><td>Config keys exist; no sender, no templates, no reminders</td></tr>
+    <tr><td>Redis</td><td>Rate limiting in-memory; no distributed cache</td></tr>
+    <tr><td>MFA, email verification, password reset</td><td>Not started</td></tr>
+    <tr><td>Onboarding wizard</td><td>SRS §18; settings pages exist instead</td></tr>
+    <tr><td>Configurable permissions</td><td>Roles are fixed constants, not per-tenant</td></tr>
+    <tr><td>Staff scheduling</td><td><code>StaffUserId</code> exists; no rosters or skill matching</td></tr>
+    <tr><td>Observability</td><td>Structured logs only; no Application Insights or metrics</td></tr>
+  </table>
+
+  <h3>Recommended next steps</h3>
+  <ol>
+    <li><strong>Encryption at rest</strong> for customer PII — the largest compliance gap.</li>
+    <li><strong>Durable job queue</strong> to replace the in-process channel before scaling out.</li>
+    <li><strong>Per-tenant usage metering</strong> — sum <code>CallLogs.DurationSeconds</code> by
+        organization; this is the basis of both billing and cost control.</li>
+    <li><strong>Knowledge-base thresholding</strong> — provider knowledge bases carry a monthly fee
+        each; keep small catalogues inline in the prompt and only create a KB above a size
+        threshold.</li>
+    <li><strong>Field-service depth</strong> — travel-time buffers, call-out fees, technician
+        skill matching.</li>
+    <li><strong>Email notifications</strong> — confirmations and reminders are the highest-value
+        missing customer-facing feature.</li>
+  </ol>
+
+  <div class="card teal">
+    <h4>Scale considerations</h4>
+    <p>The SRS targets 10,000+ organizations. At that scale: the sync queue must be distributed;
+       per-tenant provider knowledge bases become a material recurring cost; dashboard aggregates
+       should be cached rather than computed per request; and <code>CallLogs.Transcript</code>
+       growth warrants partitioning or archival.</p>
+  </div>
+</section>
+
+</body>
+</html>

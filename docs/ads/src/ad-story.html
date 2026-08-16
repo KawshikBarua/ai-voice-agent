@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width:1080px; height:1920px; overflow:hidden;
+    font-family:"Segoe UI", Inter, system-ui, sans-serif;
+    background:#b7d5d4; color:#1c1c1c;
+  }
+  .frame { width:1080px; height:1920px; padding:70px 64px 90px; display:flex; flex-direction:column; position:relative; }
+  .blob { position:absolute; border-radius:50%; }
+  .b1 { width:420px; height:420px; background:#a6cbca; top:-160px; right:-140px; }
+  .b2 { width:260px; height:260px; background:#c6dfde; bottom:180px; left:-110px; }
+
+  .top { display:flex; align-items:center; gap:16px; margin-bottom:90px; position:relative; }
+  .logo { height:62px; width:auto; display:block; }
+
+  h1 { font-size:104px; line-height:1.08; letter-spacing:-3px; font-weight:800; position:relative; }
+  h1 .hl { background:linear-gradient(transparent 64%, #f4ec7a 64%); padding:0 6px; }
+  .sub { font-size:35px; line-height:1.44; color:#3f3f45; margin-top:36px; }
+
+  .stack { margin-top:58px; display:flex; flex-direction:column; gap:20px; position:relative; }
+
+  .chat { margin-top:34px; background:#fff; border-radius:34px; padding:32px 34px;
+          box-shadow:0 16px 40px rgba(0,0,0,.09); position:relative; }
+  .chat .hdr { display:flex; align-items:center; gap:13px; margin-bottom:20px; }
+  .chat .dot { width:14px; height:14px; border-radius:50%; background:#74c69d; }
+  .chat .hl2 { font-size:24px; font-weight:750; }
+  .chat .tm { font-size:21px; color:#9a9a97; margin-left:auto; }
+  .bub { border-radius:22px; padding:18px 22px; font-size:27px; line-height:1.34; margin-bottom:13px; }
+  .bub.ai { background:#f2f2ee; }
+  .bub.us { background:#e3e6f8; margin-left:80px; }
+  .bub.ok { background:#dcedd7; font-weight:750; margin-bottom:0; }
+  .row {
+    background:#f2f2ee; border-radius:34px; padding:32px 36px;
+    display:flex; align-items:center; gap:26px; box-shadow:0 12px 30px rgba(0,0,0,.07);
+  }
+  .row .ic { width:70px; height:70px; border-radius:50%; display:flex; align-items:center;
+             justify-content:center; font-size:32px; flex-shrink:0; }
+  .i1{background:#e3e6f8} .i2{background:#dcedd7} .i3{background:#f8f0cf}
+  .row .t { font-size:34px; font-weight:750; line-height:1.2; }
+  .row .d { font-size:25px; color:#77777d; margin-top:6px; line-height:1.3; }
+
+  .foot { margin-top:auto; position:relative; }
+  .cta { background:#1c1c1c; color:#fff; border-radius:999px; padding:38px;
+         font-size:38px; font-weight:750; text-align:center; }
+  .note { font-size:26px; color:#4a5a59; text-align:center; margin-top:28px; line-height:1.4; }
+</style></head>
+<body>
+<div class="frame">
+  <div class="blob b1"></div><div class="blob b2"></div>
+
+  <div class="top">
+    <img class="logo" src="../../assets/logo.png" alt="Frontly">
+  </div>
+
+  <h1>Still letting<br>the phone<br><span class="hl">ring out?</span></h1>
+  <p class="sub">Callers don't leave voicemail. They call<br>the next business on the list.</p>
+
+  <div class="stack">
+    <div class="row">
+      <div class="ic i1">📅</div>
+      <div><div class="t">Books appointments</div>
+           <div class="d">Checks your real diary, never double-books</div></div>
+    </div>
+    <div class="row">
+      <div class="ic i2">💬</div>
+      <div><div class="t">Quotes your real prices</div>
+           <div class="d">From your price list — never a guess</div></div>
+    </div>
+    <div class="row">
+      <div class="ic i3">🌙</div>
+      <div><div class="t">Answers at 11pm on a Sunday</div>
+           <div class="d">Wake up to a booked diary</div></div>
+    </div>
+  </div>
+
+  <div class="chat">
+    <div class="hdr">
+      <div class="dot"></div><div class="hl2">Answered in 1 ring</div>
+      <div class="tm">11:48 PM · Sunday</div>
+    </div>
+    <div class="bub ai">"Thanks for calling — I'm the AI receptionist. How can I help?"</div>
+    <div class="bub us">"Anything Tuesday morning?"</div>
+    <div class="bub ok">✓ Booked · Tuesday 10:30</div>
+  </div>
+
+  <div class="foot">
+    <div class="cta">Book a demo →</div>
+    <div class="note">Clinics · Plumbers · Electricians · Salons<br>Every appointment-based business</div>
+  </div>
+</div>
+</body></html>

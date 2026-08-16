@@ -1,0 +1,188 @@
+@model PromptTemplateStatus
+@{
+    ViewData["Title"] = "AI Prompt";
+    var organizations = ViewBag.Organizations as IReadOnlyList<OrganizationRow> ?? [];
+    var preview = ViewBag.Preview as PromptPreview;
+    var connected = organizations.Count(o => o.IsAgentConnected);
+}
+
+@functions {
+    // The default text for a section that has been rewritten, else null. Undoing a bad edit means
+    // knowing what the text used to be, and by then the box no longer contains it.
+    static string? ReplacedDefault(string current, string? platformDefault) =>
+        string.IsNullOrWhiteSpace(platformDefault) || current.Trim() == platformDefault.Trim()
+            ? null
+            : platformDefault;
+}
+
+<div class="page-head">
+    <div>
+        <h1>AI prompt</h1>
+        <p>
+            The words every tenant's receptionist is built from — how it talks, what it must never
+            do, how a call runs and when it may use a tool. One text for the whole platform.
+            Saving stores it; a live agent only picks it up the next time that organization is
+            synced from the Retell AI screen.
+        </p>
+    </div>
+</div>
+
+@if (Model is null)
+{
+    <div class="banner problem">
+        Could not reach the tenant API, so the prompt cannot be read or changed.
+        Start <span class="mono">AiReceptionist.Api</span> and reload this page.
+    </div>
+}
+else
+{
+    <div class="grid two">
+        <div class="card">
+            <h2>Status</h2>
+            <p class="sub">What is in force right now.</p>
+            <div class="kv">
+                <span>Wording</span>
+                <span>
+                    @if (Model.IsCustomised)
+                    {
+                        <span class="chip accent">Customised</span>
+                    }
+                    else
+                    {
+                        <span class="chip ok">Platform default</span>
+                    }
+                </span>
+            </div>
+            <div class="kv"><span>Last changed</span><span>@Display.When(Model.ModifiedAt)</span></div>
+            <div class="kv"><span>Connected agents</span><span>@connected</span></div>
+            @if (Model.IsCustomised)
+            {
+                <div class="kv">
+                    <span>Changed sections</span>
+                    <span style="font-weight:400;text-align:left;">@string.Join(", ", Model.CustomisedSections)</span>
+                </div>
+            }
+            <p class="note">
+                Clearing a box restores that section to the platform default — and keeps it tracking
+                the default as the product's own wording improves. Only sections you actually change
+                are stored.
+            </p>
+            <p class="note">
+                Nothing here is pushed to Retell. Agents keep the prompt they were built with until
+                they are re-synced, so you can edit, preview and come back to it — then roll it out
+                one organization at a time from <a asp-controller="Retell" asp-action="Index">Retell AI</a>.
+            </p>
+            <form method="post" asp-action="Reset" style="margin-top:12px;"
+                  onsubmit="return confirm('Restore every section to the platform default?');">
+                @Html.AntiForgeryToken()
+                <button class="btn small danger" type="submit" disabled="@(!Model.IsCustomised)">
+                    Restore all defaults
+                </button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Preview a tenant</h2>
+            <p class="sub">The finished prompt, with that tenant's facts filled in.</p>
+            <form method="get" asp-action="Index">
+                <div class="field">
+                    <label for="preview">Organization</label>
+                    <select id="preview" name="preview">
+                        @foreach (var org in organizations)
+                        {
+                            <option value="@org.Id" selected="@(preview?.OrganizationId == org.Id)">
+                                @org.Name — @org.Industry
+                            </option>
+                        }
+                    </select>
+                    <div class="help">
+                        Industry decides which call shape a tenant gets: on-site trades follow the
+                        field-service guide, everyone else the standard one.
+                    </div>
+                </div>
+                <button class="btn" type="submit" disabled="@(organizations.Count == 0)">Show prompt</button>
+            </form>
+
+            @if (preview is not null)
+            {
+                <h2 style="margin-top:20px;">@preview.OrganizationName</h2>
+                <pre class="mono" style="white-space:pre-wrap;font-size:12px;line-height:1.5;max-height:420px;overflow:auto;">@preview.Prompt</pre>
+            }
+        </div>
+    </div>
+
+    <form method="post" asp-action="Save">
+        @Html.AntiForgeryToken()
+
+        <div class="card">
+            <h2>How the agent talks</h2>
+            <p class="sub">Voice and manner. This is what stops it sounding like a machine.</p>
+            <div class="field">
+                <textarea name="Persona" rows="18">@Model.Persona</textarea>
+                <div class="help">Everything here is spoken aloud — write for the ear, not the page.</div>
+                @if (ReplacedDefault(Model.Persona, Model.Defaults.Persona) is { } personaDefault)
+                {
+                    <partial name="_PlatformDefault" model="personaDefault" />
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Rules it never breaks</h2>
+            <p class="sub">Safety and honesty. Nothing else in the prompt may override these.</p>
+            <div class="field">
+                <textarea name="CoreRules" rows="12">@Model.CoreRules</textarea>
+                @if (ReplacedDefault(Model.CoreRules, Model.Defaults.CoreRules) is { } coreRulesDefault)
+                {
+                    <partial name="_PlatformDefault" model="coreRulesDefault" />
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>How a call runs — businesses the customer comes to</h2>
+            <p class="sub">Clinics, salons, workshops, offices.</p>
+            <div class="field">
+                <textarea name="ConversationGuide" rows="14">@Model.ConversationGuide</textarea>
+                <div class="help">
+                    A shape, not a script — a numbered checklist here is what makes the agent march
+                    a caller through steps instead of talking to them.
+                </div>
+                @if (ReplacedDefault(Model.ConversationGuide, Model.Defaults.ConversationGuide) is { } guideDefault)
+                {
+                    <partial name="_PlatformDefault" model="guideDefault" />
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>How a call runs — trades that travel to the customer</h2>
+            <p class="sub">Plumbing, electrical, HVAC, locksmiths, cleaning.</p>
+            <div class="field">
+                <textarea name="FieldServiceGuide" rows="14">@Model.FieldServiceGuide</textarea>
+                <div class="help">These calls need urgency triage and a full service address before anything is booked.</div>
+                @if (ReplacedDefault(Model.FieldServiceGuide, Model.Defaults.FieldServiceGuide) is { } fieldGuideDefault)
+                {
+                    <partial name="_PlatformDefault" model="fieldGuideDefault" />
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Working with the tools</h2>
+            <p class="sub">When the agent may look something up — and when it must not.</p>
+            <div class="field">
+                <textarea name="ToolPolicy" rows="18">@Model.ToolPolicy</textarea>
+                <div class="help">
+                    The availability rule is the one that matters most: check a date once, keep the
+                    times, and do not look the same day up again.
+                </div>
+                @if (ReplacedDefault(Model.ToolPolicy, Model.Defaults.ToolPolicy) is { } toolPolicyDefault)
+                {
+                    <partial name="_PlatformDefault" model="toolPolicyDefault" />
+                }
+            </div>
+            <button class="btn" type="submit">Save prompt</button>
+        </div>
+    </form>
+}

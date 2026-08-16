@@ -1,0 +1,24 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "frontend",
+      "port": 5173
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "backend/AiReceptionist.Api"],
+      "port": 5200
+    },
+    {
+      "name": "superadmin",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "backend/AiReceptionist.SuperAdmin"],
+      "port": 5300
+    }
+  ]
+}

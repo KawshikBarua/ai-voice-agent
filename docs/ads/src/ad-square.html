@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width:1080px; height:1080px; overflow:hidden;
+    font-family:"Segoe UI", Inter, system-ui, sans-serif;
+    background:#b7d5d4; color:#1c1c1c;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .frame { width:1080px; height:1080px; padding:64px; position:relative; }
+
+  /* decorative blobs */
+  .blob { position:absolute; border-radius:50%; }
+  .b1 { width:340px; height:340px; background:#a6cbca; top:-120px; right:-90px; }
+  .b2 { width:200px; height:200px; background:#c6dfde; bottom:-70px; left:-60px; }
+
+  .card {
+    position:relative; width:100%; height:100%; background:#f2f2ee;
+    border-radius:48px; padding:52px 58px; display:flex; flex-direction:column;
+    box-shadow:0 30px 70px rgba(0,0,0,.14);
+  }
+
+  .top { display:flex; align-items:center; gap:14px; margin-bottom:38px; }
+  .logo { height:54px; width:auto; display:block; }
+
+  h1 { font-size:72px; line-height:1.06; letter-spacing:-2.2px; font-weight:800; }
+  /* gradient highlighter renders reliably behind glyphs at any size */
+  h1 .hl { background:linear-gradient(transparent 64%, #f4ec7a 64%); padding:0 4px; }
+  .sub { font-size:26px; line-height:1.4; color:#55555a; margin-top:22px; max-width:760px; }
+
+  .pills { display:flex; gap:11px; flex-wrap:wrap; margin-top:28px; }
+  .pill { border-radius:999px; padding:12px 22px; font-size:19px; font-weight:700; }
+  .p1 { background:#e3e6f8; } .p2 { background:#dcedd7; } .p3 { background:#f8f0cf; }
+
+  /* proof block fills the mid-card space */
+  .chat { margin-top:28px; background:#fff; border-radius:26px; padding:22px 24px;
+          box-shadow:0 14px 34px rgba(0,0,0,.07); }
+  .chat .hdr { display:flex; align-items:center; gap:10px; margin-bottom:13px; }
+  .chat .dot { width:10px; height:10px; border-radius:50%; background:#74c69d; }
+  .chat .hl2 { font-size:17px; font-weight:750; }
+  .chat .tm { font-size:15px; color:#9a9a97; margin-left:auto; }
+  .bub { border-radius:15px; padding:11px 15px; font-size:18px; line-height:1.34; margin-bottom:8px; }
+  .bub.ai { background:#f2f2ee; }
+  .bub.us { background:#e3e6f8; margin-left:60px; }
+  .bub.ok { background:#dcedd7; font-weight:750; margin-bottom:0; }
+
+  .foot { margin-top:auto; padding-top:26px; display:flex; align-items:center;
+          justify-content:space-between; gap:26px; }
+  .cta {
+    background:#1c1c1c; color:#fff; border-radius:999px; padding:22px 42px;
+    font-size:24px; font-weight:750; display:flex; align-items:center; gap:12px;
+  }
+  .note { font-size:18px; color:#9a9a97; line-height:1.4; text-align:right; }
+
+  .clock {
+    position:absolute; right:62px; top:56px; width:118px; height:118px; border-radius:50%;
+    background:#fff; box-shadow:0 12px 30px rgba(0,0,0,.10);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+  }
+  .clock .n { font-size:36px; font-weight:800; line-height:1; }
+  .clock .l { font-size:15px; color:#9a9a97; font-weight:600; margin-top:4px; }
+</style></head>
+<body>
+<div class="frame">
+  <div class="blob b1"></div><div class="blob b2"></div>
+
+  <div class="card">
+    <div class="clock"><div class="n">24/7</div><div class="l">answered</div></div>
+
+    <div class="top">
+      <img class="logo" src="../../assets/logo.png" alt="Frontly">
+    </div>
+
+    <h1>Every missed call<br>is a <span class="hl">lost customer</span>.</h1>
+
+    <p class="sub">Your AI receptionist answers the phone, books the
+       appointment and quotes the price — while you're busy doing the work.</p>
+
+    <div class="pills">
+      <div class="pill p1">Books appointments</div>
+      <div class="pill p2">Quotes real prices</div>
+      <div class="pill p3">Nights &amp; weekends</div>
+    </div>
+
+    <div class="chat">
+      <div class="hdr">
+        <div class="dot"></div><div class="hl2">Answered in 1 ring</div>
+        <div class="tm">11:48 PM · Sunday</div>
+      </div>
+      <div class="bub ai">"Thanks for calling. I'm the AI receptionist — how can I help?"</div>
+      <div class="bub us">"Anything Tuesday morning?"</div>
+      <div class="bub ok">✓ Booked · Tuesday 10:30</div>
+    </div>
+
+    <div class="foot">
+      <div class="cta">Book a demo <span style="font-size:24px">→</span></div>
+      <div class="note">For clinics, plumbers,<br>salons &amp; every trade</div>
+    </div>
+  </div>
+</div>
+</body></html>

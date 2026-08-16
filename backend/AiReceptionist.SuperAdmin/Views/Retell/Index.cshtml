@@ -1,0 +1,189 @@
+@model IReadOnlyList<OrganizationRow>
+@{
+    ViewData["Title"] = "Retell AI";
+    var connection = ViewBag.Connection as RetellConnectionStatus;
+}
+
+<div class="page-head">
+    <div>
+        <h1>Retell AI</h1>
+        <p>
+            One Retell account serves the whole platform. The credential is set here, and each
+            organization's agent is created under it — tenants never see either.
+        </p>
+    </div>
+</div>
+
+@if (connection is null)
+{
+    <div class="banner problem">
+        Could not reach the tenant API, so the Retell connection cannot be read or changed.
+        Start <span class="mono">AiReceptionist.Api</span> and reload this page.
+    </div>
+}
+
+<div class="grid two">
+    <div class="card">
+        <h2>Platform connection</h2>
+        <p class="sub">Shared by every tenant agent.</p>
+
+        @if (connection is not null)
+        {
+            <div class="kv">
+                <span>API key</span>
+                <span>
+                    @if (connection.ApiKeyConfigured)
+                    {
+                        <span class="chip ok">Set</span> <span class="mono">@connection.ApiKeyPreview</span>
+                    }
+                    else
+                    {
+                        <span class="chip danger">Not set</span>
+                    }
+                </span>
+            </div>
+            <div class="kv"><span>Key source</span><span>@(connection.KeySource ?? "—")</span></div>
+            <div class="kv"><span>Last changed</span><span>@Display.When(connection.ModifiedAt)</span></div>
+
+            @if (connection.ApiKeyConfigured && connection.KeySource == "configuration")
+            {
+                <p class="note">
+                    The key is coming from the API's configuration file, not the database. Saving a key
+                    below stores it in the database so it can be rotated without redeploying the API.
+                </p>
+            }
+            @if (!connection.WebhookUsable)
+            {
+                <p class="note">
+                    Retell rejects localhost callback URLs. Expose the API publicly
+                    (<span class="mono">ngrok http 5200</span> or a Cloudflare tunnel) and put that public
+                    URL in the webhook base URL below, otherwise syncs will fail.
+                </p>
+            }
+
+            <form method="post" asp-action="SaveConnection" style="margin-top:16px;">
+                @Html.AntiForgeryToken()
+                <div class="field">
+                    <label for="ApiKey">API key</label>
+                    <input type="password" id="ApiKey" name="ApiKey" autocomplete="off"
+                           placeholder="@(connection.ApiKeyConfigured ? "Leave blank to keep the stored key" : "key_…")" />
+                    <div class="help">Only ever written, never shown back.</div>
+                </div>
+                <div class="field">
+                    <label for="ApiBaseUrl">API base URL</label>
+                    <input type="text" id="ApiBaseUrl" name="ApiBaseUrl" value="@connection.ApiBaseUrl" />
+                </div>
+                <div class="field">
+                    <label for="WebhookBaseUrl">Webhook base URL</label>
+                    <input type="text" id="WebhookBaseUrl" name="WebhookBaseUrl" value="@connection.WebhookBaseUrl"
+                           placeholder="https://your-tunnel.example.com" />
+                    <div class="help">Public address of the tenant API. Retell posts call events here.</div>
+                </div>
+                <div class="field">
+                    <label for="DefaultVoiceId">Default voice</label>
+                    <input type="text" id="DefaultVoiceId" name="DefaultVoiceId" value="@connection.DefaultVoiceId" />
+                </div>
+                <label class="check">
+                    <input type="checkbox" name="VerifySignature" value="true" checked="@connection.VerifySignature" />
+                    <span>Verify Retell signatures on inbound webhooks and tool calls. Leave this on.</span>
+                </label>
+                <input type="hidden" name="VerifySignature" value="false" />
+                <button class="btn" type="submit">Save connection</button>
+            </form>
+        }
+    </div>
+
+    <div class="card">
+        <h2>How this works</h2>
+        <p class="sub">Order of operations for a new tenant.</p>
+        <div class="kv"><span>1</span><span style="font-weight:400;text-align:left;">Set the platform API key and a public webhook base URL here.</span></div>
+        <div class="kv"><span>2</span><span style="font-weight:400;text-align:left;">Connect the organization below. Its LLM and agent are created from the tenant's knowledge base, services, products and greeting.</span></div>
+        <div class="kv"><span>3</span><span style="font-weight:400;text-align:left;">Buy or import a number in the Retell dashboard and set it on the tenant's AI Agent settings, then Re-sync to bind it.</span></div>
+        <div class="kv"><span>4</span><span style="font-weight:400;text-align:left;">Once connected, the only actions available are Re-sync and Disconnect — an organization can never get a second agent.</span></div>
+        <p class="note">
+            Tenant edits to the knowledge base, services or settings re-sync automatically in the
+            background. Re-sync here is for forcing it immediately or recovering from a failed sync.
+        </p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Organizations</h2>
+    <p class="sub">Connection state per tenant.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Organization</th>
+                <th>Account</th>
+                <th>Agent</th>
+                <th>Phone number</th>
+                <th>Last synced</th>
+                <th class="num">Actions</th>
+            </tr>
+            </thead>
+            <tbody>
+            @if (Model.Count == 0)
+            {
+                <tr><td colspan="6" class="empty">No organizations have registered yet.</td></tr>
+            }
+            @foreach (var org in Model)
+            {
+                <tr>
+                    <td class="org-name">
+                        <a asp-controller="Organizations" asp-action="Details" asp-route-id="@org.Id">@org.Name</a>
+                        <small>@org.Industry</small>
+                    </td>
+                    <td>
+                        @if (org.IsActive)
+                        {
+                            <span class="chip ok">Active</span>
+                        }
+                        else
+                        {
+                            <span class="chip danger">Disabled</span>
+                        }
+                    </td>
+                    <td>
+                        @if (org.IsAgentConnected)
+                        {
+                            <span class="chip accent">Connected</span>
+                            <small style="display:block;" class="mono">@org.RetellAgentId</small>
+                        }
+                        else
+                        {
+                            <span class="chip">Not connected</span>
+                        }
+                    </td>
+                    <td class="mono">@(org.RetellPhoneNumber ?? "—")</td>
+                    <td>@Display.Ago(org.LastSyncedAt)</td>
+                    <td class="num">
+                        <div class="actions" style="justify-content:flex-end;">
+                            @if (org.IsAgentConnected)
+                            {
+                                <form class="inline" method="post" asp-action="Resync" asp-route-orgId="@org.Id">
+                                    @Html.AntiForgeryToken()
+                                    <button class="btn small" type="submit">Re-sync</button>
+                                </form>
+                                <form class="inline" method="post" asp-action="Disconnect" asp-route-orgId="@org.Id"
+                                      onsubmit="return confirm('Disconnect @org.Name from Retell?');">
+                                    @Html.AntiForgeryToken()
+                                    <button class="btn small danger" type="submit">Disconnect</button>
+                                </form>
+                            }
+                            else
+                            {
+                                <form class="inline" method="post" asp-action="Connect" asp-route-orgId="@org.Id">
+                                    @Html.AntiForgeryToken()
+                                    <button class="btn small" type="submit"
+                                            disabled="@(connection?.ApiKeyConfigured != true)">Connect</button>
+                                </form>
+                            }
+                        </div>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

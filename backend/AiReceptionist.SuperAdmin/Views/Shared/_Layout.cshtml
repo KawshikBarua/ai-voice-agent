@@ -1,0 +1,49 @@
+@{
+    var controller = ViewContext.RouteData.Values["controller"]?.ToString() ?? "";
+    string Active(string name) => controller.Equals(name, StringComparison.OrdinalIgnoreCase) ? "active" : "";
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@ViewData["Title"] · Super Admin</title>
+    <link rel="icon" type="image/png" href="~/img/logo-mark.png" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand"><img src="~/img/logo.png" alt="Frontly" /><small>Super Admin</small></div>
+        <nav class="nav">
+            <a class="@Active("Dashboard")" asp-controller="Dashboard" asp-action="Index">Dashboard</a>
+            <a class="@Active("Organizations")" asp-controller="Organizations" asp-action="Index">Organizations</a>
+            <a class="@Active("Retell")" asp-controller="Retell" asp-action="Index">Retell AI</a>
+            <a class="@Active("Prompt")" asp-controller="Prompt" asp-action="Index">AI Prompt</a>
+            <a class="@Active("Pricing")" asp-controller="Pricing" asp-action="Index">Pricing</a>
+            <a class="@Active("Billing")" asp-controller="Billing" asp-action="Index">Billing</a>
+        </nav>
+        <div class="sidebar-foot">
+            <strong>@(User.Identity?.Name ?? "Platform admin")</strong>
+            @User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+            <form asp-controller="Account" asp-action="Logout" method="post">
+                @Html.AntiForgeryToken()
+                <button type="submit">Sign out</button>
+            </form>
+        </div>
+    </aside>
+
+    <main class="main">
+        @if (TempData["Notice"] is string notice)
+        {
+            <div class="banner ok">@notice</div>
+        }
+        @if (TempData["Problem"] is string problem)
+        {
+            <div class="banner problem">@problem</div>
+        }
+        @RenderBody()
+    </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,208 @@
+@model PricingViewModel
+@{
+    ViewData["Title"] = "Pricing";
+    var editing = Model.Editing;
+    var isNew = editing is null;
+    var stripeOff = !Model.StripeConfigured;
+}
+
+<div class="page-head">
+    <div>
+        <h1>Pricing</h1>
+        <p>
+            The tiers a customer can be put on. Assigning one copies its numbers onto that
+            organization's subscription, so repricing a tier here never silently re-bills anyone
+            already on it — move them deliberately instead.
+        </p>
+    </div>
+    <form method="post" asp-action="ClosePeriods">
+        @Html.AntiForgeryToken()
+        <button class="btn outline" type="submit">Close elapsed periods now</button>
+    </form>
+</div>
+
+@if (stripeOff)
+{
+    <div class="banner problem">
+        Stripe is not connected, so no prices can be created and nothing will be collected
+        automatically. Set <span class="mono">Stripe:SecretKey</span> in the tenant API
+        (<span class="mono">appsettings.Local.json</span> or <span class="mono">STRIPE__SECRETKEY</span>)
+        and restart it. Tiers still work — payment just has to be recorded by hand.
+    </div>
+}
+
+<div class="grid two">
+    @* ---------- The catalogue ---------- *@
+    <div class="card">
+        <h2>Tiers</h2>
+        <p class="sub">@Model.Plans.Count tier(s). Retiring one leaves existing customers on their price.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Tier</th>
+                    <th class="num">Price</th>
+                    <th class="num">Included</th>
+                    <th class="num">Per extra min</th>
+                    <th>Stripe</th>
+                    <th class="num">On it</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                @if (Model.Plans.Count == 0)
+                {
+                    <tr><td colspan="7" class="empty">No tiers yet. Create the first one on the right.</td></tr>
+                }
+                @foreach (var plan in Model.Plans)
+                {
+                    <tr>
+                        <td class="org-name">
+                            @plan.Name
+                            <small>
+                                @plan.BillingCycle
+                                @if (!plan.IsActive) { <text> · retired from sale</text> }
+                                @if (!string.IsNullOrWhiteSpace(plan.Description)) { <text> · @plan.Description</text> }
+                            </small>
+                        </td>
+                        <td class="num">@Display.Money(plan.Amount, plan.Currency)</td>
+                        <td class="num">@(plan.IncludedMinutes > 0 ? $"{plan.IncludedMinutes:N0} min" : "Unmetered")</td>
+                        <td class="num">
+                            @(plan.IncludedMinutes > 0
+                                ? $"{plan.OverageRatePerMinute.ToString("0.####")} {plan.Currency}"
+                                : "—")
+                        </td>
+                        <td>
+                            @if (plan.IsStripeReady)
+                            {
+                                <span class="chip ok">Ready</span>
+                            }
+                            else
+                            {
+                                <span class="chip warn">Manual only</span>
+                            }
+                        </td>
+                        <td class="num">@plan.SubscriberCount</td>
+                        <td class="num">
+                            <a class="btn small outline" asp-action="Index" asp-route-edit="@plan.Id">Edit</a>
+                            <form method="post" asp-action="Retire" asp-route-id="@plan.Id" style="display:inline;"
+                                  onsubmit="return confirm('Retire @plan.Name? Organizations already on it keep their price and allowance.');">
+                                @Html.AntiForgeryToken()
+                                <button class="btn small danger" type="submit">Retire</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @* ---------- Create / edit ---------- *@
+    <div class="card">
+        <h2>@(isNew ? "New tier" : $"Edit {editing!.Name}")</h2>
+        <p class="sub">
+            @if (isNew)
+            {
+                <text>Included minutes is the AI talk time the price covers; anything past it is charged per minute on the following invoice.</text>
+            }
+            else
+            {
+                <text>Changing the price creates a fresh Stripe price. Customers already subscribed stay on the old one until you move them.</text>
+            }
+        </p>
+
+        <form method="post" asp-action="Save">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="Id" value="@(editing?.Id ?? 0)" />
+
+            <div class="field">
+                <label for="Name">Name</label>
+                <input type="text" id="Name" name="Name" value="@editing?.Name" placeholder="Growth" required />
+            </div>
+
+            <div class="field">
+                <label for="Description">Description</label>
+                <input type="text" id="Description" name="Description" value="@editing?.Description"
+                       placeholder="For practices taking 200+ calls a month" />
+            </div>
+
+            <div class="row">
+                <div class="field">
+                    <label for="Amount">Price per cycle</label>
+                    <input type="number" step="0.01" min="0" id="Amount" name="Amount" value="@(editing?.Amount ?? 0)" />
+                </div>
+                <div class="field">
+                    <label for="Currency">Currency</label>
+                    <input type="text" id="Currency" name="Currency" value="@(editing?.Currency ?? "USD")" maxlength="3" />
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="field">
+                    <label for="BillingCycle">Billing cycle</label>
+                    <select id="BillingCycle" name="BillingCycle">
+                        @foreach (var cycle in BillingCycles.All)
+                        {
+                            <option value="@cycle" selected="@(editing?.BillingCycle == cycle)">@cycle</option>
+                        }
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="SortOrder">Order</label>
+                    <input type="number" id="SortOrder" name="SortOrder" value="@(editing?.SortOrder ?? 0)" />
+                    <div class="help">Lowest first, wherever tiers are listed.</div>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="field">
+                    <label for="IncludedMinutes">AI minutes included</label>
+                    <input type="number" min="0" step="1" id="IncludedMinutes" name="IncludedMinutes"
+                           value="@(editing?.IncludedMinutes ?? 0)" />
+                    <div class="help">0 makes this a flat fee: usage is still recorded, never charged.</div>
+                </div>
+                <div class="field">
+                    <label for="OverageRatePerMinute">Price per extra minute</label>
+                    <input type="number" min="0" step="0.0001" id="OverageRatePerMinute" name="OverageRatePerMinute"
+                           value="@(editing?.OverageRatePerMinute ?? 0)" />
+                    <div class="help">Totalled when the period closes and added to the next invoice.</div>
+                </div>
+            </div>
+
+            <label class="check">
+                <input type="checkbox" name="IsActive" value="true" checked="@(editing?.IsActive ?? true)" />
+                <span>Available to put customers on.</span>
+            </label>
+            <input type="hidden" name="IsActive" value="false" />
+
+            <label class="check">
+                <input type="checkbox" name="CreateStripePrice" value="true"
+                       checked="@(isNew && Model.StripeConfigured)" disabled="@stripeOff" />
+                <span>
+                    Create the matching price in Stripe.
+                    @if (!isNew && editing!.IsStripeReady)
+                    {
+                        <text>This tier already has one — ticking this replaces it with a new price.</text>
+                    }
+                </span>
+            </label>
+            <input type="hidden" name="CreateStripePrice" value="false" />
+
+            <div class="actions" style="margin-top:14px;">
+                <button class="btn" type="submit">@(isNew ? "Create tier" : "Save tier")</button>
+                @if (!isNew)
+                {
+                    <a class="btn outline" asp-action="Index">Cancel</a>
+                }
+            </div>
+        </form>
+
+        @if (!isNew && editing!.IsStripeReady)
+        {
+            <div class="kv" style="margin-top:14px;">
+                <span>Stripe price</span><span class="mono">@editing.StripePriceId</span>
+            </div>
+        }
+    </div>
+</div>

@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Frontly — User Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Inter, system-ui, sans-serif;
+    color: #1c1c1c; font-size: 10.5pt; line-height: 1.55; margin: 0;
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  h2 {
+    font-size: 17pt; margin: 0 0 10px; padding-bottom: 7px;
+    border-bottom: 2.5px solid #b7d5d4; page-break-after: avoid;
+  }
+  h3 { font-size: 12.5pt; margin: 18px 0 6px; page-break-after: avoid; }
+  p { margin: 0 0 9px; }
+  ul, ol { margin: 0 0 10px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .page-break { page-break-before: always; }
+
+  /* Cover */
+  .cover { height: 245mm; display: flex; flex-direction: column; justify-content: center; }
+  .badge {
+    display: inline-block; background: #f4ec7a; border-radius: 999px;
+    padding: 5px 16px; font-size: 9.5pt; font-weight: 700; margin-bottom: 22px;
+  }
+  /* align-self keeps the flex column from stretching the logo out of aspect. */
+  .cover .logo { display: block; align-self: flex-start; height: 22mm; width: auto; margin-bottom: 20px; }
+  .cover h1 { font-size: 40pt; margin: 0 0 12px; letter-spacing: -1px; }
+  .cover .sub { font-size: 14pt; color: #55555a; margin-bottom: 34px; max-width: 135mm; }
+  .cover .meta { font-size: 9.5pt; color: #9a9a97; border-top: 1px solid #e8e8e4; padding-top: 14px; }
+
+  /* Blocks */
+  .card {
+    background: #f7f7f4; border-radius: 11px; padding: 13px 16px; margin: 0 0 12px;
+    page-break-inside: avoid;
+  }
+  .card.teal { background: #e8f2f1; }
+  .card.mint { background: #e9f4e5; }
+  .card.yellow { background: #fdf7db; }
+  .card h4 { margin: 0 0 5px; font-size: 11pt; }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 0 0 14px; font-size: 9.8pt; page-break-inside: avoid; }
+  th { background: #1c1c1c; color: #fff; text-align: left; padding: 7px 10px; font-weight: 600; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e8e8e4; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafaf8; }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; }
+  .steps li {
+    counter-increment: s; position: relative; padding-left: 34px; margin-bottom: 11px;
+    page-break-inside: avoid;
+  }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 1px;
+    width: 23px; height: 23px; border-radius: 50%; background: #1c1c1c; color: #fff;
+    font-size: 9.5pt; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  }
+  .steps li strong { display: block; margin-bottom: 1px; }
+
+  .grid2 { display: flex; gap: 11px; flex-wrap: wrap; }
+  .grid2 > div { flex: 1 1 calc(50% - 6px); }
+
+  .toc { list-style: none; padding: 0; }
+  .toc li { padding: 7px 0; border-bottom: 1px solid #eeeeea; font-size: 11pt; }
+  .toc span { color: #9a9a97; margin-right: 10px; font-weight: 600; }
+
+  .quote {
+    border-left: 3px solid #74c69d; padding: 3px 0 3px 14px; margin: 0 0 12px;
+    color: #55555a; font-style: italic;
+  }
+  .muted { color: #9a9a97; font-size: 9.5pt; }
+  strong { font-weight: 650; }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<section class="cover">
+  <img class="logo" src="../assets/logo.png" alt="Frontly">
+  <div><span class="badge">USER GUIDE</span></div>
+  <h1>Frontly</h1>
+  <p class="sub">Never miss another customer call. Your AI receptionist answers the phone,
+     books appointments and quotes prices — day or night.</p>
+  <div class="meta">
+    Getting started &nbsp;·&nbsp; Daily use &nbsp;·&nbsp; Managing your business information<br>
+    Version 1.0
+  </div>
+</section>
+
+<!-- ============ CONTENTS ============ -->
+<section class="page-break">
+  <h2>Contents</h2>
+  <ol class="toc">
+    <li><span>01</span> The problem we solve</li>
+    <li><span>02</span> What the platform does</li>
+    <li><span>03</span> Who it is for</li>
+    <li><span>04</span> Getting started</li>
+    <li><span>05</span> Your dashboard</li>
+    <li><span>06</span> Appointments and calendar</li>
+    <li><span>07</span> Customers</li>
+    <li><span>08</span> Call history</li>
+    <li><span>09</span> Services and products</li>
+    <li><span>10</span> Teaching your AI about your business</li>
+    <li><span>11</span> Settings</li>
+    <li><span>12</span> Team roles and permissions</li>
+    <li><span>13</span> Frequently asked questions</li>
+  </ol>
+</section>
+
+<!-- ============ 01 PROBLEM ============ -->
+<section class="page-break">
+  <h2>01 &nbsp;The problem we solve</h2>
+
+  <p>Every missed call is a lost customer. For appointment-based businesses, the phone is still
+     the front door — and it rings when you are least able to answer it.</p>
+
+  <div class="card yellow">
+    <h4>The cost of a ringing phone</h4>
+    <ul>
+      <li><strong>You are already busy.</strong> Treating a patient, under a sink, or with a client —
+          the phone rings and nobody picks up.</li>
+      <li><strong>Callers do not leave voicemail.</strong> Most hang up and call the next business
+          on the list.</li>
+      <li><strong>Calls arrive after hours.</strong> Evenings, weekends and holidays are when
+          emergencies happen and when people have time to call.</li>
+      <li><strong>A receptionist is expensive.</strong> A full-time hire costs far more than the
+          revenue many small businesses lose to missed calls — and they still go home at 5pm.</li>
+      <li><strong>The same questions, endlessly.</strong> "How much is a check-up?" "Are you open
+          Saturday?" "Where are you located?"</li>
+    </ul>
+  </div>
+
+  <p>The result is quietly expensive: revenue walks away, your calendar has gaps you did not
+     choose, and the time you do spend on the phone is time away from the work you are paid for.</p>
+
+  <div class="quote">
+    A business that answers every call books more work than one that answers most of them —
+    without anyone working longer hours.
+  </div>
+</section>
+
+<!-- ============ 02 WHAT IT DOES ============ -->
+<section>
+  <h2>02 &nbsp;What the platform does</h2>
+
+  <p>Frontly answers your business phone with a natural-sounding voice, holds a real
+     conversation with the caller, and completes the task — then records everything in your
+     dashboard.</p>
+
+  <h3>On the phone, it can</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>Book appointments</h4>
+      <p>Checks your real availability, offers open times, and books the appointment while the
+         caller is still on the line.</p>
+    </div>
+    <div class="card">
+      <h4>Cancel and reschedule</h4>
+      <p>Finds the caller's existing booking, confirms their identity, and moves or cancels it.</p>
+    </div>
+    <div class="card">
+      <h4>Quote prices</h4>
+      <p>Reads your actual price list for services and products. It never guesses a number.</p>
+    </div>
+    <div class="card">
+      <h4>Recognise returning customers</h4>
+      <p>Greets people it has spoken to before and pulls up their history.</p>
+    </div>
+    <div class="card">
+      <h4>Answer common questions</h4>
+      <p>Opening hours, location, policies, what you do and do not offer.</p>
+    </div>
+    <div class="card">
+      <h4>Hand over to a human</h4>
+      <p>Transfers the call to you or your team whenever it is unsure or the caller asks.</p>
+    </div>
+  </div>
+
+  <h3>In your dashboard, you get</h3>
+  <ul>
+    <li>Every call logged, with a written transcript and a short summary of what happened</li>
+    <li>A live calendar of appointments the AI booked while you were working</li>
+    <li>A customer record for every caller, with their full history in one timeline</li>
+    <li>Figures on revenue booked, payments outstanding and calls handled</li>
+  </ul>
+
+  <div class="card teal">
+    <h4>It works around your business, not the other way round</h4>
+    <p>You tell the platform your services, prices, opening hours and policies. The AI only ever
+       uses that information — so it cannot invent a price, promise a time you are closed, or
+       offer a service you do not provide.</p>
+  </div>
+</section>
+
+<!-- ============ 03 WHO ============ -->
+<section class="page-break">
+  <h2>03 &nbsp;Who it is for</h2>
+
+  <p>Any business that books appointments or takes service calls. The platform adapts its
+     conversation style to your trade automatically.</p>
+
+  <table>
+    <tr><th style="width:34%">Type of business</th><th>How the AI handles calls</th></tr>
+    <tr><td>Medical &amp; dental clinics</td><td>Books patients into slots, never gives clinical advice, directs emergencies to emergency services</td></tr>
+    <tr><td>Plumbing, electrical, HVAC</td><td>Takes the job address, judges urgency, gives a quoted range and explains the final price depends on what the technician finds</td></tr>
+    <tr><td>Locksmiths</td><td>Treats lockouts in unsafe conditions as emergencies and captures the exact location</td></tr>
+    <tr><td>Cleaning services</td><td>Captures property size, type and access arrangements</td></tr>
+    <tr><td>Salons &amp; spas</td><td>Asks for a preferred stylist and mentions any preparation needed</td></tr>
+    <tr><td>Automotive workshops</td><td>Collects vehicle make, model and year; offers a tow if undrivable</td></tr>
+    <tr><td>Law firms &amp; consultants</td><td>Never gives advice, keeps matters confidential, takes a message and escalates urgent deadlines</td></tr>
+  </table>
+
+  <div class="card mint">
+    <h4>Safety comes first</h4>
+    <p>For genuine emergencies — a gas smell, a burst pipe flooding a property, exposed live wiring,
+       or a medical crisis — the AI gives the correct immediate safety instruction and routes the
+       call to a person rather than trying to book an appointment.</p>
+  </div>
+</section>
+
+<!-- ============ 04 GETTING STARTED ============ -->
+<section>
+  <h2>04 &nbsp;Getting started</h2>
+
+  <p>Setup takes about twenty minutes. Do it once, then adjust whenever your business changes.</p>
+
+  <ol class="steps">
+    <li><strong>Sign in</strong>
+        Use the email address and password provided to you. You will land on your dashboard.</li>
+    <li><strong>Enter your business details</strong>
+        Go to <em>Settings</em> and fill in your business name, industry, address, phone number,
+        currency and time zone. The industry setting is important — it shapes how the AI talks to
+        your callers.</li>
+    <li><strong>Set your opening hours</strong>
+        Still in <em>Settings</em>. The AI will never offer an appointment outside these hours,
+        and will tell callers when you are closed.</li>
+    <li><strong>Add your services</strong>
+        Under <em>Services</em>, list what you offer with a duration and a price range. This is
+        exactly what the AI quotes, so keep it accurate.</li>
+    <li><strong>Add your products</strong> <span class="muted">(optional)</span>
+        If you sell parts or items over the phone, add them with prices and stock levels.
+        Businesses that do not sell products can skip this entirely.</li>
+    <li><strong>Fill in your knowledge base</strong>
+        Add your frequently asked questions, policies and anything else callers regularly ask
+        about. See section 10.</li>
+    <li><strong>Set how many jobs you can run at once</strong>
+        In <em>Settings</em>, set the number of staff or rooms available. The AI uses this so it
+        never double-books you.</li>
+    <li><strong>Add a transfer number</strong>
+        A real phone number the AI can transfer callers to when it needs a human.</li>
+  </ol>
+
+  <div class="card">
+    <h4>Check your work before you go live</h4>
+    <p>Open the <em>Knowledge Base</em> page and choose <strong>Preview final AI prompt</strong>.
+       This shows you exactly what your AI knows, assembled from everything you entered. If
+       something looks wrong there, it will sound wrong on the phone.</p>
+  </div>
+</section>
+
+<!-- ============ 05 DASHBOARD ============ -->
+<section class="page-break">
+  <h2>05 &nbsp;Your dashboard</h2>
+
+  <p>The dashboard is your daily view of the business. Everything on it is live.</p>
+
+  <h3>The four figures at the top</h3>
+  <table>
+    <tr><th style="width:32%">Figure</th><th>Meaning</th></tr>
+    <tr><td>Today's appointments</td><td>Everything booked for today. Click to open the full list.</td></tr>
+    <tr><td>Upcoming</td><td>Future bookings not yet confirmed.</td></tr>
+    <tr><td>Missed calls</td><td>Calls that were not completed and may need a callback.</td></tr>
+    <tr><td>Revenue</td><td>Total value of appointments marked as paid.</td></tr>
+  </table>
+
+  <h3>The rest of the page</h3>
+  <ul>
+    <li><strong>Call analytics</strong> — calls received and appointments booked over time. Switch
+        between this year, the last six months and the last three months.</li>
+    <li><strong>My appointments</strong> — what is coming up. Switch between today, tomorrow and
+        the next seven days.</li>
+    <li><strong>Calendar</strong> — the month at a glance; click through for the full view.</li>
+    <li><strong>AI Agent</strong> — the health of your AI: whether it is live, how many knowledge
+        entries it is using, and a shortcut to its settings.</li>
+    <li><strong>Search</strong> — top right, finds any customer by name, phone or email.</li>
+  </ul>
+
+  <p class="muted">The numbers beside <em>Appointments</em> and <em>Calls</em> in the sidebar show
+     how many items need your attention right now.</p>
+</section>
+
+<!-- ============ 06 APPOINTMENTS ============ -->
+<section>
+  <h2>06 &nbsp;Appointments and calendar</h2>
+
+  <p>Appointments arrive two ways: booked by the AI during a call, or added by you.</p>
+
+  <h3>The life of an appointment</h3>
+  <table>
+    <tr><th style="width:24%">Status</th><th>What it means and what to do</th></tr>
+    <tr><td><strong>Scheduled</strong></td><td>Booked but not yet confirmed by your team. Review it and press <em>Confirm</em>.</td></tr>
+    <tr><td><strong>Confirmed</strong></td><td>You have accepted it. You can now record payment or mark it complete.</td></tr>
+    <tr><td><strong>Completed</strong></td><td>The work is done. The customer's visit count updates automatically.</td></tr>
+    <tr><td><strong>Cancelled</strong></td><td>Called off. The time slot is released for other bookings.</td></tr>
+  </table>
+
+  <div class="card yellow">
+    <h4>Payment can only be recorded after confirmation</h4>
+    <p>The <em>Mark paid</em> button appears once an appointment is confirmed. This prevents money
+       being recorded against a booking nobody has checked yet.</p>
+  </div>
+
+  <h3>Using the calendar</h3>
+  <p>The calendar shows the month with a dot on every day that has bookings. Click any day to see
+     what is scheduled, who it is for and its current status. Use the arrows to move between months.</p>
+
+  <h3>Adding an appointment yourself</h3>
+  <p>Press <strong>+ New Appointment</strong>, choose the customer and service, pick a date and
+     time, and save. If the slot is already full you will be told immediately — the platform will
+     not let you double-book.</p>
+</section>
+
+<!-- ============ 07 CUSTOMERS ============ -->
+<section class="page-break">
+  <h2>07 &nbsp;Customers</h2>
+
+  <p>Every caller becomes a customer record. You do not have to create them by hand — when the AI
+     books an appointment for somebody new, their record is created during the call.</p>
+
+  <h3>Recognising people you already know</h3>
+  <p>When someone calls, the platform looks them up by phone number first, then email, then name.
+     If they are an existing customer, the AI knows their history and greets them accordingly.
+     Phone numbers are matched regardless of how they are written, so
+     <em>(555) 010-0888</em> and <em>+15550100888</em> are treated as the same person.</p>
+
+  <h3>The customer timeline</h3>
+  <p>Click any customer to expand their record. You will see when they first came to you, their
+     last visit, how many times they have visited, and a complete timeline of everything that has
+     happened — calls, bookings, cancellations, completed work and payments — with the date and
+     whether it was done by the AI or by a member of your team.</p>
+
+  <div class="card">
+    <h4>Removing a customer</h4>
+    <p>Deleting a customer hides them from your lists but preserves their history for your records.
+       Nothing is permanently destroyed.</p>
+  </div>
+</section>
+
+<!-- ============ 08 CALLS ============ -->
+<section>
+  <h2>08 &nbsp;Call history</h2>
+
+  <p>The <em>Calls</em> page is the record of every conversation your AI has had.</p>
+
+  <p>Each entry shows who called, when, and how long it lasted. Open one and you get:</p>
+  <ul>
+    <li><strong>A summary</strong> — a few lines describing what the caller wanted and what happened</li>
+    <li><strong>The full transcript</strong> — the complete conversation in writing</li>
+    <li><strong>The recording</strong> — play back the call where available</li>
+  </ul>
+
+  <p>Calls are linked to the customer automatically where the phone number matches, so a caller's
+     conversations also appear on their timeline.</p>
+
+  <div class="card">
+    <h4>If a call seems to be missing</h4>
+    <p>Press <strong>Sync calls</strong> at the top of the Calls page. This re-checks the phone
+       service for any conversations that have not yet appeared and imports them, along with their
+       transcripts and summaries.</p>
+  </div>
+
+  <p class="muted">Transcripts and summaries are a useful record for training, for resolving
+     disputes about what was agreed, and for spotting questions your knowledge base should answer.</p>
+</section>
+
+<!-- ============ 09 SERVICES ============ -->
+<section class="page-break">
+  <h2>09 &nbsp;Services and products</h2>
+
+  <h3>Services</h3>
+  <p>Services are what you sell. Each one has:</p>
+  <table>
+    <tr><th style="width:30%">Field</th><th>Why it matters</th></tr>
+    <tr><td>Name</td><td>What callers will ask for, so use the words they use</td></tr>
+    <tr><td>Description</td><td>Extra detail the AI can explain if asked</td></tr>
+    <tr><td>Duration</td><td>How long to block out in the calendar</td></tr>
+    <tr><td>Price range</td><td>The minimum and maximum the AI is allowed to quote</td></tr>
+    <tr><td>Emergency service</td><td>Marks it as available for urgent, same-day work</td></tr>
+    <tr><td>Available</td><td>Turn off to stop the AI offering it, without deleting it</td></tr>
+  </table>
+
+  <h3>Products</h3>
+  <p>If you sell parts or items, list them with a price, category and stock quantity. The AI quotes
+     the real price and tells callers when something is out of stock. Businesses that do not sell
+     products can turn this off entirely in Settings.</p>
+
+  <div class="card teal">
+    <h4>Change a price and the AI knows immediately</h4>
+    <p>Whenever you update a service, product, opening hours or knowledge entry, your AI is updated
+       automatically in the background. There is no separate publish step.</p>
+  </div>
+</section>
+
+<!-- ============ 10 KNOWLEDGE ============ -->
+<section>
+  <h2>10 &nbsp;Teaching your AI about your business</h2>
+
+  <p>The <em>Knowledge Base</em> is where you put everything a good receptionist would know. The
+     more you put in, the fewer calls need a human.</p>
+
+  <table>
+    <tr><th style="width:26%">Category</th><th>What to put there</th></tr>
+    <tr><td>Business info</td><td>What you do, how long you have been going, parking, accessibility, languages spoken</td></tr>
+    <tr><td>FAQ</td><td>The questions you answer every week: do you take walk-ins, do you take card, do I need to bring anything</td></tr>
+    <tr><td>Policy</td><td>Cancellation notice, deposits, late arrivals, guarantees, payment terms</td></tr>
+    <tr><td>Emergency rules</td><td>Exactly what the AI should say and do when a call is urgent</td></tr>
+    <tr><td>Custom</td><td>Anything else that does not fit above</td></tr>
+  </table>
+
+  <h3>Writing good entries</h3>
+  <ul>
+    <li>Write the way you would say it out loud — the AI is speaking, not printing a brochure</li>
+    <li>One subject per entry, with a clear title</li>
+    <li>Be specific: "Cancellations are free up to 12 hours before" beats "please give notice"</li>
+    <li>Review it monthly and add anything callers asked that the AI could not answer</li>
+  </ul>
+
+  <div class="card yellow">
+    <h4>What you cannot change — and why that is good</h4>
+    <p>The core instructions that keep your AI honest are built into the platform and cannot be
+       edited. They are what stop it inventing prices, promising appointments that do not exist,
+       or making up policies. You control all of your business information; the safety rules stay
+       switched on.</p>
+  </div>
+</section>
+
+<!-- ============ 11 SETTINGS ============ -->
+<section class="page-break">
+  <h2>11 &nbsp;Settings</h2>
+
+  <h3>Business information</h3>
+  <p>Name, industry, address, contact details, currency, time zone, and how many appointments you
+     can run at the same time. Set the concurrency figure to your number of staff, rooms or vans —
+     it is what stops the AI booking two customers into one slot.</p>
+
+  <h3>AI agent</h3>
+  <table>
+    <tr><th style="width:30%">Setting</th><th>What it controls</th></tr>
+    <tr><td>Voice</td><td>How your AI sounds to callers</td></tr>
+    <tr><td>Language</td><td>The language it speaks</td></tr>
+    <tr><td>Greeting</td><td>The first thing callers hear. Include your business name.</td></tr>
+    <tr><td>Transfer number</td><td>Where calls go when a human is needed. Must be a real, working number.</td></tr>
+    <tr><td>Phone number</td><td>The number your customers call to reach the AI</td></tr>
+  </table>
+
+  <div class="card">
+    <h4>A good greeting</h4>
+    <p>"Hello, thank you for calling Springfield Plumbing. I am the AI receptionist for Springfield
+       Plumbing. How may I help you today?"</p>
+    <p class="muted">The AI always identifies itself as an AI. This is deliberate — callers trust a
+       system that is honest about what it is, and in many places it is also a legal requirement.</p>
+  </div>
+</section>
+
+<!-- ============ 12 ROLES ============ -->
+<section>
+  <h2>12 &nbsp;Team roles and permissions</h2>
+
+  <p>Each member of your team gets a role that decides what they can do.</p>
+
+  <table>
+    <tr><th style="width:24%">Role</th><th>Can do</th></tr>
+    <tr><td><strong>Organisation admin</strong></td><td>Everything: business settings, team, services, products, knowledge base, appointments and customers</td></tr>
+    <tr><td><strong>Manager</strong></td><td>Everything except organisation-level settings — runs the day-to-day and maintains the catalogue and knowledge base</td></tr>
+    <tr><td><strong>Receptionist</strong></td><td>Books, confirms, reschedules and cancels appointments; creates and edits customers</td></tr>
+    <tr><td><strong>Read only</strong></td><td>Can view everything but change nothing — useful for accountants and reporting</td></tr>
+  </table>
+
+  <p>If a button does not work for you, your role most likely does not permit that action; the
+     platform will tell you when this happens. Ask your administrator to change your role.</p>
+
+  <div class="card mint">
+    <h4>Your data stays yours</h4>
+    <p>Your business is completely separated from every other business on the platform. No other
+       organisation can see your customers, appointments, prices or calls. Every significant action
+       is recorded in an audit trail that your team cannot delete.</p>
+  </div>
+</section>
+
+<!-- ============ 13 FAQ ============ -->
+<section class="page-break">
+  <h2>13 &nbsp;Frequently asked questions</h2>
+
+  <h3>Will callers know they are talking to an AI?</h3>
+  <p>Yes. It introduces itself as an AI receptionist at the start of every call. Callers who want a
+     person can ask at any point and will be transferred.</p>
+
+  <h3>What if the AI does not know the answer?</h3>
+  <p>It says so and offers to transfer the caller or take a message. It is built never to guess.
+     If you see the same question coming up in transcripts, add it to your knowledge base.</p>
+
+  <h3>Can it give a wrong price?</h3>
+  <p>It can only quote what you entered under Services and Products. If a price is wrong on the
+     phone, it is wrong in your settings — update it and the change takes effect immediately.</p>
+
+  <h3>What happens outside opening hours?</h3>
+  <p>It still answers. It will tell the caller you are closed and offer the next available
+     appointment, so you wake up to a booked diary instead of missed calls.</p>
+
+  <h3>Can it double-book me?</h3>
+  <p>No. It checks live availability before offering any time, and the booking is checked again at
+     the moment it is made — so even two callers on the line at once cannot take the same slot.</p>
+
+  <h3>What if somebody calls to cancel someone else's appointment?</h3>
+  <p>The AI asks for the caller's name and checks it against the booking before cancelling or
+     rescheduling. If it does not match, it refuses and passes the call to a human.</p>
+
+  <h3>Do I keep my existing phone number?</h3>
+  <p>Yes. Most businesses keep their advertised number and forward it to the AI, so nothing changes
+     for your customers.</p>
+
+  <h3>How do I turn it off?</h3>
+  <p>Stop forwarding your calls, or ask your administrator to disable the agent. Your dashboard,
+     customers and history remain exactly as they are.</p>
+
+  <div class="card teal" style="margin-top:22px">
+    <h4>Need help?</h4>
+    <p>Contact your platform administrator or your account manager. Have your business name and,
+       where relevant, the date and time of the call in question — every call is logged with a
+       transcript, which usually answers the question straight away.</p>
+  </div>
+</section>
+
+</body>
+</html>

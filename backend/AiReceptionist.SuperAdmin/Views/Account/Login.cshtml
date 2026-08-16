@@ -1,0 +1,47 @@
+@model LoginInput
+@{
+    ViewData["Title"] = "Sign in";
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in · Super Admin</title>
+    <link rel="icon" type="image/png" href="~/img/logo-mark.png" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+<div class="login-wrap">
+    <div class="login-card">
+        <img class="login-logo" src="~/img/logo.png" alt="Frontly" />
+        <h1>Super Admin</h1>
+        <p class="sub">Frontly platform console. Tenant accounts cannot sign in here.</p>
+
+        @if (!ViewData.ModelState.IsValid)
+        {
+            <div class="error-list">
+                @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+                {
+                    <div>@error.ErrorMessage</div>
+                }
+            </div>
+        }
+
+        <form method="post" asp-action="Login" asp-route-returnUrl="@ViewData["ReturnUrl"]">
+            @Html.AntiForgeryToken()
+            <div class="field">
+                <label for="Email">Email</label>
+                <input type="email" id="Email" name="Email" value="@Model.Email" autocomplete="username" required autofocus />
+            </div>
+            <div class="field">
+                <label for="Password">Password</label>
+                <input type="password" id="Password" name="Password" autocomplete="current-password" required />
+            </div>
+            <button class="btn" type="submit">Sign in</button>
+        </form>
+    </div>
+</div>
+</body>
+</html>

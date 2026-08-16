@@ -1,0 +1,192 @@
+@model IReadOnlyList<OrganizationRow>
+@{
+    ViewData["Title"] = "Billing";
+    var collected30d = (decimal)(ViewBag.Collected30d ?? 0m);
+    var overdue = Model.Count(o => o.BillingState == BillingState.Overdue);
+    var dueSoon = Model.Count(o => o.BillingState == BillingState.DueSoon);
+    var unbilled = Model.Count(o => !o.HasSubscription);
+    var runningUnpaid = Model.Count(o => o.NeedsAttention);
+    var overAllowance = Model.Count(o => o.MinutesOver > 0);
+    var pendingOverage = Model.Sum(o => o.PendingOverageAmount);
+    var restricted = Model.Count(o => o.AgentRestricted);
+    var onStripe = Model.Count(o => o.IsStripeLinked);
+}
+
+<div class="page-head">
+    <div>
+        <h1>Billing</h1>
+        <p>
+            Stripe collects from the organizations linked to it; the rest are recorded by hand. An
+            organization counts as paid while its current period — plus the grace days on its
+            subscription — has not run out. Minutes past a plan's allowance are totalled when the
+            period closes and added to that customer's next invoice.
+        </p>
+    </div>
+    <div class="actions">
+        <form method="post" asp-controller="Pricing" asp-action="ClosePeriods" style="display:inline;">
+            @Html.AntiForgeryToken()
+            <button class="btn outline" type="submit">Close elapsed periods</button>
+        </form>
+        <form method="post" asp-action="Sweep" style="display:inline;">
+            @Html.AntiForgeryToken()
+            <button class="btn outline" type="submit">Run overdue sweep now</button>
+        </form>
+    </div>
+</div>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">Collected (30 days)</div>
+        <div class="value">@collected30d.ToString("N0")</div>
+        <div class="hint">recorded payments</div>
+    </div>
+    <div class="stat @(overdue > 0 ? "alert" : "")">
+        <div class="label">Overdue</div>
+        <div class="value">@overdue</div>
+        <div class="hint">@runningUnpaid still enabled</div>
+    </div>
+    <div class="stat">
+        <div class="label">In grace</div>
+        <div class="value">@dueSoon</div>
+        <div class="hint">period ended, not yet overdue</div>
+    </div>
+    <div class="stat">
+        <div class="label">No subscription</div>
+        <div class="value">@unbilled</div>
+        <div class="hint">never billed</div>
+    </div>
+    <div class="stat @(overAllowance > 0 ? "alert" : "")">
+        <div class="label">Over allowance</div>
+        <div class="value">@overAllowance</div>
+        <div class="hint">running past their minutes</div>
+    </div>
+    <div class="stat">
+        <div class="label">Overage to bill</div>
+        <div class="value">@pendingOverage.ToString("N0")</div>
+        <div class="hint">closed, on the next invoice</div>
+    </div>
+    <div class="stat">
+        <div class="label">On Stripe</div>
+        <div class="value">@onStripe</div>
+        <div class="hint">@(Model.Count - onStripe) billed by hand</div>
+    </div>
+    <div class="stat @(restricted > 0 ? "alert" : "")">
+        <div class="label">Agents stopped</div>
+        <div class="value">@restricted</div>
+        <div class="hint">restricted by the operator</div>
+    </div>
+</div>
+
+@if (runningUnpaid > 0)
+{
+    <div class="banner problem">
+        @runningUnpaid organization(s) are overdue but still enabled. Run the sweep, or disable them
+        individually from their page.
+    </div>
+}
+
+<div class="card">
+    <h2>Subscriptions</h2>
+    <p class="sub">Worst standing first. Open an organization to change its plan or record a payment.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Organization</th>
+                <th>Plan</th>
+                <th class="num">Amount</th>
+                <th>Minutes this period</th>
+                <th>Billing</th>
+                <th>Collection</th>
+                <th>Period ends</th>
+                <th>Account</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            @if (Model.Count == 0)
+            {
+                <tr><td colspan="9" class="empty">No organizations have registered yet.</td></tr>
+            }
+            @foreach (var org in Model)
+            {
+                <tr>
+                    <td class="org-name">@org.Name<small>@org.Industry</small></td>
+                    <td>@(org.PlanName ?? "—")<small style="display:block;color:var(--muted);font-size:11.5px;">@(org.BillingCycle ?? "")</small></td>
+                    <td class="num">
+                        @(org.SubscriptionAmount.HasValue
+                            ? Display.Money(org.SubscriptionAmount.Value, org.SubscriptionCurrency ?? org.Currency)
+                            : "—")
+                    </td>
+                    <td>
+                        @if (!org.HasSubscription)
+                        {
+                            <text>—</text>
+                        }
+                        else if (!org.IsMetered)
+                        {
+                            <text>@org.MinutesUsedThisPeriod.ToString("N0") min <small style="color:var(--muted);">unmetered</small></text>
+                        }
+                        else
+                        {
+                            var meterClass = org.MinutesOver > 0 ? "meter over" : org.UsageRatio > 0.8 ? "meter warn" : "meter";
+                            <text>@org.MinutesUsedThisPeriod.ToString("N0") / @org.IncludedMinutes.ToString("N0")</text>
+                            <div class="@meterClass" style="width:112px;"><span style="width:@((org.UsageRatio * 100).ToString("0.#"))%"></span></div>
+                            @if (org.MinutesOver > 0)
+                            {
+                                <div class="meter-note over">@org.MinutesOver.ToString("N0") over</div>
+                            }
+                        }
+                    </td>
+                    <td>
+                        <span class="@Display.BillingChip(org)">@Display.BillingLabel(org)</span>
+                        @if (org.PendingOverageAmount > 0)
+                        {
+                            <div class="meter-note over">
+                                +@Display.Money(org.PendingOverageAmount, org.SubscriptionCurrency ?? org.Currency) overage
+                            </div>
+                        }
+                    </td>
+                    <td>
+                        @if (org.IsStripeLinked)
+                        {
+                            <span class="chip ok">Stripe</span>
+                        }
+                        else if (org.HasSubscription)
+                        {
+                            <span class="chip">Manual</span>
+                        }
+                        else
+                        {
+                            <text>—</text>
+                        }
+                    </td>
+                    <td>
+                        @Display.Day(org.CurrentPeriodEnd)
+                        <small style="display:block;color:var(--muted);font-size:11.5px;">
+                            @(org.AutoSuspend == true ? "auto-disable on" : org.HasSubscription ? "auto-disable off" : "")
+                        </small>
+                    </td>
+                    <td>
+                        @if (!org.IsActive)
+                        {
+                            <span class="chip danger">Disabled</span>
+                        }
+                        else if (org.AgentRestricted)
+                        {
+                            <span class="chip warn">Agent stopped</span>
+                        }
+                        else
+                        {
+                            <span class="chip ok">Active</span>
+                        }
+                    </td>
+                    <td class="num">
+                        <a class="btn small outline" asp-controller="Organizations" asp-action="Details" asp-route-id="@org.Id">Open</a>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>

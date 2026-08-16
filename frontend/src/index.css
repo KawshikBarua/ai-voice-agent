@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* Night mode is a stored preference, not the OS setting, so `dark:` has to follow the class
+   the theme store stamps on <html> rather than prefers-color-scheme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens taken from the MediApp Pro reference mockup */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Poppins", "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-page: #b7d5d4;        /* soft teal page background */
+  --color-panel: #f2f2ee;       /* off-white sidebar / app shell */
+  --color-card: #ffffff;        /* white cards */
+  --color-ink: #1c1c1c;         /* near-black text & pills */
+  --color-ink-soft: #55555a;    /* secondary text */
+  --color-muted: #9a9a97;       /* muted text */
+  --color-line: #e8e8e4;        /* hairline borders */
+
+  /* Text that sits ON a bg-ink surface. Needed because ink flips from near-black to
+     near-white at night: a literal text-white would vanish on the light pill. */
+  --color-on-ink: #ffffff;
+
+  --color-accent: #f4ec7a;      /* yellow promo */
+  --color-lavender: #e3e6f8;    /* light lavender list items */
+  --color-mint: #dcedd7;        /* light green chips */
+  --color-cream: #f8f0cf;       /* light yellow chips */
+  --color-sky: #7ab6f5;         /* chart blue */
+  --color-leaf: #74c69d;        /* chart green */
+
+  --color-danger: #b42318;      /* destructive text */
+  --color-danger-soft: #fde8e6; /* destructive surface */
+
+  /*
+   * Chart palette. Separate from the pastel UI tints above: those are surfaces behind
+   * text, these are data marks that have to stay distinguishable — including under
+   * colour-vision deficiency — against the white card.
+   *
+   * The three call-outcome hues are one validated categorical set (aqua / blue / orange).
+   * Ordering and steps were checked with the palette validator in both modes: worst
+   * all-pairs CVD ΔE 9.2 light and 9.4 dark, worst normal-vision ΔE 24.0 / 20.9.
+   * Light aqua sits just under 3:1 on white, so the call chart always ships a legend
+   * with values and a table view — identity never rests on the fill alone.
+   */
+  --color-viz-handled: #1baf7a;     /* answered end-to-end by the AI */
+  --color-viz-transferred: #2a78d6; /* handed to a human */
+  --color-viz-missed: #eb6834;      /* nobody picked up */
+  --color-viz-revenue: #4a3aa7;     /* revenue — its own chart, so its own hue */
+
+  /* Sequential blue ramp, for the minutes meter and the hour heatmap. */
+  --color-viz-fill: #2a78d6;
+  --color-viz-fill-soft: #9ec5f4;
+  --color-viz-track: #e6eefb;
+
+  /* Reserved states. Never used as a series colour, always paired with a label. */
+  --color-good: #0ca30c;
+  --color-warn: #b5730c;
+  --color-crit: #d03b3b;
+
+  --color-grid: #edece7;        /* hairline gridlines */
+  --color-axis: #d8d7d1;        /* baseline */
+
+  --radius-card: 1.5rem;
+  --radius-pill: 999px;
+}
+
+/*
+ * Night mode.
+ *
+ * Every surface in the app is painted with one of the semantic tokens above, so the whole
+ * palette is swapped here in one place and every existing screen follows — no per-component
+ * dark: variants to write or keep in step. The tinted chip colours become dark tints of the
+ * same hue so `text-ink` (now light) still reads on them.
+ *
+ * `html.dark` (0,1,1) deliberately outranks the `:root` block Tailwind emits for @theme.
+ */
+html.dark {
+  --color-page: #0d1214;
+  --color-panel: #11181b;
+  --color-card: #182126;
+  --color-ink: #e7eef0;
+  --color-ink-soft: #a6b4ba;
+  --color-muted: #7a8990;
+  --color-line: #26343a;
+  --color-on-ink: #0d1214;
+
+  --color-accent: #4c4527;
+  --color-lavender: #272d46;
+  --color-mint: #1f3a2c;
+  --color-cream: #443a20;
+  --color-sky: #4f8fd0;
+  --color-leaf: #4f9b78;
+
+  --color-danger: #ff9c92;
+  --color-danger-soft: #3b1d1a;
+
+  /* Chart palette, re-stepped for the dark card rather than flipped: the same three hues
+     validated against #182126 (all checks pass, including contrast). */
+  --color-viz-handled: #199e70;
+  --color-viz-transferred: #3987e5;
+  --color-viz-missed: #d95926;
+  --color-viz-revenue: #9085e9;
+
+  --color-viz-fill: #3987e5;
+  --color-viz-fill-soft: #1c5cab;
+  --color-viz-track: #1e2b33;
+
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-crit: #e66767;
+
+  --color-grid: #222e34;
+  --color-axis: #2f3f47;
+
+  /* Native form controls, scrollbars and caret follow the theme. */
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-page);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Only the page chrome cross-fades. Transitioning every element would make menus and
+   hovers feel laggy, and would animate content that is merely being revealed. */
+body,
+.theme-fade {
+  transition: background-color 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .theme-fade {
+    transition: none;
+  }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #c9c9c4; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+html.dark ::-webkit-scrollbar-thumb { background: #33434a; }

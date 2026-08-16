@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width:1200px; height:628px; overflow:hidden;
+    font-family:"Segoe UI", Inter, system-ui, sans-serif;
+    background:#b7d5d4; color:#1c1c1c;
+  }
+  .frame { width:1200px; height:628px; display:flex; position:relative; overflow:hidden; }
+  .blob { position:absolute; border-radius:50%; }
+  .b1 { width:300px; height:300px; background:#a6cbca; top:-110px; left:44%; }
+
+  .left { width:57%; padding:56px 20px 52px 62px; display:flex; flex-direction:column; position:relative; }
+  .top { display:flex; align-items:center; gap:12px; margin-bottom:34px; }
+  .logo { height:44px; width:auto; display:block; }
+
+  h1 { font-size:56px; line-height:1.08; letter-spacing:-1.7px; font-weight:800; }
+  h1 .hl { background:linear-gradient(transparent 64%, #f4ec7a 64%); padding:0 4px; }
+  .sub { font-size:22px; line-height:1.44; color:#45454b; margin-top:20px; max-width:530px; }
+
+  .foot { margin-top:auto; display:flex; align-items:center; gap:20px; }
+  .cta { background:#1c1c1c; color:#fff; border-radius:999px; padding:19px 38px;
+         font-size:21px; font-weight:750; }
+  .micro { font-size:16px; color:#4a5a59; line-height:1.35; }
+
+  .right { width:43%; position:relative; display:flex; align-items:center; justify-content:center; }
+  .panel {
+    width:400px; background:#f2f2ee; border-radius:30px; padding:26px;
+    box-shadow:0 26px 60px rgba(0,0,0,.17); transform:rotate(-2deg);
+  }
+  .ph { display:flex; align-items:center; gap:11px; margin-bottom:18px; }
+  .ph .av { width:42px; height:42px; border-radius:50%; background:#f4ec7a;
+            display:flex; align-items:center; justify-content:center; font-size:20px; }
+  .ph .nm { font-size:17px; font-weight:750; }
+  .ph .st { font-size:13px; color:#74c69d; font-weight:700; }
+
+  .bub { border-radius:18px; padding:14px 17px; font-size:16px; line-height:1.4; margin-bottom:11px; }
+  .ai { background:#fff; }
+  .us { background:#e3e6f8; margin-left:44px; }
+  .book { background:#dcedd7; font-weight:700; display:flex; align-items:center; gap:9px; }
+</style></head>
+<body>
+<div class="frame">
+  <div class="blob b1"></div>
+
+  <div class="left">
+    <div class="top"><img class="logo" src="../../assets/logo.png" alt="Frontly"></div>
+    <h1>Never miss<br>another <span class="hl">customer call</span>.</h1>
+    <p class="sub">An AI receptionist that answers every call, books the
+       appointment and quotes your real prices — 24 hours a day.</p>
+    <div class="foot">
+      <div class="cta">Book a demo →</div>
+      <div class="micro">No missed calls.<br>No after-hours staff.</div>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="panel">
+      <div class="ph">
+        <div class="av">🎙️</div>
+        <div><div class="nm">Incoming call</div><div class="st">● Answered in 1 ring</div></div>
+      </div>
+      <div class="bub ai">"Thank you for calling. I'm the AI receptionist. How can I help?"</div>
+      <div class="bub us">"Do you have anything Tuesday morning?"</div>
+      <div class="bub ai">"Yes — 9:00, 10:30 or 11:15. Which suits you?"</div>
+      <div class="bub book">✓ Appointment booked · Tue 10:30</div>
+    </div>
+  </div>
+</div>
+</body></html>

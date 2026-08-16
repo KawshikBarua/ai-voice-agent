@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RollForward>LatestMajor</RollForward>
+    <RootNamespace>AiReceptionist.SuperAdmin</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+  </ItemGroup>
+
+  <!-- The shared billing types are referenced throughout, so they are ambient rather than
+       re-imported in every file. -->
+  <ItemGroup>
+    <Using Include="AiReceptionist.Shared" />
+  </ItemGroup>
+
+  <!-- Shared with AiReceptionist.Api: see the note in BillingSchema.cs. -->
+  <ItemGroup>
+    <Compile Include="..\Shared\BillingSchema.cs" Link="Data\BillingSchema.cs" />
+    <Compile Include="..\Shared\BillingMath.cs" Link="Data\BillingMath.cs" />
+    <Compile Include="..\Shared\BillingEntities.cs" Link="Data\BillingEntities.cs" />
+  </ItemGroup>
+
+</Project>

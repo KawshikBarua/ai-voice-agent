@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+    <PackageReference Include="Stripe.net" Version="52.3.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+  </ItemGroup>
+
+  <!-- The shared billing types are referenced throughout, so they are ambient rather than
+       re-imported in every file. -->
+  <ItemGroup>
+    <Using Include="AiReceptionist.Shared" />
+  </ItemGroup>
+
+  <!-- Both applications create and write the billing tables, so the DDL lives in one file that
+       each compiles rather than in two initializers that would drift. -->
+  <ItemGroup>
+    <Compile Include="..\Shared\BillingSchema.cs" Link="Data\BillingSchema.cs" />
+    <Compile Include="..\Shared\BillingMath.cs" Link="Data\BillingMath.cs" />
+    <Compile Include="..\Shared\BillingEntities.cs" Link="Data\BillingEntities.cs" />
+  </ItemGroup>
+
+</Project>

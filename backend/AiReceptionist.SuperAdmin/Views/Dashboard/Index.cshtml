@@ -1,0 +1,164 @@
+@model DashboardViewModel
+@{
+    ViewData["Title"] = "Dashboard";
+    var s = Model.Summary;
+    var attention = Model.NeedingAttention.ToList();
+}
+
+<div class="page-head">
+    <div>
+        <h1>Platform dashboard</h1>
+        <p>Every organization on the platform: revenue, call volume, AI agent status and subscription standing.</p>
+    </div>
+    <div class="actions">
+        <a class="btn outline" asp-controller="Retell" asp-action="Index">Retell AI</a>
+        <a class="btn" asp-controller="Organizations" asp-action="Index">All organizations</a>
+    </div>
+</div>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">Organizations</div>
+        <div class="value">@s.TotalOrganizations</div>
+        <div class="hint">@s.ActiveOrganizations active · @s.SuspendedOrganizations disabled</div>
+    </div>
+    <div class="stat">
+        <div class="label">Agents connected</div>
+        <div class="value">@s.ConnectedAgents</div>
+        <div class="hint">of @s.TotalOrganizations organizations</div>
+    </div>
+    <div class="stat @(s.OverdueOrganizations > 0 ? "alert" : "")">
+        <div class="label">Overdue</div>
+        <div class="value">@s.OverdueOrganizations</div>
+        <div class="hint">past the grace period</div>
+    </div>
+    <div class="stat">
+        <div class="label">Subscription income</div>
+        <div class="value">@s.SubscriptionRevenue30d.ToString("N0")</div>
+        <div class="hint">collected in the last 30 days</div>
+    </div>
+    <div class="stat">
+        <div class="label">Tenant revenue</div>
+        <div class="value">@s.TenantRevenue.ToString("N0")</div>
+        <div class="hint">paid appointments, all tenants</div>
+    </div>
+    <div class="stat">
+        <div class="label">Calls</div>
+        <div class="value">@s.TotalCalls.ToString("N0")</div>
+        <div class="hint">@s.Calls30d.ToString("N0") in the last 30 days</div>
+    </div>
+</div>
+
+@if (!s.RetellApiKeyConfigured)
+{
+    <div class="banner problem">
+        No Retell API key is configured, so no organization can be connected to an AI agent.
+        <a asp-controller="Retell" asp-action="Index">Set it up</a>.
+    </div>
+}
+
+@if (attention.Count > 0)
+{
+    <div class="card">
+        <h2>Needs attention</h2>
+        <p class="sub">Overdue but still enabled — these tenants are using the platform without paying.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Organization</th>
+                    <th>Overdue since</th>
+                    <th>Plan</th>
+                    <th class="num">Amount</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var org in attention)
+                {
+                    <tr>
+                        <td class="org-name">@org.Name<small>@org.Industry</small></td>
+                        <td>@Display.Day(org.CurrentPeriodEnd)</td>
+                        <td>@(org.PlanName ?? "—")</td>
+                        <td class="num">@(org.SubscriptionAmount.HasValue ? Display.Money(org.SubscriptionAmount.Value, org.SubscriptionCurrency ?? org.Currency) : "—")</td>
+                        <td class="num">
+                            <a class="btn small outline" asp-controller="Organizations" asp-action="Details" asp-route-id="@org.Id">Open</a>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<div class="card">
+    <h2>Organizations</h2>
+    <p class="sub">Revenue counts paid appointments; calls and revenue in brackets cover the last 30 days.</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Organization</th>
+                <th>Account</th>
+                <th>Billing</th>
+                <th>AI agent</th>
+                <th class="num">Revenue</th>
+                <th class="num">Calls</th>
+                <th class="num">Appts</th>
+                <th class="num">Customers</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            @if (Model.Organizations.Count == 0)
+            {
+                <tr><td colspan="9" class="empty">No organizations have registered yet.</td></tr>
+            }
+            @foreach (var org in Model.Organizations)
+            {
+                <tr>
+                    <td class="org-name">@org.Name<small>@org.Industry · joined @Display.Day(org.CreatedAt)</small></td>
+                    <td>
+                        @if (org.IsActive)
+                        {
+                            <span class="chip ok">Active</span>
+                        }
+                        else
+                        {
+                            <span class="chip danger" title="@org.SuspendedReason">Disabled</span>
+                        }
+                    </td>
+                    <td>
+                        <span class="@Display.BillingChip(org)">@Display.BillingLabel(org)</span>
+                    </td>
+                    <td>
+                        @if (org.IsAgentConnected)
+                        {
+                            <span class="chip accent">Connected</span>
+                            <small style="display:block;color:var(--muted);font-size:11.5px;">synced @Display.Ago(org.LastSyncedAt)</small>
+                        }
+                        else
+                        {
+                            <span class="chip">Not connected</span>
+                        }
+                    </td>
+                    <td class="num">
+                        @org.Revenue.ToString("N0") @org.Currency
+                        <small style="display:block;color:var(--muted);font-size:11.5px;">(@org.Revenue30d.ToString("N0"))</small>
+                    </td>
+                    <td class="num">
+                        @org.TotalCalls
+                        <small style="display:block;color:var(--muted);font-size:11.5px;">(@org.Calls30d)</small>
+                    </td>
+                    <td class="num">@org.AppointmentCount</td>
+                    <td class="num">@org.CustomerCount</td>
+                    <td class="num">
+                        <a class="btn small outline" asp-controller="Organizations" asp-action="Details" asp-route-id="@org.Id">Open</a>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
