@@ -228,18 +228,27 @@ public class PlatformController : ControllerBase
     }
 
     /// <summary>Creates (first connect) or updates one tenant's Retell LLM and agent from its
-    /// generated final prompt, voice, greeting, transfer number and live-call tools.</summary>
+    /// generated final prompt, voice, greeting, transfer number and live-call tools.
+    ///
+    /// <paramref name="fresh"/> is the console's Connect action: it deletes the agent, LLM and
+    /// knowledge base this organization still owns or left detached, then builds all three anew.
+    /// Without it (Re-sync, and every automatic sync) the existing ones are updated in place, so
+    /// repeated syncing cannot accumulate spare resources on the shared Retell account.
+    ///
+    /// Either way this touches one organization: the id in the route and nothing else.</summary>
     [HttpPost("retell/{orgId:int}/sync")]
-    public async Task<IActionResult> SyncAgent(int orgId)
+    public async Task<IActionResult> SyncAgent(int orgId, [FromQuery] bool fresh = false)
     {
         if (await _settings.GetOrganizationAsync(orgId) is null)
             return NotFound(ApiResponse<object>.Fail("Unknown organization."));
 
-        var result = await _retell.SyncAgentAsync(orgId);
+        var mode = fresh ? RetellSyncMode.Fresh : RetellSyncMode.Update;
+        var result = await _retell.SyncAgentAsync(orgId, mode);
         if (!result.Success)
             return BadRequest(ApiResponse<object>.Fail(result.Error ?? "Retell sync failed."));
 
-        await _audit.LogAsync(orgId, null, "RetellAgentSynced", $"AgentId={result.AgentId} (platform console)");
+        await _audit.LogAsync(orgId, null, fresh ? "RetellAgentConnected" : "RetellAgentSynced",
+            $"AgentId={result.AgentId} (platform console)");
 
         return Ok(ApiResponse<object>.Ok(new
         {
@@ -247,6 +256,7 @@ public class PlatformController : ControllerBase
             llmId = result.LlmId,
             phoneNumber = result.PhoneNumber,
             phoneWarning = result.PhoneWarning,
+            cleanupWarning = result.CleanupWarning,
         }, "Retell agent synced."));
     }
 
@@ -342,13 +352,22 @@ public class PlatformController : ControllerBase
     }
 
     /// <summary>Detaches the stored Retell agent/LLM ids from this tenant. The resources remain on
-    /// the Retell account, so a disconnect is reversible by connecting again.</summary>
+    /// the Retell account, so a disconnect is reversible by connecting again.
+    ///
+    /// The ids are parked rather than thrown away, because the resources they name outlive the
+    /// disconnect: the next Connect deletes them before it builds a replacement set, which is what
+    /// stops each cycle stranding another agent and knowledge base on the shared account. Only
+    /// this organization's row is touched.</summary>
     [HttpPost("retell/{orgId:int}/disconnect")]
     public async Task<IActionResult> DisconnectAgent(int orgId)
     {
         var agent = await _settings.GetAgentConfigAsync(orgId);
         if (agent is null)
             return NotFound(ApiResponse<object>.Fail("No agent configuration found for this organization."));
+
+        agent.DetachedRetellAgentId = agent.RetellAgentId ?? agent.DetachedRetellAgentId;
+        agent.DetachedRetellLlmId = agent.RetellLlmId ?? agent.DetachedRetellLlmId;
+        agent.DetachedRetellKnowledgeBaseId = agent.RetellKnowledgeBaseId ?? agent.DetachedRetellKnowledgeBaseId;
 
         agent.RetellAgentId = null;
         agent.RetellLlmId = null;

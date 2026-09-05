@@ -15,6 +15,10 @@ public record AssignPlanRequest(
 
 public record AgentRestrictionRequest(bool Restricted, string? Reason);
 
+/// <summary>How many free days to give this organization from now. 0 ends a trial that is
+/// running.</summary>
+public record TrialRequest(int Days);
+
 public record SendInvoiceRequest(int DaysUntilDue, bool IncludePlanCharge);
 
 /// <summary>
@@ -35,18 +39,21 @@ public class PlatformBillingController : ControllerBase
     private readonly IStripeGateway _stripe;
     private readonly ISettingsRepository _settings;
     private readonly IRetellService _retell;
+    private readonly ICallEntitlementService _entitlement;
     private readonly IAuditRepository _audit;
     private readonly ILogger<PlatformBillingController> _logger;
 
     public PlatformBillingController(IBillingRepository repo, IBillingService billing,
         IStripeGateway stripe, ISettingsRepository settings, IRetellService retell,
-        IAuditRepository audit, ILogger<PlatformBillingController> logger)
+        ICallEntitlementService entitlement, IAuditRepository audit,
+        ILogger<PlatformBillingController> logger)
     {
         _repo = repo;
         _billing = billing;
         _stripe = stripe;
         _settings = settings;
         _retell = retell;
+        _entitlement = entitlement;
         _audit = audit;
         _logger = logger;
     }
@@ -216,6 +223,14 @@ public class PlatformBillingController : ControllerBase
             var customerId = await _stripe.EnsureCustomerAsync(orgId, org.Name, org.Email, sub.StripeCustomerId, ct);
             await _repo.SetStripeCustomerAsync(orgId, customerId);
 
+            // Before the subscription, deliberately. Anything the customer ran over in a closed
+            // period is added as a pending item on their Stripe customer, and the first invoice the
+            // subscription raises sweeps every pending item in — so the first charge is the plan
+            // price plus what was already owed, rather than the plan alone with the debt left to
+            // chase. Nothing is attached to a named invoice here because that invoice does not
+            // exist yet.
+            var carried = await _billing.AttachPendingOverageAsync(orgId, null, ct);
+
             var created = await _stripe.CreateSubscriptionAsync(orgId, customerId, plan.StripePriceId, ct);
             await _repo.SetStripeSubscriptionAsync(orgId, created.Id, created.Status);
 
@@ -223,7 +238,8 @@ public class PlatformBillingController : ControllerBase
                 $"SubscriptionId={created.Id} (platform console)");
 
             return Ok(ApiResponse<object>.Ok(new { subscriptionId = created.Id, status = created.Status },
-                $"{org.Name} is now subscribed in Stripe ({created.Status})."));
+                $"{org.Name} is now subscribed in Stripe ({created.Status})." +
+                (carried ? " Their carried-over extra minutes are on the first invoice." : "")));
         }
         catch (Stripe.StripeException ex)
         {
@@ -257,8 +273,13 @@ public class PlatformBillingController : ControllerBase
                 await _repo.SetStripeCustomerAsync(orgId, customerId);
 
             if (request.IncludePlanCharge && sub.Amount > 0)
+                // Keyed on the organization and the period being charged for, so an operator who
+                // clicks twice — or retries after a timeout — raises one plan charge, not two.
+                // A deliberate second invoice for the same period is a rare thing to want, and
+                // asking for it a day later (past Stripe's 24-hour memory of the key) still works.
                 await _stripe.AddInvoiceItemAsync(customerId, null, sub.Amount, sub.Currency,
                     $"{sub.PlanName} plan — {sub.CurrentPeriodStart:d MMM yyyy} to {sub.CurrentPeriodEnd:d MMM yyyy}",
+                    idempotencyKey: $"plan-{orgId}-{sub.CurrentPeriodStart:yyyyMMdd}-{sub.CurrentPeriodEnd:yyyyMMdd}",
                     ct);
 
             // Anything the customer ran over in a closed period goes on the same invoice, with
@@ -307,6 +328,56 @@ public class PlatformBillingController : ControllerBase
 
         return Ok(ApiResponse<object>.Ok(new { },
             "Stripe subscription cancelled. Nothing further will be collected automatically."));
+    }
+
+    // ---------------------------------------------------------------- free trial
+
+    /// <summary>
+    /// Gives this organization <c>Days</c> free days from now, or ends the trial it is on (0).
+    ///
+    /// Granting always measures from today rather than adding to what is left, so "14 days" means
+    /// the same thing whether or not a trial is already running. While it lasts the agent answers
+    /// with no plan and no payment; the moment it lapses the agent stops, which is enforced by
+    /// <see cref="ICallEntitlementService"/> on every call and, below, by re-pointing the number
+    /// now rather than waiting for the sweep to notice.
+    /// </summary>
+    [HttpPost("{orgId:int}/trial")]
+    public async Task<IActionResult> SetTrial(int orgId, TrialRequest request, CancellationToken ct)
+    {
+        var org = await _settings.GetOrganizationAsync(orgId);
+        if (org is null) return NotFound(ApiResponse<object>.Fail("Unknown organization."));
+
+        var days = Math.Clamp(request.Days, 0, 365);
+        if (days == 0 && org.TrialEndsAt is null)
+            return BadRequest(ApiResponse<object>.Fail("This organization is not on a trial."));
+
+        // Ending one records the moment it stopped rather than erasing it: an account that was
+        // tried and lapsed is a different thing from one that was never offered anything, and the
+        // refusal the caller's agent gives says so.
+        var endsAt = days == 0 ? DateTime.UtcNow : DateTime.UtcNow.AddDays(days);
+        await _repo.SetTrialAsync(orgId, endsAt);
+
+        // Whether the number should now be attached depends on the whole picture, not just the
+        // trial — a suspended account or a paid-up plan both outrank it — so the decision is asked
+        // for rather than assumed.
+        var decision = await _entitlement.EvaluateAsync(orgId, ct);
+        var routingWarning = await _retell.SetInboundRoutingAsync(orgId, decision.IsAllowed, ct);
+
+        await _audit.LogAsync(orgId, null, days == 0 ? "TrialEnded" : "TrialGranted",
+            days == 0 ? "platform console" : $"Days={days}, EndsAt={endsAt:u} (platform console)");
+
+        _logger.LogInformation("Organization {OrgId} trial set to end {EndsAt:u} from the platform console.",
+            orgId, endsAt);
+
+        var message = days == 0
+            ? decision.IsAllowed
+                ? $"{org.Name}'s trial has ended. They are on a plan, so their agent keeps taking calls."
+                : $"{org.Name}'s trial has ended and their agent has stopped taking calls."
+            : $"{org.Name} is on a {days}-day free trial until {endsAt:d MMM yyyy}. " +
+              "Their agent takes calls until then, at no charge.";
+
+        return Ok(ApiResponse<object>.Ok(new { trialEndsAt = endsAt, days },
+            routingWarning is null ? message : $"{message} {routingWarning}"));
     }
 
     // ---------------------------------------------------------------- restriction

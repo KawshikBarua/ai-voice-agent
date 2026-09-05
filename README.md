@@ -148,6 +148,12 @@ session, and the tenant app exposes nothing to the `SuperAdmin` role.
   not lapsed. Accounts can be disabled by hand, or automatically by a sweep that runs every few
   hours (`Platform:AutoSuspendSweepHours`). Paying up — through Stripe or manually — re-enables an
   automatically disabled account; a manual suspension is only ever lifted by hand.
+- **Free trial** — each organization's page grants however many free days the operator types. While
+  the trial runs the AI agent answers with no plan and no payment; the moment it lapses the agent
+  stops — the number is detached, the inbound webhook refuses the call and the live-call tools are
+  refused — until a plan is paid for. Granting counts from today, so it replaces whatever is left
+  rather than adding to it, and ending one early is a button on the same card. Sign-in is never
+  affected, and the customer's billing page counts the days down and says when they have run out.
 - **Restricting one agent** — narrower than disabling an account. The organization's agent stops
   taking calls (its number is detached from Retell and its live-call tools are refused) while
   sign-in keeps working, so a customer who has been cut off can still log in, read why on their
@@ -182,9 +188,16 @@ about a number the customer is charged for.
   itself: *"AI minutes over plan: 142 min beyond the 500 included, at 0.12 USD per minute (1 Jul –
   1 Aug 2026)"*. A closed period is never recalculated, so a customer asking about an old charge
   gets the numbers that were actually used.
+- **Every route to Stripe asks for the same amount: the plan price plus everything carried over.**
+  Checkout puts the carry-over on the payment page as its own line beside the subscription, so the
+  customer sees both parts and settles them in one payment; starting a subscription from the console
+  adds it first, so the subscription's own first invoice carries it; an emailed invoice sweeps it in.
+  Whichever way the money is collected, the periods it covers are settled locally at the same time,
+  so the same minutes can never be billed twice.
 - **Closing is triggered three ways** — a worker every `Billing:PeriodSweepHours`, the
   `invoice.created` webhook, and opening the billing page — and is idempotent under all of them
-  (a unique index on organization + period end).
+  (a unique index on organization + period end). The webhook only adds to a *renewal* invoice that
+  is still a draft: a new subscription's first invoice already has the carry-over on it.
 - **A plan with 0 included minutes is a flat fee**: usage is still recorded, never charged.
 
 **Customers** see all of this at `/billing` in the tenant app: the next bill itemised with the

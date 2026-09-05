@@ -71,7 +71,9 @@ public class RetellSyncWorker : BackgroundService
                 var agent = await settings.GetAgentConfigAsync(orgId);
                 if (string.IsNullOrWhiteSpace(agent?.RetellAgentId)) continue;
 
-                var result = await retell.SyncAgentAsync(orgId, stoppingToken);
+                // Always an update, never a fresh build: only the platform console's Connect
+                // action may create or replace Retell resources.
+                var result = await retell.SyncAgentAsync(orgId, RetellSyncMode.Update, stoppingToken);
                 if (!result.Success)
                     _logger.LogWarning("Background Retell sync failed for org {OrgId}: {Error}", orgId, result.Error);
             }

@@ -75,13 +75,21 @@ public class RetellSyncOutcome
     public string? LlmId { get; set; }
     public string? PhoneNumber { get; set; }
     public string? PhoneWarning { get; set; }
+
+    /// <summary>Set when a Connect could not delete what this organization already had on Retell,
+    /// which is the one way it can still end up with two agents. Needs saying, not logging.</summary>
+    public string? CleanupWarning { get; set; }
 }
 
 public interface IPlatformApiClient
 {
     Task<RetellConnectionStatus?> GetRetellConnectionAsync(CancellationToken ct = default);
     Task<(bool ok, string message)> UpdateRetellConnectionAsync(RetellConnectionInput input, CancellationToken ct = default);
-    Task<RetellSyncOutcome> SyncAgentAsync(int orgId, CancellationToken ct = default);
+    /// <summary>Pushes one organization's configuration to Retell. <paramref name="fresh"/> is the
+    /// Connect action: the API deletes the agent and knowledge base that organization still owns
+    /// or left behind at its last disconnect, then creates them again. Re-sync leaves it false so
+    /// the existing ones are updated in place instead of being replaced.</summary>
+    Task<RetellSyncOutcome> SyncAgentAsync(int orgId, bool fresh = false, CancellationToken ct = default);
     Task<(bool ok, string message)> DisconnectAgentAsync(int orgId, CancellationToken ct = default);
 
     /// <summary>Sets the tenant's transfer number and Retell phone number, re-syncing the agent so
@@ -124,6 +132,11 @@ public interface IPlatformApiClient
     /// <summary>Stops (or restores) the organization's agent without touching sign-in.</summary>
     Task<(bool ok, string message)> SetAgentRestrictionAsync(int orgId, bool restricted, string? reason,
         CancellationToken ct = default);
+
+    /// <summary>Gives one organization <paramref name="days"/> free days from now, or (0) ends the
+    /// trial it is on. The API owns this rather than the console writing the dates itself because
+    /// the same call has to re-point the organization's phone number at Retell.</summary>
+    Task<(bool ok, string message)> SetTrialAsync(int orgId, int days, CancellationToken ct = default);
 
     /// <summary>Totals every elapsed billing period now instead of waiting for the sweep.</summary>
     Task<(bool ok, string message)> ClosePeriodsAsync(CancellationToken ct = default);
@@ -185,11 +198,12 @@ public class PlatformApiClient : IPlatformApiClient
         }
     }
 
-    public async Task<RetellSyncOutcome> SyncAgentAsync(int orgId, CancellationToken ct = default)
+    public async Task<RetellSyncOutcome> SyncAgentAsync(int orgId, bool fresh = false, CancellationToken ct = default)
     {
         try
         {
-            var response = await _http.PostAsync($"api/v1/platform/retell/{orgId}/sync", Empty(), ct);
+            var response = await _http.PostAsync(
+                $"api/v1/platform/retell/{orgId}/sync{(fresh ? "?fresh=true" : "")}", Empty(), ct);
             var envelope = await ReadEnvelopeAsync<RetellSyncOutcome>(response, ct);
             var outcome = envelope.Data ?? new RetellSyncOutcome();
             outcome.Success = envelope.Success;
@@ -358,6 +372,11 @@ public class PlatformApiClient : IPlatformApiClient
         PostAsync($"api/v1/platform/billing/{orgId}/agent-restriction",
             new { Restricted = restricted, Reason = reason },
             restricted ? "Agent restricted." : "Agent released.", "Could not change the restriction.", ct);
+
+    public Task<(bool ok, string message)> SetTrialAsync(int orgId, int days,
+        CancellationToken ct = default) =>
+        PostAsync($"api/v1/platform/billing/{orgId}/trial", new { Days = days },
+            days == 0 ? "Trial ended." : $"{days}-day trial started.", "Could not change the trial.", ct);
 
     public Task<(bool ok, string message)> ClosePeriodsAsync(CancellationToken ct = default) =>
         PostAsync("api/v1/platform/billing/close-periods", new { },

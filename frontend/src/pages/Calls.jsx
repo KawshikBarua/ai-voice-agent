@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
-import { Card, Chip, Avatar, EmptyState, PillButton } from '../components/ui'
+import { Card, Chip, Avatar, EmptyState, PageHeader, PillButton, compactAction } from '../components/ui'
 
 export default function Calls() {
   const qc = useQueryClient()
@@ -34,12 +34,15 @@ export default function Calls() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Calls</h1>
-        <PillButton variant="outline" onClick={() => sync.mutate()} disabled={sync.isPending}>
-          {sync.isPending ? 'Syncing…' : 'Sync calls'}
-        </PillButton>
-      </div>
+      <PageHeader
+        title="Calls"
+        action={
+          <PillButton variant="outline" className={compactAction}
+            onClick={() => sync.mutate()} disabled={sync.isPending}>
+            {sync.isPending ? 'Syncing…' : 'Sync'}
+          </PillButton>
+        }
+      />
 
       <Card>
         {sync.isSuccess && (
@@ -60,17 +63,20 @@ export default function Calls() {
             const suggestion = suggestionByCall[c.id]
             return (
               <div key={c.id} className="rounded-2xl bg-panel p-4">
-                <button className="flex w-full items-center gap-4 text-left"
+                <button className="flex w-full items-center gap-3 text-left sm:gap-4"
                   onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
                   <Avatar name={c.customerName ?? '??'} tone={['lavender', 'mint', 'cream'][i % 3]} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-base font-bold">{c.customerName ?? c.fromNumber}</p>
-                    <p className="text-xs text-ink-soft">
+                    <p className="truncate text-sm font-bold sm:text-base">{c.customerName ?? c.fromNumber}</p>
+                    <p className="truncate text-xs text-ink-soft">
                       {new Date(c.startedAt).toLocaleString()} · {dur(c.durationSeconds)}
                     </p>
                   </div>
-                  {suggestion && <Chip tone="lavender">Action suggested</Chip>}
-                  <Chip tone={tone(c.status)}>{c.status}</Chip>
+                  {/* The status is the one chip that must always be visible; "Action suggested" is
+                      the longer of the two and stands down first on a narrow screen. */}
+                  {suggestion && <span className="hidden shrink-0 sm:inline"><Chip tone="lavender">Action suggested</Chip></span>}
+                  {suggestion && <span className="shrink-0 sm:hidden"><Chip tone="lavender">Action</Chip></span>}
+                  <span className="shrink-0"><Chip tone={tone(c.status)}>{c.status}</Chip></span>
                 </button>
                 {expanded === c.id && (
                   <div className="mt-4 space-y-3 border-t border-line pt-4">

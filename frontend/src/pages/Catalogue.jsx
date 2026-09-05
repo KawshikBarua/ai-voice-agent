@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
-import { Card, CardTitle, PillButton, Chip, EmptyState } from '../components/ui'
+import { Card, CardTitle, PageHeader, PillButton, Chip, EmptyState } from '../components/ui'
 
 const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 const label = 'mb-1.5 block text-xs font-semibold text-ink-soft'
@@ -303,7 +303,7 @@ export default function Catalogue() {
 
   return (
     <div>
-      <h1 className="mb-6 font-display text-2xl font-semibold tracking-[-0.01em]">Services &amp; Products</h1>
+      <PageHeader title="Services & Products" />
       <SyncNote />
 
       {!canManage && (

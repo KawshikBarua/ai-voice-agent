@@ -21,6 +21,10 @@ public enum BillingState
 {
     /// <summary>No subscription has been set up yet — nothing to collect, nothing overdue.</summary>
     NotConfigured,
+
+    /// <summary>Inside a free trial the operator granted: the agent is answering, and there is
+    /// nothing to collect until the trial runs out.</summary>
+    Trial,
     Paid,
     /// <summary>Period has ended but the grace window has not lapsed.</summary>
     DueSoon,

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
@@ -6,6 +6,9 @@ import { api, signOut, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useThemeStore, resolveTheme } from '../store/theme'
 import { Avatar } from './ui'
+import { Toasts, useAlertStream } from './alerts'
+import PushPrompt from './PushPrompt'
+import { pushSupported, registerServiceWorker, refreshSubscription } from '../lib/push'
 
 const Icon = ({ d, className = 'h-[18px] w-[18px]' }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
@@ -90,6 +93,29 @@ function ThemeToggle() {
   )
 }
 
+/**
+ * Keeps this browser reachable.
+ *
+ * Registering the worker is what allows a push to arrive with every tab closed, and re-sending an
+ * existing subscription each load guards against the browser having rotated its keys underneath
+ * us. Both are silent: a device that has never been given permission subscribes to nothing, and
+ * nobody is prompted from here — that only ever happens from Settings, where they asked for it.
+ */
+function usePushRegistration() {
+  const { data: config } = useQuery({
+    queryKey: ['push-config'],
+    queryFn: () => api.get('/notifications/config').then(unwrap),
+    staleTime: Infinity,
+  })
+
+  useEffect(() => {
+    if (!config?.enabled || !pushSupported()) return
+    registerServiceWorker().then(() => refreshSubscription()).catch(() => {
+      /* Best-effort: the dashboard's own queue covers a device that cannot be reached. */
+    })
+  }, [config])
+}
+
 function SidebarContent({ onNavigate }) {
   const { user } = useAuthStore()
   const navigate = useNavigate()
@@ -166,6 +192,11 @@ function SidebarContent({ onNavigate }) {
 export default function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false)
 
+  usePushRegistration()
+  // A push both wakes the phone and refreshes whatever is on screen here, so an open dashboard
+  // never shows a diary that is a minute out of date.
+  const { toasts, dismiss } = useAlertStream()
+
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-panel">
       {/*
@@ -218,9 +249,14 @@ export default function AppLayout() {
           sidebar, and changes when the sidebar appears — instead of the viewport alone.
         */}
         <main className="@container min-w-0 flex-1 overflow-y-auto p-4 sm:p-5 lg:p-6 xl:p-8">
+          {/* Above the page, not inside one: a device that cannot be reached is worth saying so
+              wherever the person happens to be, and it takes itself away once it is dealt with. */}
+          <PushPrompt />
           <Outlet />
         </main>
       </div>
+
+      <Toasts toasts={toasts} dismiss={dismiss} />
     </div>
   )
 }

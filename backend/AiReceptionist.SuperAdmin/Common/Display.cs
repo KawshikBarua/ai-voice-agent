@@ -29,6 +29,7 @@ public static class Display
     public static string BillingLabel(OrganizationRow org) => org.BillingState switch
     {
         BillingState.NotConfigured => "No subscription",
+        BillingState.Trial => "Trial",
         BillingState.Paid => "Paid",
         BillingState.DueSoon => "Due",
         _ => "Overdue",
@@ -37,14 +38,29 @@ public static class Display
     public static string BillingChip(OrganizationRow org) => org.BillingState switch
     {
         BillingState.NotConfigured => "chip",
+        BillingState.Trial => "chip accent",
         BillingState.Paid => "chip ok",
         BillingState.DueSoon => "chip warn",
         _ => "chip danger",
     };
 
+    /// <summary>What the trial is doing, in one line — or null for an organization that was never
+    /// given one, so a caller can leave the row alone rather than print "no trial" everywhere.</summary>
+    public static string? TrialDetail(OrganizationRow org)
+    {
+        if (org.TrialEndsAt is null) return null;
+
+        return org.IsOnTrial
+            ? $"Free trial ends {org.TrialEndsAt:d MMM yyyy} ({org.TrialDaysRemaining} d left)"
+            : $"Free trial ended {org.TrialEndsAt:d MMM yyyy}";
+    }
+
     public static string BillingDetail(OrganizationRow org)
     {
-        if (!org.HasSubscription) return "Not billed yet";
+        // A running trial is why this account owes nothing, so it is the honest headline whether or
+        // not a subscription sits behind it.
+        if (org.IsOnTrial) return TrialDetail(org)!;
+        if (!org.HasSubscription) return org.TrialExpired ? TrialDetail(org)! : "Not billed yet";
 
         var end = org.CurrentPeriodEnd!.Value;
         var days = (int)Math.Floor((end - DateTime.UtcNow).TotalDays);

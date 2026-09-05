@@ -26,14 +26,37 @@ public class RetellSyncResult
     /// <summary>Set when the agent synced but its phone number could not be attached. The agent
     /// is still usable (web calls, and any number already bound), so this never fails the sync.</summary>
     public string? PhoneWarning { get; set; }
+
+    /// <summary>Set when a fresh connect could not delete something this organization already had
+    /// on Retell. The sync succeeded, but a resource was left behind that the operator has to
+    /// remove by hand — the one case where the account ends up with a duplicate anyway.</summary>
+    public string? CleanupWarning { get; set; }
+
     public string? Error { get; set; }
     public DateTime? SyncedAt { get; set; }
+}
+
+/// <summary>Which of the two things a sync is: the first connect, or an update to what is already
+/// there. They are not interchangeable, because the cost of getting it wrong lands on a shared
+/// Retell account that every tenant's agent lives on.</summary>
+public enum RetellSyncMode
+{
+    /// <summary>Update this tenant's existing LLM, agent and knowledge base in place, creating any
+    /// of them that is genuinely missing. Every automatic sync uses this — a tenant editing their
+    /// services must not churn Retell resources.</summary>
+    Update,
+
+    /// <summary>First connect: delete every Retell resource this tenant still owns or left
+    /// detached, then build the agent, LLM and knowledge base from scratch. Only ever reached from
+    /// the platform console's Connect action, and only for the one organization it was clicked on.</summary>
+    Fresh,
 }
 
 public interface IRetellService
 {
     Task<bool> IsConfiguredAsync();
-    Task<RetellSyncResult> SyncAgentAsync(int orgId, CancellationToken ct = default);
+    Task<RetellSyncResult> SyncAgentAsync(int orgId, RetellSyncMode mode = RetellSyncMode.Update,
+        CancellationToken ct = default);
     Task<int> BackfillCallsAsync(int orgId, CancellationToken ct = default);
 
     /// <summary>Detaches this tenant's number from their agent, or points it back. Refusing the
@@ -117,13 +140,17 @@ public class RetellService : IRetellService
     // racing each other into creating duplicate Retell LLMs/agents.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, SemaphoreSlim> SyncLocks = new();
 
-    public async Task<RetellSyncResult> SyncAgentAsync(int orgId, CancellationToken ct = default)
+    public async Task<RetellSyncResult> SyncAgentAsync(int orgId, RetellSyncMode mode = RetellSyncMode.Update,
+        CancellationToken ct = default)
     {
+        // The gate is keyed on the organization, so this only ever serialises one tenant against
+        // itself. A connect or disconnect on one organization never touches, blocks or resyncs
+        // another — nothing in this service reaches beyond the orgId it was handed.
         var gate = SyncLocks.GetOrAdd(orgId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try
         {
-            return await SyncAgentCoreAsync(orgId, ct);
+            return await SyncAgentCoreAsync(orgId, mode, ct);
         }
         finally
         {
@@ -131,7 +158,7 @@ public class RetellService : IRetellService
         }
     }
 
-    private async Task<RetellSyncResult> SyncAgentCoreAsync(int orgId, CancellationToken ct)
+    private async Task<RetellSyncResult> SyncAgentCoreAsync(int orgId, RetellSyncMode mode, CancellationToken ct)
     {
         await LoadConnectionAsync();
         if (string.IsNullOrWhiteSpace(_apiKey))
@@ -160,12 +187,23 @@ public class RetellService : IRetellService
 
         try
         {
+            // 0) A first connect starts from nothing. Anything this tenant still owns on Retell —
+            //    including the set a previous disconnect detached but left alive — is deleted here,
+            //    before a single resource is created. Skipping this is what used to leave a spare
+            //    agent, LLM and knowledge base behind on every connect/disconnect cycle.
+            //    Scoped entirely to this organization's own stored ids: no listing, no name
+            //    matching, nothing that could reach another tenant's resources.
+            var purgeFailures = mode == RetellSyncMode.Fresh
+                ? await PurgeRemoteResourcesAsync(agent, ct)
+                : [];
+
             // 1) Push bulky, frequently-changing content (catalogues, FAQs, policies) to a
             //    Retell knowledge base so it is retrieved on demand instead of sitting in
             //    the prompt on every turn.
             var previousKbId = agent.RetellKnowledgeBaseId;
-            var newKbId = await SyncKnowledgeBaseAsync(orgId, org.Name, ct);
-            if (newKbId is not null) agent.RetellKnowledgeBaseId = newKbId;
+            var (kbId, kbIsNew) = await SyncKnowledgeBaseAsync(
+                orgId, org.Name, previousKbId, forceCreate: mode == RetellSyncMode.Fresh, ct);
+            if (kbId is not null) agent.RetellKnowledgeBaseId = kbId;
 
             // 2) Create or update the Retell LLM (prompt + tools + knowledge base)
             var llmPayload = new
@@ -185,14 +223,18 @@ public class RetellService : IRetellService
             // Persist immediately so a later failure can't orphan the created LLM/knowledge base.
             await _settings.UpsertAgentConfigAsync(agent);
 
-            // The old knowledge base is only removed once the LLM points at the new one.
-            if (newKbId is not null && !string.IsNullOrWhiteSpace(previousKbId) && previousKbId != newKbId)
+            // A knowledge base that had to be replaced rather than updated in place leaves the old
+            // one behind, and it is only safe to remove once the LLM points at its successor.
+            if (kbIsNew && !string.IsNullOrWhiteSpace(previousKbId) && previousKbId != kbId)
                 await TryDeleteKnowledgeBaseAsync(previousKbId, ct);
 
             // 3) Create or update the Agent bound to that LLM
             var agentPayload = new
             {
-                agent_name = $"{org.Name} — Frontly",
+                // The org id rides along in the name so the operator's Retell dashboard shows which
+                // tenant each agent serves, and so a later connect can recognise this agent as ours
+                // even if the LLM it points at has been deleted. Never seen by callers or tenants.
+                agent_name = $"{org.Name} — Frontly {AgentNameTag(orgId)}",
                 voice_id = MapVoice(agent.Voice),
                 language = string.IsNullOrWhiteSpace(agent.Language) ? "en-US" : agent.Language,
                 response_engine = new { type = "retell-llm", llm_id = agent.RetellLlmId },
@@ -250,6 +292,14 @@ public class RetellService : IRetellService
                 PhoneNumber = agent.RetellPhoneNumber,
                 PhoneWarning = phoneWarning,
                 SyncedAt = agent.LastSyncedAt,
+
+                // Said out loud rather than logged away: a connect that built the new agent but
+                // could not remove the old one has left a duplicate on the account, and the
+                // operator is the only one who can go and finish the job.
+                CleanupWarning = purgeFailures.Count == 0
+                    ? null
+                    : $"The new agent is live, but {string.Join("; ", purgeFailures)}. " +
+                      "Remove the leftovers in the Retell dashboard so this organization keeps one agent.",
             };
         }
         catch (Exception ex)
@@ -327,7 +377,9 @@ public class RetellService : IRetellService
                 RetellCallId = callId,
                 FromNumber = from,
                 Status = status,
-                DurationSeconds = startedMs > 0 && endedMs > startedMs ? (int)((endedMs - startedMs) / 1000) : 0,
+                // The same reading the live webhook takes, so a call re-imported here is never
+                // billed differently from the one that arrived by itself.
+                DurationSeconds = CallDuration.Resolve(startedMs, endedMs, GetNum(call, "duration_ms")),
                 Transcript = GetStr(call, "transcript"),
                 RecordingUrl = GetStr(call, "recording_url"),
                 Summary = summary,
@@ -526,21 +578,47 @@ public class RetellService : IRetellService
         }
     }
 
-    /// <summary>Uploads the tenant's reference content as a fresh Retell knowledge base and
-    /// returns its id. Retell indexes sources at creation, so a content change means a new
-    /// knowledge base; the caller swaps the LLM over before deleting the old one.
-    /// Returns null when there is nothing to upload.</summary>
-    private async Task<string?> SyncKnowledgeBaseAsync(int orgId, string orgName, CancellationToken ct)
+    /// <summary>Brings the tenant's reference content to Retell and returns the knowledge base the
+    /// LLM should point at, along with whether that is a newly created one the caller has to swap
+    /// over to. Returns null when there is nothing to upload.
+    ///
+    /// An existing knowledge base is updated in place — the new documents are added, then the
+    /// sources that were there before are removed — so its id survives. That matters because a
+    /// sync is not rare: every tenant edit queues one and every connected tenant is re-synced when
+    /// the API restarts. Creating a base per sync (which is what this used to do unconditionally)
+    /// meant one abandoned knowledge base per organization per restart piling up on the shared
+    /// Retell account. A base is only created when there is none, when <paramref name="forceCreate"/>
+    /// asks for a clean one, or when Retell will not accept the in-place update.</summary>
+    private async Task<(string? Id, bool IsNew)> SyncKnowledgeBaseAsync(
+        int orgId, string orgName, string? existingId, bool forceCreate, CancellationToken ct)
     {
         var docs = await _prompts.BuildKnowledgeDocumentsAsync(orgId);
-        if (docs.Count == 0) return null;
+        if (docs.Count == 0) return (null, false);
 
-        var texts = docs.Select(d => new { title = d.Title, text = d.Text }).ToList();
+        if (!forceCreate && !string.IsNullOrWhiteSpace(existingId))
+        {
+            try
+            {
+                await ReplaceKnowledgeBaseSourcesAsync(existingId, docs, ct);
+                _logger.LogInformation(
+                    "Retell knowledge base {KbId} updated in place for org {OrgId} with {Count} document(s)",
+                    existingId, orgId, docs.Count);
+                return (existingId, false);
+            }
+            catch (Exception ex)
+            {
+                // Falling back to a replacement keeps a re-sync working when the base was deleted
+                // in the Retell dashboard or the update is refused; the caller deletes the old one.
+                _logger.LogWarning(ex,
+                    "Could not update Retell knowledge base {KbId} for org {OrgId} in place — creating a replacement.",
+                    existingId, orgId);
+            }
+        }
 
         using var form = new MultipartFormDataContent
         {
             { new StringContent($"{orgName} — reference ({DateTime.UtcNow:yyyyMMddHHmmss})"), "knowledge_base_name" },
-            { new StringContent(JsonSerializer.Serialize(texts), Encoding.UTF8, "application/json"), "knowledge_base_texts" },
+            { KnowledgeTextsContent(docs), "knowledge_base_texts" },
         };
 
         var response = await _http.PostAsync("/create-knowledge-base", form, ct);
@@ -553,8 +631,311 @@ public class RetellService : IRetellService
         var id = doc.RootElement.TryGetProperty("knowledge_base_id", out var v) ? v.GetString() : null;
         _logger.LogInformation("Retell knowledge base {KbId} created for org {OrgId} with {Count} document(s)",
             id, orgId, docs.Count);
-        return id;
+        return (id, id is not null);
     }
+
+    /// <summary>Swaps the contents of an existing knowledge base for the current documents. Adds
+    /// before it removes: a base that briefly holds the old and new copies of a document answers
+    /// callers with a duplicate, while one that briefly holds nothing answers them with nothing.</summary>
+    private async Task ReplaceKnowledgeBaseSourcesAsync(
+        string knowledgeBaseId, List<KnowledgeDocument> docs, CancellationToken ct)
+    {
+        // Reading the base first also settles whether it still exists — a stale id has to surface
+        // here as a failure so the caller can fall back to creating a replacement.
+        var stale = await ListKnowledgeBaseSourceIdsAsync(knowledgeBaseId, ct);
+
+        using var form = new MultipartFormDataContent
+        {
+            { KnowledgeTextsContent(docs), "knowledge_base_texts" },
+        };
+
+        var response = await _http.PostAsync($"/add-knowledge-base-sources/{knowledgeBaseId}", form, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw new RetellApiException(response.StatusCode,
+                $"Retell API POST /add-knowledge-base-sources/{knowledgeBaseId} failed " +
+                $"({(int)response.StatusCode}): {body}");
+        }
+
+        foreach (var sourceId in stale)
+        {
+            try
+            {
+                var deleted = await _http.DeleteAsync(
+                    $"/delete-knowledge-base-source/{knowledgeBaseId}/{sourceId}", ct);
+                if (!deleted.IsSuccessStatusCode)
+                    _logger.LogWarning(
+                        "Could not remove superseded source {SourceId} from Retell knowledge base {KbId}: {Status}",
+                        sourceId, knowledgeBaseId, deleted.StatusCode);
+            }
+            catch (Exception ex)
+            {
+                // The new content is already in and the LLM already points here, so a source that
+                // will not delete is stale content, not a broken sync.
+                _logger.LogWarning(ex,
+                    "Could not remove superseded source {SourceId} from Retell knowledge base {KbId}",
+                    sourceId, knowledgeBaseId);
+            }
+        }
+    }
+
+    private async Task<List<string>> ListKnowledgeBaseSourceIdsAsync(string knowledgeBaseId, CancellationToken ct)
+    {
+        var response = await _http.GetAsync($"/get-knowledge-base/{knowledgeBaseId}", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new RetellApiException(response.StatusCode,
+                $"Retell API GET /get-knowledge-base/{knowledgeBaseId} failed ({(int)response.StatusCode}): {body}");
+
+        using var doc = JsonDocument.Parse(body);
+        if (!doc.RootElement.TryGetProperty("knowledge_base_sources", out var sources) ||
+            sources.ValueKind != JsonValueKind.Array)
+            return [];
+
+        return sources.EnumerateArray()
+            .Select(s => GetStr(s, "source_id"))
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .ToList();
+    }
+
+    private static StringContent KnowledgeTextsContent(List<KnowledgeDocument> docs) =>
+        new(JsonSerializer.Serialize(docs.Select(d => new { title = d.Title, text = d.Text })),
+            Encoding.UTF8, "application/json");
+
+    /// <summary>Deletes every Retell resource that belongs to this one organization, then clears
+    /// the stored ids so the sync that follows builds a single fresh set.
+    ///
+    /// The stored ids are not enough on their own to promise no duplicates. They go missing:
+    /// disconnects before this cleanup existed threw them away, and a sync that creates a resource
+    /// and then fails before the row is written leaves one behind with nothing pointing at it. So
+    /// this also asks Retell what is actually on the account and works out what is ours, which is
+    /// the only way to guarantee an organization ends up with exactly one agent.
+    ///
+    /// Ownership is decided by evidence that cannot be shared with another tenant, never by name:
+    /// every LLM we build carries this organization's id inside its tool URLs, and an agent is ours
+    /// when it responds with one of those LLMs (or still wears our name tag, which catches an agent
+    /// whose LLM has already gone). Two tenants called the same thing can never collide.</summary>
+    private async Task<List<string>> PurgeRemoteResourcesAsync(Domain.AgentConfig agent, CancellationToken ct)
+    {
+        var orgId = agent.OrganizationId;
+        var failures = new List<string>();
+
+        var agentIds = new HashSet<string>(StringComparer.Ordinal);
+        var llmIds = new HashSet<string>(StringComparer.Ordinal);
+        var kbIds = new HashSet<string>(StringComparer.Ordinal);
+
+        Add(agentIds, agent.RetellAgentId, agent.DetachedRetellAgentId);
+        Add(llmIds, agent.RetellLlmId, agent.DetachedRetellLlmId);
+        Add(kbIds, agent.RetellKnowledgeBaseId, agent.DetachedRetellKnowledgeBaseId);
+
+        // Sweeping the account is what catches the resources no id points at any more. A failure
+        // here is reported but not fatal: the ids we do hold still get cleaned up, and a connect
+        // must not be blocked because a list endpoint was unavailable.
+        try
+        {
+            await DiscoverOwnedResourcesAsync(orgId, agentIds, llmIds, kbIds, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not sweep the Retell account for org {OrgId}'s existing resources", orgId);
+            failures.Add("the Retell account could not be searched for older resources belonging to this " +
+                         $"organization ({ex.Message})");
+        }
+
+        if (agentIds.Count == 0 && llmIds.Count == 0 && kbIds.Count == 0)
+            return failures;
+
+        // Agents first: Retell rejects deleting an LLM while an agent still responds with it, so
+        // an agent left in place would keep its whole chain alive behind it.
+        foreach (var id in agentIds)
+            await DeleteAsync($"/delete-agent/{id}", "agent", id);
+
+        // force_delete because an agent we could not remove — or one belonging to nobody — must not
+        // strand the LLM. The agents that reference it are this organization's own, and are gone.
+        foreach (var id in llmIds)
+            await DeleteAsync($"/delete-retell-llm/{id}?force_delete=true", "LLM", id);
+
+        foreach (var id in kbIds)
+            await DeleteAsync($"/delete-knowledge-base/{id}", "knowledge base", id);
+
+        _logger.LogInformation(
+            "Cleared Retell resources for org {OrgId} ahead of a fresh connect: {Agents} agent(s), " +
+            "{Llms} LLM(s), {Kbs} knowledge base(s), {Failures} failure(s).",
+            orgId, agentIds.Count, llmIds.Count, kbIds.Count, failures.Count);
+
+        agent.RetellAgentId = null;
+        agent.RetellLlmId = null;
+        agent.RetellKnowledgeBaseId = null;
+        agent.DetachedRetellAgentId = null;
+        agent.DetachedRetellLlmId = null;
+        agent.DetachedRetellKnowledgeBaseId = null;
+        await _settings.UpsertAgentConfigAsync(agent);
+
+        return failures;
+
+        static void Add(HashSet<string> set, params string?[] ids)
+        {
+            foreach (var id in ids)
+                if (!string.IsNullOrWhiteSpace(id)) set.Add(id);
+        }
+
+        // A resource Retell has already forgotten is a success — that is the state we wanted. Any
+        // other refusal is collected and shown to the operator rather than logged and lost, because
+        // silently leaving a duplicate behind is the one outcome this whole routine exists to stop.
+        async Task DeleteAsync(string path, string resource, string id)
+        {
+            try
+            {
+                var response = await _http.DeleteAsync(path, ct);
+                if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _logger.LogInformation("Deleted Retell {Resource} {Id} for org {OrgId}.", resource, id, orgId);
+                    return;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning("Could not delete Retell {Resource} {Id} for org {OrgId} ({Status}): {Body}",
+                    resource, id, orgId, response.StatusCode, body);
+                failures.Add($"{resource} {id} could not be deleted ({(int)response.StatusCode})");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not delete Retell {Resource} {Id} for org {OrgId}", resource, id, orgId);
+                failures.Add($"{resource} {id} could not be deleted ({ex.Message})");
+            }
+        }
+    }
+
+    /// <summary>Adds to the given sets every agent, LLM and knowledge base on the Retell account
+    /// that demonstrably belongs to this organization, including ones no stored id refers to.</summary>
+    private async Task DiscoverOwnedResourcesAsync(int orgId, HashSet<string> agentIds,
+        HashSet<string> llmIds, HashSet<string> kbIds, CancellationToken ct)
+    {
+        // The proof of ownership: every tool we generate is addressed to this organization's own
+        // endpoint. The trailing slash matters — without it org 1 would claim org 12's LLM.
+        var toolPath = $"/api/v1/ai/tools/{orgId}/";
+
+        foreach (var llm in await ListAllAsync("/v2/list-retell-llms", "/list-retell-llms", HttpMethod.Get, ct))
+        {
+            var id = GetStr(llm, "llm_id");
+            if (id is null) continue;
+
+            // Matched against the raw JSON of the tool list so the shape of a tool never matters,
+            // only the address it points at.
+            var tools = llm.TryGetProperty("general_tools", out var t) ? t.GetRawText() : "";
+            if (!tools.Contains(toolPath, StringComparison.Ordinal)) continue;
+
+            llmIds.Add(id);
+            if (llm.TryGetProperty("knowledge_base_ids", out var kbs) && kbs.ValueKind == JsonValueKind.Array)
+                foreach (var kb in kbs.EnumerateArray())
+                    if (kb.GetString() is { Length: > 0 } kbId) kbIds.Add(kbId);
+        }
+
+        var nameTag = AgentNameTag(orgId);
+        foreach (var listed in await ListAllAsync("/v2/list-agents", "/list-agents", HttpMethod.Post, ct))
+        {
+            var id = GetStr(listed, "agent_id");
+            if (id is null || agentIds.Contains(id)) continue;
+
+            // The name tag settles most of them without another call, and is the only thing that
+            // still identifies an agent whose LLM was deleted out from under it.
+            if (GetStr(listed, "agent_name")?.Contains(nameTag, StringComparison.Ordinal) == true)
+            {
+                agentIds.Add(id);
+                continue;
+            }
+
+            // The list response carries no response engine, so ownership by LLM needs the agent
+            // itself. Only reached on a connect, against one Retell account's worth of agents.
+            if (llmIds.Count == 0) continue;
+            try
+            {
+                var response = await _http.GetAsync($"/get-agent/{id}", ct);
+                if (!response.IsSuccessStatusCode) continue;
+
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                if (doc.RootElement.TryGetProperty("response_engine", out var engine) &&
+                    GetStr(engine, "llm_id") is { } engineLlmId && llmIds.Contains(engineLlmId))
+                    agentIds.Add(id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not read Retell agent {AgentId} while checking org {OrgId}'s resources",
+                    id, orgId);
+            }
+        }
+    }
+
+    /// <summary>Reads every page of a Retell list endpoint. Falls back to the unversioned path so a
+    /// connect still works against an account or key that predates the v2 listings, and accepts a
+    /// bare array or any of the wrappers Retell has used, because a listing that quietly returns
+    /// nothing would look exactly like an account with nothing on it.</summary>
+    private async Task<List<JsonElement>> ListAllAsync(string path, string fallbackPath, HttpMethod method,
+        CancellationToken ct)
+    {
+        var items = new List<JsonElement>();
+        string? paginationKey = null;
+
+        for (var page = 0; page < 50; page++)
+        {
+            var query = $"?limit=1000{(paginationKey is null ? "" : $"&pagination_key={Uri.EscapeDataString(paginationKey)}")}";
+            var response = await SendListAsync(path + query, method, ct);
+
+            if (response.StatusCode == HttpStatusCode.NotFound && page == 0)
+            {
+                response.Dispose();
+                response = await SendListAsync(fallbackPath + query, method, ct);
+            }
+
+            using (response)
+            {
+                var body = await response.Content.ReadAsStringAsync(ct);
+                if (!response.IsSuccessStatusCode)
+                    throw new RetellApiException(response.StatusCode,
+                        $"Retell API {method} {path} failed ({(int)response.StatusCode}): {body}");
+
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                var array = root.ValueKind == JsonValueKind.Array ? root : Wrapped(root);
+                if (array.ValueKind != JsonValueKind.Array) return items;
+
+                // Cloned because the JsonDocument backing them is disposed at the end of this page.
+                items.AddRange(array.EnumerateArray().Select(e => e.Clone()));
+
+                var more = root.ValueKind == JsonValueKind.Object &&
+                           root.TryGetProperty("has_more", out var h) && h.ValueKind == JsonValueKind.True;
+                paginationKey = more && root.TryGetProperty("pagination_key", out var k) ? k.GetString() : null;
+                if (paginationKey is null) return items;
+            }
+        }
+
+        return items;
+
+        static JsonElement Wrapped(JsonElement root)
+        {
+            if (root.ValueKind != JsonValueKind.Object) return default;
+            foreach (var name in new[] { "items", "data", "results", "agents", "llms", "retell_llms" })
+                if (root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array) return v;
+            return default;
+        }
+    }
+
+    private Task<HttpResponseMessage> SendListAsync(string pathAndQuery, HttpMethod method, CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(method, pathAndQuery);
+        // Retell's v2 listings are POSTs that take an optional filter body; an empty object asks
+        // for everything, and sending it keeps servers that require a JSON body happy.
+        if (method == HttpMethod.Post)
+            request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        return _http.SendAsync(request, ct);
+    }
+
+    /// <summary>The marker written into every agent's name so the operator's Retell dashboard says
+    /// which tenant an agent serves, and so this code can still recognise its own work after the
+    /// LLM behind an agent is gone. Organization ids are stable; names are not.</summary>
+    private static string AgentNameTag(int orgId) => $"[org {orgId}]";
 
     private async Task TryDeleteKnowledgeBaseAsync(string knowledgeBaseId, CancellationToken ct)
     {
@@ -670,7 +1051,9 @@ public class RetellService : IRetellService
                 "then keep the times it returns and work from them for the rest of the call. Do NOT call it again for " +
                 "a date you have already checked, do NOT call it before the caller has named a day, and do NOT call it " +
                 "to re-confirm a time you have already offered. Call it again only for a different date, or after a " +
-                "booking failed because the slot was taken. Respects the business's working hours and closed days.",
+                "booking failed because the slot was taken. Respects the business's working hours and closed days, and " +
+                "counts the staff actually on duty — a time comes back only while someone is free to take it, which is " +
+                "why the same time can still be free after you have just booked it for someone else.",
                 new
                 {
                     date = str("The date to check: YYYY-MM-DD, or a relative day the caller used such as 'today', 'tomorrow' or 'friday'"),

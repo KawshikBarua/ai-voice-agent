@@ -18,6 +18,18 @@ public static class BillingSchema
     /// dashboard must never disagree about a number the customer is charged for.</summary>
     public const string MinutesExpression = "ISNULL(SUM(CEILING(DurationSeconds / 60.0)), 0)";
 
+    /// <summary>
+    /// The calls whose minutes are still owed to a bill: not deleted, and not yet claimed by a
+    /// period close (<c>CallLogs.BilledPeriodEnd</c>).
+    ///
+    /// This, rather than a date window, is what "used this period" means. A window answers "when
+    /// did it happen"; the question a bill asks is "has this been charged for yet", and the two
+    /// stop agreeing the moment a call is recorded after its own period has closed. Counting by
+    /// the marker means the live figure a customer watches and the total the close charges are
+    /// read from the same set of rows, so they cannot drift.
+    /// </summary>
+    public const string UnbilledPredicate = "IsDeleted = 0 AND BilledPeriodEnd IS NULL";
+
     /// <summary>Each statement runs as its own batch: a column added by an earlier statement is
     /// not visible to a later one within the same batch.</summary>
     public static readonly string[] Statements =
@@ -89,6 +101,19 @@ public static class BillingSchema
         "IF COL_LENGTH('Organizations','AgentRestricted') IS NULL ALTER TABLE Organizations ADD AgentRestricted BIT NOT NULL DEFAULT 0;",
         "IF COL_LENGTH('Organizations','AgentRestrictedAt') IS NULL ALTER TABLE Organizations ADD AgentRestrictedAt DATETIME2 NULL;",
         "IF COL_LENGTH('Organizations','AgentRestrictedReason') IS NULL ALTER TABLE Organizations ADD AgentRestrictedReason NVARCHAR(500) NULL;",
+
+        // -------------------------------------------------------------------
+        // A free trial the operator grants, for as many days as they choose. Until TrialEndsAt the
+        // agent answers with no plan and no payment; past it, it stops — the same refusal an
+        // unpaid account gets, worded for a trial that has run out.
+        //
+        // It sits on the organization rather than the subscription because a trial is given before
+        // there is anything to bill: an organization on trial has no plan, and often no
+        // subscription row at all. TrialStartedAt is kept so the console can say how long the trial
+        // was and when it began, rather than only when it stops.
+        // -------------------------------------------------------------------
+        "IF COL_LENGTH('Organizations','TrialStartedAt') IS NULL ALTER TABLE Organizations ADD TrialStartedAt DATETIME2 NULL;",
+        "IF COL_LENGTH('Organizations','TrialEndsAt') IS NULL ALTER TABLE Organizations ADD TrialEndsAt DATETIME2 NULL;",
 
         // -------------------------------------------------------------------
         // The tier catalogue. One row is one thing a customer can be put on; an organization's
@@ -246,6 +271,67 @@ public static class BillingSchema
         IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_OrgPayments_StripeInvoice')
         CREATE UNIQUE INDEX UX_OrgPayments_StripeInvoice ON OrganizationPayments(StripeInvoiceId)
         WHERE StripeInvoiceId IS NOT NULL;
+        """,
+
+        // Refunds and the charge behind a payment. StripePaymentIntentId already existed but was
+        // never written — the invoice id was the only reference kept, which is not enough to trace
+        // a refund or answer a chargeback, because those are raised against the charge.
+        "IF COL_LENGTH('OrganizationPayments','StripeChargeId') IS NULL ALTER TABLE OrganizationPayments ADD StripeChargeId NVARCHAR(100) NULL;",
+        "IF COL_LENGTH('OrganizationPayments','ReceiptUrl') IS NULL ALTER TABLE OrganizationPayments ADD ReceiptUrl NVARCHAR(1000) NULL;",
+        "IF COL_LENGTH('OrganizationPayments','AmountRefunded') IS NULL ALTER TABLE OrganizationPayments ADD AmountRefunded DECIMAL(18,2) NOT NULL DEFAULT 0;",
+        "IF COL_LENGTH('OrganizationPayments','RefundedAt') IS NULL ALTER TABLE OrganizationPayments ADD RefundedAt DATETIME2 NULL;",
+
+        // A refund arrives naming the charge, never the invoice, so this is how one is matched back
+        // to the payment it reverses.
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_OrgPayments_PaymentIntent')
+        CREATE INDEX IX_OrgPayments_PaymentIntent ON OrganizationPayments(StripePaymentIntentId)
+        WHERE StripePaymentIntentId IS NOT NULL;
+        """,
+
+        // -------------------------------------------------------------------
+        // Every attempt to pay, from the moment the customer is sent to Stripe.
+        //
+        // The payment record used to begin at "paid": starting Checkout wrote a log line and
+        // nothing else. So a customer saying "I paid and nothing happened" could not be answered —
+        // there was no record they had ever started, which tier they chose, or which session it
+        // was. The money is safe without this (the webhook, the customer's return, and the
+        // reconciliation sweep are three independent ways it lands), but being safe and being able
+        // to show somebody that it is safe are not the same thing.
+        //
+        // This is the trail: one row per attempt, opened before the customer leaves for Stripe and
+        // closed by whatever happens next — paid, abandoned, or refused.
+        // -------------------------------------------------------------------
+        """
+        IF OBJECT_ID('OrganizationPaymentAttempts') IS NULL
+        CREATE TABLE OrganizationPaymentAttempts (
+            Id INT IDENTITY PRIMARY KEY,
+            OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+            -- Unique: the same Checkout session must never open two attempts, however many
+            -- redeliveries or page reloads report it.
+            StripeSessionId NVARCHAR(200) NOT NULL UNIQUE,
+            PlanId INT NULL,
+            PlanName NVARCHAR(100) NOT NULL DEFAULT '',
+            Amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+            Currency NVARCHAR(10) NOT NULL DEFAULT 'USD',
+            -- Started | Paid | Abandoned | Failed
+            Status NVARCHAR(20) NOT NULL DEFAULT 'Started',
+            StartedByUserId INT NULL,
+            StartedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            SettledAt DATETIME2 NULL,
+            -- What Stripe handed back, kept so a payment can be traced end to end without
+            -- reaching for the Stripe dashboard.
+            StripeSubscriptionId NVARCHAR(100) NULL,
+            StripeInvoiceId NVARCHAR(100) NULL,
+            StripePaymentIntentId NVARCHAR(100) NULL,
+            Outcome NVARCHAR(500) NULL
+        );
+        """,
+
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_OrgPaymentAttempts_Org_Started')
+        CREATE INDEX IX_OrgPaymentAttempts_Org_Started
+        ON OrganizationPaymentAttempts(OrganizationId, StartedAt DESC) INCLUDE (Status);
         """,
 
         // -------------------------------------------------------------------

@@ -23,6 +23,21 @@ public class OrganizationRow
     public DateTime? AgentRestrictedAt { get; set; }
     public string? AgentRestrictedReason { get; set; }
 
+    /// <summary>The free trial granted from this console: while it runs the agent answers with no
+    /// plan and no payment, and once it lapses the agent stops.</summary>
+    public DateTime? TrialStartedAt { get; set; }
+    public DateTime? TrialEndsAt { get; set; }
+
+    public bool IsOnTrial => TrialEndsAt > DateTime.UtcNow;
+    /// <summary>Given a trial, and it has run out.</summary>
+    public bool TrialExpired => TrialEndsAt is not null && !IsOnTrial;
+    /// <summary>Rounded up, so the last part-day still counts as one.</summary>
+    public int TrialDaysRemaining =>
+        IsOnTrial ? (int)Math.Ceiling((TrialEndsAt!.Value - DateTime.UtcNow).TotalDays) : 0;
+    /// <summary>How long the trial was granted for, as the operator chose it.</summary>
+    public int TrialLengthDays => TrialStartedAt is null || TrialEndsAt is null
+        ? 0 : (int)Math.Round((TrialEndsAt.Value - TrialStartedAt.Value).TotalDays);
+
     public int UserCount { get; set; }
     public int CustomerCount { get; set; }
     public int AppointmentCount { get; set; }
@@ -81,9 +96,12 @@ public class OrganizationRow
 
     public DateTime? PaidThrough => CurrentPeriodEnd?.AddDays(GraceDays ?? 0);
 
+    /// <summary>A running trial is reported wherever the account is not otherwise paid up: it is
+    /// why nothing is owed, and why the agent is answering an account that has never paid.</summary>
     public BillingState BillingState =>
-        !HasSubscription ? BillingState.NotConfigured
+        !HasSubscription ? (IsOnTrial ? BillingState.Trial : BillingState.NotConfigured)
         : DateTime.UtcNow <= CurrentPeriodEnd!.Value ? BillingState.Paid
+        : IsOnTrial ? BillingState.Trial
         : DateTime.UtcNow <= PaidThrough!.Value ? BillingState.DueSoon
         : BillingState.Overdue;
 

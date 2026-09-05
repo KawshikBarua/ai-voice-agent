@@ -126,6 +126,20 @@ public class OrganizationsController : PlatformControllerBase
         return RedirectToAction(nameof(Details), new { id });
     }
 
+    /// <summary>Gives this organization free days on the agent, or (0 days) ends the trial early.
+    /// Once the trial lapses the agent stops taking calls until a plan is paid for.</summary>
+    [HttpPost("{id:int}/trial")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetTrial(int id, int days)
+    {
+        var (ok, message) = await _api.SetTrialAsync(id, days);
+        if (ok) _logger.LogInformation("Super admin {UserId} set a {Days}-day trial on organization {OrgId}.",
+            CurrentUserId, days, id);
+
+        Report(ok, message);
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
     /// <summary>Stops this organization's agent taking calls. Narrower than disabling the account:
     /// staff can still sign in, see why, and settle the bill.</summary>
     [HttpPost("{id:int}/restrict-agent")]

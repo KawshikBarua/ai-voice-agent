@@ -26,6 +26,11 @@ public static class DbInitializer
         foreach (var statement in Shared.BillingSchema.Statements)
             db.Execute(statement);
 
+        // Runs last because it reaches across both halves of the schema: call rows created above,
+        // closed billing periods created by BillingSchema.
+        foreach (var statement in CallMeteringStatements)
+            db.Execute(statement);
+
         var orgCount = db.ExecuteScalar<int>("SELECT COUNT(*) FROM Organizations");
         if (orgCount == 0)
         {
@@ -137,7 +142,58 @@ public static class DbInitializer
              '+1 555 010 0199', 1, '[""book_appointment"",""cancel_appointment"",""reschedule_appointment"",""quote_price"",""transfer_call""]');",
             new { orgId });
 
+        SeedDemoPlan(db, orgId);
         SeedHistory(db, orgId);
+
+        // The demo history is a year of calls, and the subscription above starts today. Left
+        // unmarked they would all count as unbilled, so the dashboard would show a year of talk
+        // time as "this period" and the first period close would bill the lot as overage. They are
+        // stamped as already accounted for, which is what they are: history, not a debt.
+        db.Execute(@"
+            UPDATE cl SET cl.BilledPeriodEnd = s.CurrentPeriodStart
+            FROM CallLogs cl
+            JOIN OrganizationSubscriptions s ON s.OrganizationId = cl.OrganizationId
+            WHERE cl.OrganizationId = @orgId
+              AND cl.BilledPeriodEnd IS NULL
+              AND cl.StartedAt < s.CurrentPeriodStart;",
+            new { orgId });
+    }
+
+    /// <summary>
+    /// A tier in the catalogue and the demo organization sitting on it.
+    ///
+    /// Seeded because an organization on no plan is no longer answered: the agent is only entitled
+    /// to take calls for a customer who is on something (see <c>ICallEntitlementService</c>). Every
+    /// other part of this demo is a working example, and a demo whose phone does not ring would be
+    /// a puzzle rather than a starting point.
+    ///
+    /// It carries no Stripe price, which is right — nothing here should be collectable for. An
+    /// operator publishes real tiers in the console; this one exists so a fresh install works.
+    /// </summary>
+    private static void SeedDemoPlan(SqlConnection db, int orgId)
+    {
+        db.Execute(@"
+            DECLARE @planId INT = (SELECT TOP 1 Id FROM PricingPlans WHERE Name = 'Starter');
+
+            IF @planId IS NULL
+            BEGIN
+                INSERT INTO PricingPlans
+                    (Name, Description, Currency, Amount, BillingCycle, IncludedMinutes,
+                     OverageRatePerMinute, SortOrder, IsActive)
+                VALUES ('Starter', 'Demo tier — 500 AI minutes a month.', 'USD', 49.00, 'Monthly',
+                        500, 0.1200, 1, 1);
+                SET @planId = SCOPE_IDENTITY();
+            END
+
+            IF NOT EXISTS (SELECT 1 FROM OrganizationSubscriptions WHERE OrganizationId = @orgId)
+            INSERT INTO OrganizationSubscriptions
+                (OrganizationId, PlanId, PlanName, BillingCycle, Amount, Currency, StartedAt,
+                 CurrentPeriodStart, CurrentPeriodEnd, IncludedMinutes, OverageRatePerMinute)
+            SELECT @orgId, @planId, p.Name, p.BillingCycle, p.Amount, p.Currency, GETUTCDATE(),
+                   GETUTCDATE(), DATEADD(month, 1, GETUTCDATE()), p.IncludedMinutes,
+                   p.OverageRatePerMinute
+            FROM PricingPlans p WHERE p.Id = @planId;",
+            new { orgId });
     }
 
     /// <summary>Back-fills a year of calls and completed appointments so the dashboard's trends,
@@ -205,6 +261,99 @@ public static class DbInitializer
             new { orgId });
     }
 
+    /// <summary>
+    /// What makes a call's minutes countable exactly once.
+    ///
+    /// Separate statements rather than one batch, for the usual reason: a column added by an
+    /// earlier statement is not visible to a later one inside the same batch. Separate from
+    /// <see cref="Schema"/> as well, because the backfill reads the closed billing periods that
+    /// <see cref="Shared.BillingSchema"/> creates.
+    /// </summary>
+    private static readonly string[] CallMeteringStatements =
+    [
+        // Any duplicate already on record was created by the race the index below closes, so it is
+        // one call that has been counted twice. The first row of each set is kept — it carries the
+        // original StartedAt and whatever the intent worker has since attached to it — and the rest
+        // are soft-deleted, which takes them out of every minute total from here on. Periods
+        // already closed keep the figures they were closed with; those are historical facts, and
+        // re-opening them is not this migration's business.
+        //
+        // It has to run before the index is built, or the CREATE would fail on the very data it
+        // exists to prevent and take startup down with it.
+        """
+        UPDATE cl SET IsDeleted = 1
+        FROM CallLogs cl
+        JOIN (
+            SELECT Id, ROW_NUMBER() OVER (
+                       PARTITION BY OrganizationId, RetellCallId ORDER BY Id) AS Seq
+            FROM CallLogs
+            WHERE RetellCallId IS NOT NULL AND IsDeleted = 0
+        ) ranked ON ranked.Id = cl.Id
+        WHERE ranked.Seq > 1;
+        """,
+
+        // Retell retries a webhook until it is acknowledged, and two deliveries of the same
+        // call_ended can be in flight at once. Deduplication was a read-then-insert with nothing
+        // behind it, so both could pass the existence check and both insert — and the customer was
+        // billed for the call twice. This is the guard the Stripe payment path already has
+        // (UX_OrgPayments_StripeInvoice); it was simply never carried across to calls.
+        //
+        // Filtered to match what the application calls a duplicate exactly: RetellCallId is null
+        // for anything Retell did not create, and a soft-deleted row must not block the same call
+        // being recorded again. Keyed on the organization too — the id is only unique within one.
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_CallLogs_Org_RetellCallId')
+        CREATE UNIQUE INDEX UX_CallLogs_Org_RetellCallId
+        ON CallLogs (OrganizationId, RetellCallId)
+        WHERE RetellCallId IS NOT NULL AND IsDeleted = 0;
+        """,
+
+        // The billing period a call's minutes were counted into, named by that period's end.
+        //
+        // Minutes used to be totalled purely by StartedAt falling inside the window being closed,
+        // which silently lost any row that arrived after that close had run: a call still in
+        // progress at a period boundary, or a batch backfilled from Retell long afterwards. The
+        // unique index on (OrganizationId, PeriodEnd) then made every re-close a no-op, so those
+        // minutes were never billed to anybody.
+        //
+        // Stamping the row makes "counted" a property of the call rather than of the clock. NULL
+        // means not yet counted, so a late arrival is swept into the next close instead of being
+        // lost. A closed period stays a historical fact — nothing is ever re-opened.
+        //
+        // The backfill is inside the same IF, so it runs exactly once, on the deployment that adds
+        // the column: every call that falls within a period already closed is marked as counted by
+        // that period. Without it the first close after this ships would sweep up each customer's
+        // entire call history and bill them for all of it. Anything after the last closed period
+        // is left NULL, which is exactly right — it is in the window still running.
+        """
+        IF COL_LENGTH('CallLogs','BilledPeriodEnd') IS NULL
+        BEGIN
+            ALTER TABLE CallLogs ADD BilledPeriodEnd DATETIME2 NULL;
+
+            IF OBJECT_ID('OrganizationUsagePeriods') IS NOT NULL
+            EXEC('
+                UPDATE cl SET cl.BilledPeriodEnd = already.PeriodEnd
+                FROM CallLogs cl
+                CROSS APPLY (
+                    SELECT MIN(up.PeriodEnd) AS PeriodEnd
+                    FROM OrganizationUsagePeriods up
+                    WHERE up.OrganizationId = cl.OrganizationId
+                      AND up.PeriodEnd > cl.StartedAt
+                ) already
+                WHERE cl.BilledPeriodEnd IS NULL AND already.PeriodEnd IS NOT NULL;');
+        END
+        """,
+
+        // The close claims rows with this; the live usage figure counts them. Both ask the same
+        // question — which of this tenant's calls have not been billed yet — so both want this index.
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CallLogs_Org_Unbilled')
+        CREATE INDEX IX_CallLogs_Org_Unbilled
+        ON CallLogs (OrganizationId, BilledPeriodEnd, StartedAt)
+        INCLUDE (DurationSeconds, IsDeleted);
+        """,
+    ];
+
     private const string Schema = @"
 IF OBJECT_ID('Organizations') IS NULL
 CREATE TABLE Organizations (
@@ -262,6 +411,11 @@ CREATE TABLE RefreshTokens (
     Revoked BIT NOT NULL DEFAULT 0,
     CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE()
 );
+
+-- Sessions that predate the Keep me signed in choice were all persistent, so the default keeps
+-- them signed in rather than ending them at the next browser restart.
+IF COL_LENGTH('RefreshTokens','Persistent') IS NULL
+ALTER TABLE RefreshTokens ADD Persistent BIT NOT NULL DEFAULT 1;
 
 IF OBJECT_ID('Customers') IS NULL
 CREATE TABLE Customers (
@@ -336,6 +490,49 @@ CREATE INDEX IX_Appointments_Org_Start ON Appointments(OrganizationId, StartAt) 
 IF COL_LENGTH('Appointments','ServiceAddress') IS NULL ALTER TABLE Appointments ADD ServiceAddress NVARCHAR(500) NULL;
 IF COL_LENGTH('Appointments','IsEmergency') IS NULL ALTER TABLE Appointments ADD IsEmergency BIT NOT NULL DEFAULT 0;
 
+-- Who is handling the appointment (see the Employees table below). Nullable: bookings taken
+-- before the roster existed keep no assignment, and the availability rules account for them.
+IF COL_LENGTH('Appointments','EmployeeId') IS NULL ALTER TABLE Appointments ADD EmployeeId INT NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Appointments_Org_Employee_Start')
+CREATE INDEX IX_Appointments_Org_Employee_Start ON Appointments(OrganizationId, EmployeeId, StartAt) INCLUDE (EndAt, Status, IsDeleted);
+-- ---------------------------------------------------------------- team roster
+-- The people a caller can actually be booked with. Capacity for a slot is how many of them
+-- are on duty and free at that moment, which is what allows two 12:00 appointments when two
+-- employees are working and refuses both when neither is. An organization with no rows here
+-- falls back to Organizations.MaxConcurrentAppointments, so this is additive.
+IF OBJECT_ID('Employees') IS NULL
+CREATE TABLE Employees (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    Name NVARCHAR(200) NOT NULL,
+    JobTitle NVARCHAR(150) NULL,
+    Phone NVARCHAR(50) NULL,
+    Email NVARCHAR(256) NULL,
+    WorkingHoursJson NVARCHAR(MAX) NULL,               -- same shape as Organizations.BusinessHoursJson; NULL = follow the business hours
+    IsActive BIT NOT NULL DEFAULT 1,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    ModifiedAt DATETIME2 NULL,
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Employees_Org')
+CREATE INDEX IX_Employees_Org ON Employees(OrganizationId) INCLUDE (IsActive);
+
+-- Days an employee is away. Inclusive of both ends, local calendar dates.
+IF OBJECT_ID('EmployeeTimeOff') IS NULL
+CREATE TABLE EmployeeTimeOff (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    EmployeeId INT NOT NULL REFERENCES Employees(Id),
+    StartDate DATE NOT NULL,
+    EndDate DATE NOT NULL,
+    Reason NVARCHAR(200) NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_EmployeeTimeOff_Org_Employee')
+CREATE INDEX IX_EmployeeTimeOff_Org_Employee ON EmployeeTimeOff(OrganizationId, EmployeeId, StartDate);
+
+
 IF OBJECT_ID('CallLogs') IS NULL
 CREATE TABLE CallLogs (
     Id INT IDENTITY PRIMARY KEY,
@@ -396,6 +593,52 @@ CREATE TABLE Holidays (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Holidays_Org_Date')
 CREATE UNIQUE INDEX IX_Holidays_Org_Date ON Holidays(OrganizationId, [Date]) WHERE IsDeleted = 0;
 
+
+-- ------------------------------------------------------- notifications
+-- Browsers that asked to be told when the diary changes. Web Push, so a booking taken at 2am
+-- reaches the owner's phone with the dashboard shut and without costing anything to send.
+IF OBJECT_ID('PushDevices') IS NULL
+CREATE TABLE PushDevices (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    UserId INT NOT NULL REFERENCES Users(Id),
+    Endpoint NVARCHAR(500) NOT NULL,
+    P256dh NVARCHAR(200) NOT NULL,
+    Auth NVARCHAR(100) NOT NULL,
+    Label NVARCHAR(200) NULL,
+    UrgentOnly BIT NOT NULL DEFAULT 0,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    LastNotifiedAt DATETIME2 NULL,
+    FailureCount INT NOT NULL DEFAULT 0,
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_PushDevices_Endpoint')
+CREATE UNIQUE INDEX IX_PushDevices_Endpoint ON PushDevices(Endpoint) WHERE IsDeleted = 0;
+
+-- Things that happened unattended, and whether anyone has since looked. Urgent rows are chased
+-- (re-notified) until AcknowledgedAt is set, which is what stops a missed emergency staying missed.
+IF OBJECT_ID('Alerts') IS NULL
+CREATE TABLE Alerts (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    Kind NVARCHAR(40) NOT NULL,
+    Severity NVARCHAR(20) NOT NULL DEFAULT 'Info',
+    Title NVARCHAR(200) NOT NULL,
+    Body NVARCHAR(500) NOT NULL,
+    Url NVARCHAR(300) NULL,
+    AppointmentId INT NULL,
+    AcknowledgedAt DATETIME2 NULL,
+    AcknowledgedByUserId INT NULL,
+    NotifiedCount INT NOT NULL DEFAULT 0,
+    LastNotifiedAt DATETIME2 NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+);
+-- The escalation worker's query: unacknowledged urgent rows, oldest first.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Alerts_Pending')
+CREATE INDEX IX_Alerts_Pending ON Alerts(AcknowledgedAt, Severity, LastNotifiedAt) INCLUDE (OrganizationId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Alerts_Org_Created')
+CREATE INDEX IX_Alerts_Org_Created ON Alerts(OrganizationId, CreatedAt DESC);
+
 IF OBJECT_ID('KnowledgeBase') IS NULL
 CREATE TABLE KnowledgeBase (
     Id INT IDENTITY PRIMARY KEY,
@@ -431,6 +674,11 @@ IF COL_LENGTH('AgentConfig','RetellLlmId') IS NULL ALTER TABLE AgentConfig ADD R
 IF COL_LENGTH('AgentConfig','RetellKnowledgeBaseId') IS NULL ALTER TABLE AgentConfig ADD RetellKnowledgeBaseId NVARCHAR(100) NULL;
 IF COL_LENGTH('AgentConfig','RetellPhoneNumber') IS NULL ALTER TABLE AgentConfig ADD RetellPhoneNumber NVARCHAR(50) NULL;
 IF COL_LENGTH('AgentConfig','LastSyncedAt') IS NULL ALTER TABLE AgentConfig ADD LastSyncedAt DATETIME2 NULL;
+
+-- Retell ids a disconnect detached but did not delete, so the next connect can clean them up.
+IF COL_LENGTH('AgentConfig','DetachedRetellAgentId') IS NULL ALTER TABLE AgentConfig ADD DetachedRetellAgentId NVARCHAR(100) NULL;
+IF COL_LENGTH('AgentConfig','DetachedRetellLlmId') IS NULL ALTER TABLE AgentConfig ADD DetachedRetellLlmId NVARCHAR(100) NULL;
+IF COL_LENGTH('AgentConfig','DetachedRetellKnowledgeBaseId') IS NULL ALTER TABLE AgentConfig ADD DetachedRetellKnowledgeBaseId NVARCHAR(100) NULL;
 
 IF OBJECT_ID('TimelineEvents') IS NULL
 CREATE TABLE TimelineEvents (

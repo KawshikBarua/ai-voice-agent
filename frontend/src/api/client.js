@@ -53,6 +53,15 @@ async function openResponse(response) {
 let refreshing = null
 
 /**
+ * Endpoints that answer 401 as their own verdict rather than "your session lapsed". Signing in
+ * with the wrong password is the obvious one: retrying it through a refresh cannot help, and the
+ * refresh's own 401 would replace "Invalid email or password" with a message about a token the
+ * user never had.
+ */
+const ANONYMOUS_AUTH = ['/auth/login', '/auth/register', '/auth/refresh']
+const isAnonymousAuth = (url = '') => ANONYMOUS_AUTH.some((p) => url.startsWith(p))
+
+/**
  * Rotates the session using the httpOnly cookie. No token is passed from JavaScript.
  *
  * Single-flight across the whole app: refresh ROTATES the token, and the server treats a
@@ -85,7 +94,8 @@ api.interceptors.response.use(
       return api(original)
     }
 
-    if (error.response?.status === 401 && original && !original._retried && !original._isRefresh) {
+    if (error.response?.status === 401 && original && !original._retried &&
+        !original._isRefresh && !isAnonymousAuth(original.url ?? '')) {
       original._retried = true
       try {
         const { data } = await requestRefresh()

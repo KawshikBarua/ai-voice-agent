@@ -67,12 +67,17 @@ public class RetellController : PlatformControllerBase
     }
 
     /// <summary>First-time connect. Refused when an agent already exists so a second agent can
-    /// never be created for the same tenant by double-submitting the form.</summary>
+    /// never be created for the same tenant by double-submitting the form. Builds the agent and
+    /// knowledge base from scratch, deleting anything this organization left on the Retell account
+    /// when it was last disconnected — otherwise every reconnect strands another pair there.</summary>
     [HttpPost("{orgId:int}/connect")]
     [ValidateAntiForgeryToken]
     public Task<IActionResult> Connect(int orgId, string? returnTo) =>
         SyncAsync(orgId, returnTo, mustAlreadyBeConnected: false);
 
+    /// <summary>Updates the agent, LLM and knowledge base this organization already has. Nothing
+    /// is deleted and nothing new is created, so re-syncing as often as you like costs the Retell
+    /// account nothing.</summary>
     [HttpPost("{orgId:int}/resync")]
     [ValidateAntiForgeryToken]
     public Task<IActionResult> Resync(int orgId, string? returnTo) =>
@@ -96,8 +101,9 @@ public class RetellController : PlatformControllerBase
         {
             _logger.LogInformation("Super admin {UserId} disconnected Retell for organization {OrgId}.",
                 CurrentUserId, orgId);
-            Notify($"{organization.Name} disconnected from Retell. The agent still exists on the Retell " +
-                   "account and can be removed there if it is no longer wanted.");
+            Notify($"{organization.Name} disconnected from Retell. Its agent and knowledge base still " +
+                   "exist on the Retell account; connecting again deletes them and builds a fresh pair, " +
+                   "so nothing is left stranded there.");
         }
         else
         {
@@ -126,7 +132,9 @@ public class RetellController : PlatformControllerBase
             return Back(orgId, returnTo);
         }
 
-        var outcome = await _api.SyncAgentAsync(orgId);
+        // Connect rebuilds from scratch, Re-sync updates what is there. Both carry the single
+        // orgId this form was submitted for — no other organization is read, synced or touched.
+        var outcome = await _api.SyncAgentAsync(orgId, fresh: !mustAlreadyBeConnected);
         if (!outcome.Success)
         {
             Warn($"{organization.Name}: {outcome.Message ?? "Retell sync failed."}");
@@ -138,10 +146,16 @@ public class RetellController : PlatformControllerBase
 
         var verb = mustAlreadyBeConnected ? "re-synced" : "connected";
         var message = $"{organization.Name} {verb} successfully (agent {outcome.AgentId}).";
-        if (!string.IsNullOrWhiteSpace(outcome.PhoneWarning))
+
+        // Leftovers first: a phone number that did not attach is an inconvenience, but an old agent
+        // that would not delete means this organization now has two on the account — which is the
+        // thing the operator came here to avoid and the only one they must act on.
+        var warning = new[] { outcome.CleanupWarning, outcome.PhoneWarning }
+            .FirstOrDefault(w => !string.IsNullOrWhiteSpace(w));
+        if (warning is not null)
         {
-            // The agent is live either way — a phone problem is a warning, not a failed sync.
-            Warn($"{message} {outcome.PhoneWarning}");
+            // The agent is live either way — neither problem is a failed sync.
+            Warn($"{message} {warning}");
             return Back(orgId, returnTo);
         }
 

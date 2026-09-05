@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { queryClient } from '../lib/queryClient'
 import { resetSession } from '../api/crypto'
 
@@ -24,6 +24,40 @@ const identityOf = (user) => (user ? `${user.organizationId}:${user.id}` : null)
 const clearTenantState = () => {
   queryClient.clear()
   resetSession()
+}
+
+/**
+ * Where the display identity is kept, following the "Keep me signed in" tick.
+ *
+ * The tick's real effect is on the refresh cookie (the server makes it a session cookie when it is
+ * clear), and this mirrors it: an un-remembered sign-in must not leave a name and email in
+ * localStorage for the next person to open the browser on a shared machine. sessionStorage is
+ * emptied by the browser at the same moment the session cookie is.
+ *
+ * Reads try both, because the flag can change between visits and the value has to be found
+ * wherever the last sign-in put it. Writes clear the other one for the same reason.
+ */
+const REMEMBER_KEY = 'ai-receptionist-remember'
+
+const safely = (fn, fallback = null) => { try { return fn() } catch { return fallback } }
+
+export const setRemember = (remember) =>
+  safely(() => localStorage.setItem(REMEMBER_KEY, remember ? '1' : '0'))
+
+const rememberChosen = () => safely(() => localStorage.getItem(REMEMBER_KEY) !== '0', true)
+
+const identityStorage = {
+  getItem: (name) =>
+    safely(() => localStorage.getItem(name) ?? sessionStorage.getItem(name)),
+  setItem: (name, value) => safely(() => {
+    const [into, outOf] = rememberChosen() ? [localStorage, sessionStorage] : [sessionStorage, localStorage]
+    into.setItem(name, value)
+    outOf.removeItem(name)
+  }),
+  removeItem: (name) => safely(() => {
+    localStorage.removeItem(name)
+    sessionStorage.removeItem(name)
+  }),
 }
 
 export const useAuthStore = create(
@@ -52,6 +86,7 @@ export const useAuthStore = create(
     }),
     {
       name: 'ai-receptionist-auth',
+      storage: createJSONStorage(() => identityStorage),
       partialize: (state) => ({ user: state.user }),
     },
   ),

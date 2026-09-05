@@ -9,7 +9,11 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace AiReceptionist.Api.Controllers;
 
-public record LoginRequest(string Email, string Password);
+/// <summary><paramref name="RememberMe"/> is the "Keep me signed in" tick. False issues the refresh
+/// cookie as a session cookie, so closing the browser ends the session; true keeps it for
+/// <see cref="ITokenService.RefreshTokenDays"/>. Defaults to false for callers that omit it —
+/// the safer of the two on a shared machine.</summary>
+public record LoginRequest(string Email, string Password, bool RememberMe = false);
 
 /// <summary>Body is optional — the refresh token normally travels in the httpOnly cookie.
 /// Retained so existing callers that post the token explicitly keep working.</summary>
@@ -55,8 +59,15 @@ public class AuthController : ControllerBase
         _env = env;
     }
 
-    /// <summary>Issues a rotated refresh token as an httpOnly cookie and stores its hash.</summary>
-    private async Task<string> IssueRefreshCookieAsync(int userId)
+    /// <summary>
+    /// Issues a rotated refresh token as an httpOnly cookie and stores its hash.
+    ///
+    /// <paramref name="persistent"/> is the "Keep me signed in" choice. It governs the cookie only:
+    /// without an Expires the browser drops it when it closes, which is what ends the session on a
+    /// shared machine. The stored token still expires on its own schedule either way, so a cookie
+    /// that outlives its row is refused rather than honoured.
+    /// </summary>
+    private async Task<string> IssueRefreshCookieAsync(int userId, bool persistent)
     {
         var refresh = _tokens.CreateRefreshToken();
         var expires = DateTime.UtcNow.AddDays(_tokens.RefreshTokenDays);
@@ -65,6 +76,7 @@ public class AuthController : ControllerBase
             UserId = userId,
             Token = refresh,
             ExpiresAt = expires,
+            Persistent = persistent,
         });
 
         Response.Cookies.Append(RefreshCookieName, refresh, new CookieOptions
@@ -73,7 +85,8 @@ public class AuthController : ControllerBase
             Secure = !_env.IsDevelopment(),         // plain http is only tolerated locally
             SameSite = SameSiteMode.Strict,         // not sent on cross-site requests (CSRF)
             Path = RefreshCookiePath,
-            Expires = expires,
+            // Omitted entirely when not persistent — a session cookie, gone with the browser.
+            Expires = persistent ? expires : null,
         });
         return refresh;
     }
@@ -118,7 +131,7 @@ public class AuthController : ControllerBase
         }
 
         var access = _tokens.CreateAccessToken(user);
-        await IssueRefreshCookieAsync(user.Id);
+        await IssueRefreshCookieAsync(user.Id, request.RememberMe);
         await _audit.LogAsync(user.OrganizationId, user.Id, "Login", ip: ClientIp());
 
         return Ok(ApiResponse<AuthResult>.Ok(new AuthResult(access, new
@@ -160,7 +173,9 @@ public class AuthController : ControllerBase
             $"Business={org.Name}", ClientIp());
 
         var access = _tokens.CreateAccessToken(user);
-        await IssueRefreshCookieAsync(user.Id);
+        // Somebody setting their business up is on their own machine and has more to do than sign
+        // in again, so sign-up keeps them signed in. They can end it from the login page next time.
+        await IssueRefreshCookieAsync(user.Id, persistent: true);
 
         return Ok(ApiResponse<AuthResult>.Ok(new AuthResult(access, new
         {
@@ -219,7 +234,9 @@ public class AuthController : ControllerBase
 
         await _auth.RevokeRefreshTokenAsync(presented);
         var access = _tokens.CreateAccessToken(user);
-        await IssueRefreshCookieAsync(user.Id);
+        // The rotation inherits the original choice: a session the user did not ask to keep must
+        // not become a persistent one just because the access token was renewed once.
+        await IssueRefreshCookieAsync(user.Id, stored.Persistent);
 
         return Ok(ApiResponse<AuthResult>.Ok(new AuthResult(access, new
         {

@@ -23,19 +23,27 @@ public class AiToolsController : ControllerBase
     private readonly IAiToolsRepository _ai;
     private readonly ICustomerRepository _customers;
     private readonly IAppointmentRepository _appointments;
+    private readonly IEmployeeRepository _employees;
+    private readonly INotificationService _notifications;
     private readonly ISettingsRepository _settings;
     private readonly IHolidayRepository _holidays;
     private readonly IRetellConnectionRepository _connection;
+    private readonly ICallEntitlementService _entitlement;
     private readonly IHostEnvironment _env;
     private readonly ILogger<AiToolsController> _logger;
 
     public AiToolsController(IAiToolsRepository ai, ICustomerRepository customers,
-        IAppointmentRepository appointments, ISettingsRepository settings, IHolidayRepository holidays,
-        IRetellConnectionRepository connection, IHostEnvironment env, ILogger<AiToolsController> logger)
+        IAppointmentRepository appointments, IEmployeeRepository employees,
+        INotificationService notifications, ISettingsRepository settings, IHolidayRepository holidays,
+        IRetellConnectionRepository connection, ICallEntitlementService entitlement,
+        IHostEnvironment env, ILogger<AiToolsController> logger)
     {
+        _entitlement = entitlement;
         _ai = ai;
         _customers = customers;
         _appointments = appointments;
+        _employees = employees;
+        _notifications = notifications;
         _settings = settings;
         _holidays = holidays;
         _connection = connection;
@@ -70,21 +78,24 @@ public class AiToolsController : ControllerBase
         if (org is null)
             return (null, NotFound(new { result = "Unknown organization." }));
 
-        // A disabled tenant (unpaid, or suspended from the super admin console) must not be able
-        // to book, cancel or read customer data through its agent. The refusal is phrased for the
-        // agent to say out loud, because this reply is spoken to a live caller.
-        // AgentRestricted is the narrower of the two: the account is fine and staff can still sign
-        // in, but the operator has stopped the agent — typically over an unpaid or run-away bill.
-        // Either way the agent must not book, cancel or read customer data.
-        if (!org.IsActive || org.AgentRestricted)
+        // An organization that is not entitled to be answered must not be able to book, cancel or
+        // read customer data through its agent. That covers a suspended account and one the
+        // operator has stopped by hand, one that is on no plan at all or has stopped paying, and one
+        // whose free trial has run out — see ICallEntitlementService for why they are one decision.
+        //
+        // This is the second line, not the first: the inbound webhook refuses the call before it is
+        // ever set up. It stays because that refusal depends on Retell honouring it, and a call
+        // that is somehow already in progress must still not be able to touch the data.
+        //
+        // The refusal is phrased for the agent to say out loud, because this reply is spoken to a
+        // live caller — who is a member of the public and has no business hearing about a bill.
+        var entitlement = await _entitlement.EvaluateAsync(orgId);
+        if (!entitlement.IsAllowed)
         {
-            _logger.LogWarning("Refused AI tool call for {State} organization {OrgId} on {Path}.",
-                org.IsActive ? "restricted" : "disabled", orgId, Request.Path);
-            return (null, StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                result = "This service is temporarily unavailable. Please apologise, tell the caller " +
-                         "someone will follow up, and end the call.",
-            }));
+            _logger.LogWarning("Refused AI tool call for organization {OrgId} on {Path}: {Reason}.",
+                orgId, Request.Path, entitlement.Explain());
+            return (null, StatusCode(StatusCodes.Status403Forbidden,
+                new { result = CallEntitlement.SpokenRefusal }));
         }
 
         var root = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw).RootElement;
@@ -132,6 +143,34 @@ public class AiToolsController : ControllerBase
             ? (null, $"The business is closed on {local:dddd}s. Offer another day.")
             : (window, null);
     }
+
+    /// <summary>
+    /// Announces something the AI did while nobody was watching, and never lets that get in the
+    /// way of the call.
+    ///
+    /// The caller is on the phone at this point and the appointment is already committed. If the
+    /// push service is unreachable, or notifications were never set up, the right outcome is a log
+    /// line and a booking that still stands — not an apology to someone whose booking actually
+    /// worked. The alert row is written first regardless, so the dashboard queue is complete even
+    /// when delivery is not.
+    /// </summary>
+    private async Task AnnounceAsync(Alert alert)
+    {
+        try
+        {
+            await _notifications.RaiseAsync(alert);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not raise {Kind} alert for organization {OrgId}.",
+                alert.Kind, alert.OrganizationId);
+        }
+    }
+
+    /// <summary>Something happening today cannot wait for the next time somebody signs in, so it
+    /// is chased like an emergency is. Anything further out is sent once and left alone.</summary>
+    private static string SeverityFor(DateTime startLocal, DateTime nowLocal) =>
+        startLocal.Date == nowLocal.Date ? AlertSeverity.Urgent : AlertSeverity.Info;
 
     /// <summary>Loose name check so callers can't cancel strangers' appointments with just a
     /// phone number: at least one token (≥3 chars) of the provided name must appear in the
@@ -193,7 +232,23 @@ public class AiToolsController : ControllerBase
         var dayStartUtc = TenantTime.ToUtc(date.Date + window.Start, ctx.Tz);
         var dayEndUtc = TenantTime.ToUtc(date.Date + window.End, ctx.Tz);
         var taken = (await _ai.AppointmentsBetweenAsync(orgId, dayStartUtc, dayEndUtc)).ToList();
+
+        // How many appointments may run at once is a property of the slot, not of the business:
+        // it is however many employees are on duty at that moment and not already with someone.
+        // Two people working means two callers can both have noon; nobody working means neither
+        // can. Organizations with no roster keep the single business-wide capacity.
+        var roster = await _employees.LoadRosterAsync(orgId, date.Date, date.Date);
         var capacity = Math.Max(1, ctx.Org.MaxConcurrentAppointments);
+
+        // Nobody in at all is a different answer from "we are full", and the more useful one:
+        // there is no point walking the caller through other times on a day with no staff.
+        if (roster.Enabled && roster.OnDutyOnDate(date).Count == 0)
+            return Speak(new
+            {
+                date = date.ToString("yyyy-MM-dd"),
+                result = $"No one is working on {date:dddd d MMMM yyyy}, so nothing can be booked that day. " +
+                         "Tell the caller and offer another day.",
+            }, ctx);
 
         var open = new List<string>();
         for (var local = date.Date + window.Start; local.AddMinutes(duration) <= date.Date + window.End; local = local.AddMinutes(30))
@@ -201,8 +256,12 @@ public class AiToolsController : ControllerBase
             if (date.Date == nowLocal.Date && local <= nowLocal) continue; // no past slots today
             var slotStart = TenantTime.ToUtc(local, ctx.Tz);
             var slotEnd = slotStart.AddMinutes(duration);
-            if (taken.Count(a => a.StartAt < slotEnd && a.EndAt > slotStart) < capacity)
-                open.Add(local.ToString("HH:mm"));
+            var overlapping = taken.Where(a => a.StartAt < slotEnd && a.EndAt > slotStart).ToList();
+
+            var free = roster.Enabled
+                ? StaffRoster.FreeCount(roster.OnDuty(local, local.AddMinutes(duration)), overlapping)
+                : capacity - overlapping.Count;
+            if (free > 0) open.Add(local.ToString("HH:mm"));
         }
 
         // The reply is read out by the agent, so it says the day the way a person would and tells it
@@ -334,6 +393,22 @@ public class AiToolsController : ControllerBase
         var startUtc = TenantTime.ToUtc(startLocal, ctx.Tz);
         var endUtc = startUtc.AddMinutes(service.DurationMinutes);
 
+        // Who could take this slot. The database picks which of them actually does, in the same
+        // transaction as the insert, so two calls landing on the last free person cannot both win.
+        var roster = await _employees.LoadRosterAsync(orgId, startLocal.Date, startLocal.Date);
+        SlotAssignment? assignment = null;
+        if (roster.Enabled)
+        {
+            var onDuty = roster.OnDuty(startLocal, startLocal.AddMinutes(service.DurationMinutes));
+            if (onDuty.Count == 0)
+                return Speak(new
+                {
+                    result = $"No one is working at {startLocal:HH:mm} on {startLocal:dddd d MMMM yyyy}, so that " +
+                             "cannot be booked. Use check_availability for that day and offer a time it gives back.",
+                }, ctx);
+            assignment = SlotAssignment.Any(onDuty.Select(e => e.Id));
+        }
+
         var customer = await _customers.FindReturningAsync(orgId, phone, null, name);
         var customerId = customer?.Id ?? await _customers.CreateAsync(new Customer
         {
@@ -341,7 +416,7 @@ public class AiToolsController : ControllerBase
         });
 
         // Atomic capacity-checked insert — safe against concurrent calls booking the same slot.
-        var appointmentId = await _appointments.TryCreateAsync(new Appointment
+        var appointment = new Appointment
         {
             OrganizationId = orgId,
             CustomerId = customerId,
@@ -355,9 +430,14 @@ public class AiToolsController : ControllerBase
             IsEmergency = service.IsEmergency ||
                           string.Equals(Str(ctx.Args, "is_emergency"), "true", StringComparison.OrdinalIgnoreCase),
             Notes = Str(ctx.Args, "notes") is { } n ? $"[AI] {n}" : "[AI] Booked during phone call",
-        });
+        };
+        var appointmentId = await _appointments.TryCreateAsync(appointment, assignment);
         if (appointmentId is null)
             return Speak(new { result = "That time was just taken. Use check_availability to offer alternatives." }, ctx);
+
+        // TryCreateAsync writes back whoever it settled on, so the caller is told who they are
+        // seeing rather than just that they are in the diary.
+        var assignedTo = roster.Employees.FirstOrDefault(e => e.Id == appointment.EmployeeId)?.Name;
 
         await _customers.AddTimelineEventAsync(new TimelineEvent
         {
@@ -366,12 +446,19 @@ public class AiToolsController : ControllerBase
             Notes = $"{service.Name} on {startLocal:yyyy-MM-dd HH:mm}",
         });
 
+        // Nobody is watching the dashboard at 2am. This is the moment the business finds out.
+        appointment.Id = appointmentId.Value;
+        await AnnounceAsync(NotificationService.ForBooking(
+            orgId, appointment, ctx.Org, service.Name, name, startLocal, nowLocal, assignedTo));
+
         return Speak(new
         {
             result = $"Booked: {service.Name} on {SpokenTime(startUtc, ctx.Tz)} for {name}." +
+                     (assignedTo is null ? "" : $" {assignedTo} will be looking after them.") +
                      (string.IsNullOrWhiteSpace(serviceAddress) ? "" : $" Technician will attend {serviceAddress}.") +
                      $" Confirmation number {appointmentId}.",
             appointmentId,
+            staff = assignedTo,
         }, ctx);
     }
 
@@ -391,6 +478,21 @@ public class AiToolsController : ControllerBase
             EventType = "AppointmentCancelled", Source = "AI",
             Notes = $"{appt.ServiceName} on {SpokenTime(appt.StartAt, ctx.Tz)}",
         });
+
+        // A cancellation for later today matters as much as a booking for later today: there is a
+        // gap in the diary now, and somebody may be about to travel to it.
+        var cancelledLocal = TenantTime.ToLocal(appt.StartAt, ctx.Tz);
+        await AnnounceAsync(new Alert
+        {
+            OrganizationId = orgId,
+            Kind = AlertKind.AppointmentCancelled,
+            Severity = SeverityFor(cancelledLocal, TenantTime.NowLocal(ctx.Tz)),
+            Title = $"Cancelled — {cancelledLocal:ddd d MMM} at {cancelledLocal:HH:mm}",
+            Body = $"{appt.CustomerName ?? "A caller"} cancelled {appt.ServiceName}.",
+            Url = "/appointments",
+            AppointmentId = appt.Id,
+        });
+
         return Speak(new { result = $"Cancelled the {appt.ServiceName} appointment on {SpokenTime(appt.StartAt, ctx.Tz)}." }, ctx);
     }
 
@@ -419,7 +521,24 @@ public class AiToolsController : ControllerBase
         var newStartUtc = TenantTime.ToUtc(newLocal, ctx.Tz);
         var newEndUtc = newStartUtc + (appt.EndAt - appt.StartAt);
 
-        if (!await _appointments.TryRescheduleAsync(orgId, appt.Id, newStartUtc, newEndUtc))
+        // Whoever has the appointment keeps it if they are working the new time and free then;
+        // otherwise it moves to someone who is. Being moved to a different day should not have to
+        // mean being moved to a different person.
+        var roster = await _employees.LoadRosterAsync(orgId, newLocal.Date, newLocal.Date);
+        SlotAssignment? assignment = null;
+        if (roster.Enabled)
+        {
+            var onDuty = roster.OnDuty(newLocal, newLocal + (appt.EndAt - appt.StartAt));
+            if (onDuty.Count == 0)
+                return Speak(new
+                {
+                    result = $"No one is working at {newLocal:HH:mm} on {newLocal:dddd d MMMM yyyy}. " +
+                             "Use check_availability for that day and offer a time it gives back.",
+                }, ctx);
+            assignment = SlotAssignment.Any(onDuty.Select(e => e.Id)).Preferring(appt.EmployeeId);
+        }
+
+        if (!await _appointments.TryRescheduleAsync(orgId, appt.Id, newStartUtc, newEndUtc, assignment))
             return Speak(new { result = "The new time is not available. Use check_availability to offer alternatives." }, ctx);
 
         await _customers.AddTimelineEventAsync(new TimelineEvent
@@ -428,6 +547,25 @@ public class AiToolsController : ControllerBase
             EventType = "AppointmentRescheduled", Source = "AI",
             Notes = $"Moved to {newLocal:yyyy-MM-dd HH:mm}",
         });
+
+        // Urgent if either end of the move is today — the old slot has just emptied, or the new
+        // one is about to be needed.
+        var movedFromLocal = TenantTime.ToLocal(appt.StartAt, ctx.Tz);
+        var today = TenantTime.NowLocal(ctx.Tz);
+        await AnnounceAsync(new Alert
+        {
+            OrganizationId = orgId,
+            Kind = AlertKind.AppointmentRescheduled,
+            Severity = SeverityFor(newLocal, today) == AlertSeverity.Urgent || SeverityFor(movedFromLocal, today) == AlertSeverity.Urgent
+                ? AlertSeverity.Urgent
+                : AlertSeverity.Info,
+            Title = $"Moved to {newLocal:ddd d MMM} at {newLocal:HH:mm}",
+            Body = $"{appt.CustomerName ?? "A caller"} moved {appt.ServiceName} from " +
+                   $"{movedFromLocal:ddd d MMM} at {movedFromLocal:HH:mm}.",
+            Url = "/appointments",
+            AppointmentId = appt.Id,
+        });
+
         return Speak(new { result = $"Rescheduled to {SpokenTime(newStartUtc, ctx.Tz)}." }, ctx);
     }
 

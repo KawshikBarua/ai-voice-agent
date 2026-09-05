@@ -10,6 +10,10 @@ public interface ICallRepository
 {
     Task<PagedResult<CallLog>> ListAsync(int orgId, int page, int pageSize);
     Task<CallLog?> GetAsync(int orgId, int id);
+
+    /// <summary>Records a call. Returns 0 when this Retell call is already on record — the
+    /// existence check callers make first is a read, so two deliveries of the same webhook can both
+    /// pass it; the unique index is what actually decides, and losing that race is not an error.</summary>
     Task<int> CreateAsync(CallLog call);
     Task<bool> UpdateAnalysisAsync(int orgId, string retellCallId, string summary);
     Task<bool> ExistsByRetellIdAsync(int orgId, string retellCallId);
@@ -46,10 +50,20 @@ public class CallRepository : ICallRepository
     public async Task<int> CreateAsync(CallLog call)
     {
         using var conn = _db.Create();
-        return await conn.ExecuteScalarAsync<int>(@"
-            INSERT INTO CallLogs (OrganizationId, CustomerId, RetellCallId, FromNumber, Direction, Status, DurationSeconds, Transcript, RecordingUrl, Summary, StartedAt)
-            OUTPUT INSERTED.Id
-            VALUES (@OrganizationId, @CustomerId, @RetellCallId, @FromNumber, @Direction, @Status, @DurationSeconds, @Transcript, @RecordingUrl, @Summary, @StartedAt)", call);
+        try
+        {
+            return await conn.ExecuteScalarAsync<int>(@"
+                INSERT INTO CallLogs (OrganizationId, CustomerId, RetellCallId, FromNumber, Direction, Status, DurationSeconds, Transcript, RecordingUrl, Summary, StartedAt)
+                OUTPUT INSERTED.Id
+                VALUES (@OrganizationId, @CustomerId, @RetellCallId, @FromNumber, @Direction, @Status, @DurationSeconds, @Transcript, @RecordingUrl, @Summary, @StartedAt)", call);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            // UX_CallLogs_Org_RetellCallId: a concurrent delivery of the same webhook got there
+            // first. That is the index doing its job, not a fault — the call is on record either
+            // way, and the caller must not turn this into a 500 that has Retell redeliver forever.
+            return 0;
+        }
     }
 
     public async Task<bool> ExistsByRetellIdAsync(int orgId, string retellCallId)
@@ -297,12 +311,16 @@ public class SettingsRepository : ISettingsRepository
             WHEN MATCHED THEN UPDATE SET Voice=@Voice, Language=@Language, Greeting=@Greeting,
                 TransferNumber=@TransferNumber, RetellAgentId=@RetellAgentId, RetellLlmId=@RetellLlmId,
                 RetellKnowledgeBaseId=@RetellKnowledgeBaseId,
+                DetachedRetellAgentId=@DetachedRetellAgentId, DetachedRetellLlmId=@DetachedRetellLlmId,
+                DetachedRetellKnowledgeBaseId=@DetachedRetellKnowledgeBaseId,
                 RetellPhoneNumber=@RetellPhoneNumber, LastSyncedAt=@LastSyncedAt, Enabled=@Enabled,
                 EnabledToolsJson=@EnabledToolsJson, ModifiedAt=GETUTCDATE()
             WHEN NOT MATCHED THEN INSERT (OrganizationId, Voice, Language, Greeting, TransferNumber,
-                RetellAgentId, RetellLlmId, RetellKnowledgeBaseId, RetellPhoneNumber, LastSyncedAt, Enabled, EnabledToolsJson)
+                RetellAgentId, RetellLlmId, RetellKnowledgeBaseId, DetachedRetellAgentId, DetachedRetellLlmId,
+                DetachedRetellKnowledgeBaseId, RetellPhoneNumber, LastSyncedAt, Enabled, EnabledToolsJson)
                 VALUES (@OrganizationId, @Voice, @Language, @Greeting, @TransferNumber,
-                @RetellAgentId, @RetellLlmId, @RetellKnowledgeBaseId, @RetellPhoneNumber, @LastSyncedAt, @Enabled, @EnabledToolsJson);", c);
+                @RetellAgentId, @RetellLlmId, @RetellKnowledgeBaseId, @DetachedRetellAgentId, @DetachedRetellLlmId,
+                @DetachedRetellKnowledgeBaseId, @RetellPhoneNumber, @LastSyncedAt, @Enabled, @EnabledToolsJson);", c);
     }
 }
 

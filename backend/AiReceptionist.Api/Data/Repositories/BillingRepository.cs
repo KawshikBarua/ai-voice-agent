@@ -27,8 +27,28 @@ public interface IBillingRepository
     Task AdvanceAccessPeriodAsync(int orgId, DateTime newPeriodStart, DateTime newPeriodEnd);
 
     // ---------- usage ----------
-    /// <summary>AI minutes started inside the half-open window [start, end).</summary>
-    Task<int> MinutesUsedAsync(int orgId, DateTime startUtc, DateTime endUtc);
+    /// <summary>
+    /// Minutes run up but not yet charged for — what the next close will bill. This is the live
+    /// figure every screen shows, and it is read from the same rows the close claims, so the number
+    /// a customer watches is by construction the number they are billed.
+    ///
+    /// <paramref name="startedOnOrAfter"/> is for accounts with no plan, where nothing has ever
+    /// been closed and "unbilled" would otherwise mean every call the account has ever made — shown
+    /// against a window one month long. There the figure is informational, so it is bounded to the
+    /// window on screen. An account on a plan passes null and gets the exact billable total.
+    /// </summary>
+    Task<int> UnbilledMinutesAsync(int orgId, DateTime? startedOnOrAfter = null);
+
+    /// <summary>
+    /// Marks every unbilled call that started before <paramref name="periodEndUtc"/> as belonging to
+    /// the period closing there, and returns the minutes claimed.
+    ///
+    /// Safe to call twice — the second call claims nothing and returns the same total — which is
+    /// what lets the period close be driven by a worker and two Stripe webhooks at once. Calls
+    /// recorded after their own period closed carry no mark, so the next close sweeps them up
+    /// instead of losing them.
+    /// </summary>
+    Task<int> ClaimMinutesForPeriodAsync(int orgId, DateTime periodEndUtc);
 
     /// <summary>End of the most recently closed period — the anchor the next usage window runs
     /// from. Null before any period has closed.</summary>
@@ -43,9 +63,16 @@ public interface IBillingRepository
     /// <summary>Adds a closed period's overrun to what the next invoice will carry.</summary>
     Task AddPendingOverageAsync(int orgId, int minutes, decimal amount);
 
-    /// <summary>Called once the pending overage has been attached to a Stripe invoice: zeroes the
-    /// carry-over and marks the periods it came from as billed against that invoice.</summary>
-    Task SettlePendingOverageAsync(int orgId, string stripeInvoiceId);
+    /// <summary>
+    /// Called once one closed period's overrun has reached a Stripe invoice: marks that period
+    /// billed and takes its minutes and money off the carry-over.
+    ///
+    /// One period at a time, not the whole carry-over at once, because each is charged by its own
+    /// idempotent request — settling them together would mean a failure half way through either
+    /// losing the charges already made or repeating them. Only a period still Pending is counted
+    /// off, so running this twice for the same period cannot drive the carry-over negative.
+    /// </summary>
+    Task SettleUsagePeriodAsync(int usagePeriodId, string stripeInvoiceId);
 
     // ---------- invoices ----------
     Task UpsertInvoiceAsync(OrganizationInvoice invoice, IReadOnlyList<OrganizationInvoiceLine> lines);
@@ -55,6 +82,36 @@ public interface IBillingRepository
     /// <summary>Records a Stripe-collected payment. Returns false when this invoice has already
     /// been recorded — Stripe redelivers webhooks, and a customer must not be credited twice.</summary>
     Task<bool> TryAddStripePaymentAsync(PaymentRecord payment);
+
+    /// <summary>Fills in the charge, payment intent and receipt behind a payment already recorded.
+    /// Separate from the insert because these are read from Stripe in a second call, and a payment
+    /// must never fail to be recorded because the enrichment did.</summary>
+    Task AttachPaymentReferencesAsync(string stripeInvoiceId, string? paymentIntentId,
+        string? chargeId, string? receiptUrl);
+
+    /// <summary>Records money given back, against the payment the charge belongs to. Returns false
+    /// when no payment here matches — a refund for something collected outside this platform.</summary>
+    Task<bool> RecordRefundAsync(string paymentIntentId, decimal amountRefunded, DateTime refundedAt);
+
+    // ---------- payment attempts ----------
+    /// <summary>Opens the record of an attempt, before the customer leaves for Stripe. Doing it
+    /// first is the whole point: an attempt that never comes back is the one worth having a row
+    /// for. Safe to call twice for one session — the second call changes nothing.</summary>
+    Task StartPaymentAttemptAsync(PaymentAttempt attempt);
+
+    /// <summary>Closes an attempt with what became of it. Only ever moves one that is still open,
+    /// so a late webhook cannot overwrite the outcome an earlier one already recorded.</summary>
+    Task SettlePaymentAttemptAsync(string stripeSessionId, string status, string? outcome,
+        string? stripeSubscriptionId = null, string? stripeInvoiceId = null,
+        string? stripePaymentIntentId = null);
+
+    /// <summary>Closes the attempt this organization most recently left open. Stripe's
+    /// payment-failure events name an invoice, not the Checkout session that started it, so this is
+    /// how a first payment that was refused gets attached to the attempt that made it.</summary>
+    Task<bool> SettleLatestOpenAttemptAsync(int orgId, string status, string? outcome,
+        string? stripeInvoiceId, TimeSpan within);
+
+    Task<IReadOnlyList<PaymentAttempt>> ListPaymentAttemptsAsync(int orgId, int take = 20);
 
     // ---------- tiers ----------
     Task<IReadOnlyList<PricingPlan>> ListPlansAsync(bool activeOnly = false);
@@ -85,6 +142,16 @@ public interface IBillingRepository
     /// <summary>Stops (or restores) the AI agent for one organization without touching sign-in, so
     /// a customer who has been cut off can still log in, see why, and settle the bill.</summary>
     Task SetAgentRestrictedAsync(int orgId, bool restricted, string? reason);
+
+    /// <summary>
+    /// Sets the moment an organization's free trial runs out. Passing a time in the past ends a
+    /// trial there and then; the row is kept rather than cleared, so the account reads as "tried
+    /// and lapsed" instead of "never had one".
+    ///
+    /// The start date is only re-dated when no trial is currently running, so extending one keeps
+    /// the day it began and re-granting after it lapsed starts a fresh one.
+    /// </summary>
+    Task SetTrialAsync(int orgId, DateTime endsAtUtc);
 
     // ---------- webhook idempotency ----------
     /// <summary>
@@ -234,14 +301,43 @@ public class BillingRepository : IBillingRepository
 
     // ---------- usage ----------
 
-    public async Task<int> MinutesUsedAsync(int orgId, DateTime startUtc, DateTime endUtc)
+    public async Task<int> UnbilledMinutesAsync(int orgId, DateTime? startedOnOrAfter = null)
     {
         using var conn = _db.Create();
         return await conn.ExecuteScalarAsync<int>($@"
             SELECT {BillingSchema.MinutesExpression} FROM CallLogs
+            WHERE OrganizationId = @orgId AND {BillingSchema.UnbilledPredicate}
+              AND (@startedOnOrAfter IS NULL OR StartedAt >= @startedOnOrAfter)",
+            new { orgId, startedOnOrAfter });
+    }
+
+    public async Task<int> ClaimMinutesForPeriodAsync(int orgId, DateTime periodEndUtc)
+    {
+        using var conn = _db.Create();
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+
+        // Claim first, total second, both inside one transaction. The other order leaves a window
+        // in which a call recorded between the two is stamped as billed without ever being added
+        // up — a minute the customer used, marked paid for, and charged to nobody.
+        await conn.ExecuteAsync(@"
+            UPDATE CallLogs SET BilledPeriodEnd = @periodEndUtc
+            WHERE OrganizationId = @orgId
+              AND IsDeleted = 0 AND BilledPeriodEnd IS NULL
+              AND StartedAt < @periodEndUtc",
+            new { orgId, periodEndUtc }, tx);
+
+        // Reads back what is stamped rather than reusing the update's row count, which makes this
+        // safe to run again: a close interrupted after claiming but before the period row was
+        // filed re-runs, claims nothing new, and still returns the total it was going to file.
+        var minutes = await conn.ExecuteScalarAsync<int>($@"
+            SELECT {BillingSchema.MinutesExpression} FROM CallLogs
             WHERE OrganizationId = @orgId AND IsDeleted = 0
-              AND StartedAt >= @startUtc AND StartedAt < @endUtc",
-            new { orgId, startUtc, endUtc });
+              AND BilledPeriodEnd = @periodEndUtc",
+            new { orgId, periodEndUtc }, tx);
+
+        tx.Commit();
+        return minutes;
     }
 
     public async Task<DateTime?> LastClosedPeriodEndAsync(int orgId)
@@ -297,18 +393,32 @@ public class BillingRepository : IBillingRepository
             WHERE OrganizationId = @orgId", new { orgId, minutes, amount });
     }
 
-    public async Task SettlePendingOverageAsync(int orgId, string stripeInvoiceId)
+    public async Task SettleUsagePeriodAsync(int usagePeriodId, string stripeInvoiceId)
     {
         using var conn = _db.Create();
+
+        // The UPDATE is its own guard: it only matches a period still Pending, so @@ROWCOUNT is 0
+        // on a repeat and the carry-over below is left alone. Without that, a redelivered webhook
+        // would subtract the same overrun again and leave the account showing a credit it has not
+        // earned.
         await conn.ExecuteAsync($@"
             UPDATE OrganizationUsagePeriods
             SET Status = '{UsagePeriodStatus.Billed}', StripeInvoiceId = @stripeInvoiceId
-            WHERE OrganizationId = @orgId AND Status = '{UsagePeriodStatus.Pending}';
+            WHERE Id = @usagePeriodId AND Status = '{UsagePeriodStatus.Pending}';
 
-            UPDATE OrganizationSubscriptions
-            SET PendingOverageMinutes = 0, PendingOverageAmount = 0
-            WHERE OrganizationId = @orgId;",
-            new { orgId, stripeInvoiceId });
+            IF @@ROWCOUNT > 0
+            UPDATE s
+            SET PendingOverageMinutes =
+                    CASE WHEN s.PendingOverageMinutes < p.OverageMinutes
+                         THEN 0 ELSE s.PendingOverageMinutes - p.OverageMinutes END,
+                PendingOverageAmount =
+                    CASE WHEN s.PendingOverageAmount < p.OverageAmount
+                         THEN 0 ELSE s.PendingOverageAmount - p.OverageAmount END,
+                ModifiedAt = GETUTCDATE()
+            FROM OrganizationSubscriptions s
+            JOIN OrganizationUsagePeriods p ON p.OrganizationId = s.OrganizationId
+            WHERE p.Id = @usagePeriodId;",
+            new { usagePeriodId, stripeInvoiceId });
     }
 
     // ---------- invoices ----------
@@ -404,6 +514,96 @@ public class BillingRepository : IBillingRepository
         {
             return false;
         }
+    }
+
+    public async Task AttachPaymentReferencesAsync(string stripeInvoiceId, string? paymentIntentId,
+        string? chargeId, string? receiptUrl)
+    {
+        using var conn = _db.Create();
+        // COALESCE, so a later delivery carrying less detail than an earlier one cannot blank out a
+        // reference already recorded.
+        await conn.ExecuteAsync(@"
+            UPDATE OrganizationPayments
+            SET StripePaymentIntentId = COALESCE(@paymentIntentId, StripePaymentIntentId),
+                StripeChargeId        = COALESCE(@chargeId, StripeChargeId),
+                ReceiptUrl            = COALESCE(@receiptUrl, ReceiptUrl)
+            WHERE StripeInvoiceId = @stripeInvoiceId",
+            new { stripeInvoiceId, paymentIntentId, chargeId, receiptUrl });
+    }
+
+    public async Task<bool> RecordRefundAsync(string paymentIntentId, decimal amountRefunded,
+        DateTime refundedAt)
+    {
+        using var conn = _db.Create();
+        // Set, not added to: Stripe reports the running total refunded on the charge, so a second
+        // partial refund arrives as the new cumulative figure. Adding would double it.
+        var rows = await conn.ExecuteAsync(@"
+            UPDATE OrganizationPayments
+            SET AmountRefunded = @amountRefunded,
+                RefundedAt = CASE WHEN @amountRefunded > 0 THEN @refundedAt ELSE NULL END
+            WHERE StripePaymentIntentId = @paymentIntentId",
+            new { paymentIntentId, amountRefunded, refundedAt });
+        return rows > 0;
+    }
+
+    // ---------- payment attempts ----------
+
+    public async Task StartPaymentAttemptAsync(PaymentAttempt a)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(@"
+            IF NOT EXISTS (SELECT 1 FROM OrganizationPaymentAttempts WHERE StripeSessionId = @StripeSessionId)
+            INSERT INTO OrganizationPaymentAttempts
+                (OrganizationId, StripeSessionId, PlanId, PlanName, Amount, Currency, Status,
+                 StartedByUserId, StartedAt)
+            VALUES (@OrganizationId, @StripeSessionId, @PlanId, @PlanName, @Amount, @Currency,
+                    @Status, @StartedByUserId, GETUTCDATE());", a);
+    }
+
+    public async Task SettlePaymentAttemptAsync(string stripeSessionId, string status, string? outcome,
+        string? stripeSubscriptionId = null, string? stripeInvoiceId = null,
+        string? stripePaymentIntentId = null)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync($@"
+            UPDATE OrganizationPaymentAttempts
+            SET Status = @status,
+                Outcome = @outcome,
+                SettledAt = GETUTCDATE(),
+                StripeSubscriptionId  = COALESCE(@stripeSubscriptionId, StripeSubscriptionId),
+                StripeInvoiceId       = COALESCE(@stripeInvoiceId, StripeInvoiceId),
+                StripePaymentIntentId = COALESCE(@stripePaymentIntentId, StripePaymentIntentId)
+            WHERE StripeSessionId = @stripeSessionId
+              AND Status = '{PaymentAttemptStatus.Started}';",
+            new { stripeSessionId, status, outcome, stripeSubscriptionId, stripeInvoiceId, stripePaymentIntentId });
+    }
+
+    public async Task<bool> SettleLatestOpenAttemptAsync(int orgId, string status, string? outcome,
+        string? stripeInvoiceId, TimeSpan within)
+    {
+        using var conn = _db.Create();
+        // Bounded by age on purpose. An attempt left open months ago is not what this failure is
+        // about, and attaching an unrelated old row to it would be worse than attaching nothing.
+        var rows = await conn.ExecuteAsync($@"
+            UPDATE OrganizationPaymentAttempts
+            SET Status = @status, Outcome = @outcome, SettledAt = GETUTCDATE(),
+                StripeInvoiceId = COALESCE(@stripeInvoiceId, StripeInvoiceId)
+            WHERE Id = (
+                SELECT TOP 1 Id FROM OrganizationPaymentAttempts
+                WHERE OrganizationId = @orgId AND Status = '{PaymentAttemptStatus.Started}'
+                  AND StartedAt >= @since
+                ORDER BY StartedAt DESC);",
+            new { orgId, status, outcome, stripeInvoiceId, since = DateTime.UtcNow - within });
+        return rows > 0;
+    }
+
+    public async Task<IReadOnlyList<PaymentAttempt>> ListPaymentAttemptsAsync(int orgId, int take = 20)
+    {
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync<PaymentAttempt>(@"
+            SELECT TOP (@take) * FROM OrganizationPaymentAttempts
+            WHERE OrganizationId = @orgId ORDER BY StartedAt DESC", new { orgId, take });
+        return rows.ToList();
     }
 
     // ---------- tiers ----------
@@ -573,6 +773,17 @@ public class BillingRepository : IBillingRepository
                 AgentRestrictedAt = CASE WHEN @restricted = 1 THEN ISNULL(AgentRestrictedAt, GETUTCDATE()) ELSE NULL END,
                 AgentRestrictedReason = CASE WHEN @restricted = 1 THEN @reason ELSE NULL END
             WHERE Id = @orgId", new { orgId, restricted, reason });
+    }
+
+    public async Task SetTrialAsync(int orgId, DateTime endsAtUtc)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(@"
+            UPDATE Organizations
+            SET TrialStartedAt = CASE WHEN TrialEndsAt > GETUTCDATE() THEN ISNULL(TrialStartedAt, GETUTCDATE())
+                                      ELSE GETUTCDATE() END,
+                TrialEndsAt = @endsAtUtc
+            WHERE Id = @orgId", new { orgId, endsAtUtc });
     }
 
     // ---------- webhook idempotency ----------

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
-import { Card, CardTitle, PillButton, Chip, EmptyState } from '../components/ui'
+import { Card, CardTitle, PageHeader, PillButton, Chip, EmptyState, compactAction } from '../components/ui'
 
 const CATEGORIES = ['BusinessInfo', 'FAQ', 'Policy', 'EmergencyRule', 'Custom']
 const CATEGORY_TONES = { BusinessInfo: 'lavender', FAQ: 'mint', Policy: 'cream', EmergencyRule: 'red', Custom: 'dark' }
@@ -45,15 +45,26 @@ export default function KnowledgeBase() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Knowledge Base</h1>
-        <div className="flex gap-2">
-          <PillButton variant="outline" onClick={() => setShowPrompt((v) => !v)}>
-            {showPrompt ? 'Hide final prompt' : 'Preview final AI prompt'}
-          </PillButton>
-          <PillButton onClick={() => setShowForm((v) => !v)}>+ New Entry</PillButton>
-        </div>
-      </div>
+      {/* Two actions, and the secondary one's label is long. It keeps the full wording where
+          there is room and shortens to "Prompt" on a phone rather than pushing the primary
+          action onto a line of its own. */}
+      <PageHeader
+        title="Knowledge Base"
+        action={
+          <div className="flex gap-2">
+            <PillButton variant="outline" className={compactAction} onClick={() => setShowPrompt((v) => !v)}>
+              <span className="sm:hidden">{showPrompt ? 'Hide' : 'Prompt'}</span>
+              <span className="hidden sm:inline">
+                {showPrompt ? 'Hide final prompt' : 'Preview final AI prompt'}
+              </span>
+            </PillButton>
+            <PillButton className={compactAction} onClick={() => setShowForm((v) => !v)}>
+              <span className="sm:hidden">+ New</span>
+              <span className="hidden sm:inline">+ New Entry</span>
+            </PillButton>
+          </div>
+        }
+      />
 
       <p className="mb-5 max-w-2xl text-sm text-ink-soft">
         Frontly answers using this knowledge. The core AI instructions are managed by the

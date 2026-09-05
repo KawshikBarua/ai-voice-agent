@@ -240,6 +240,78 @@ function PlanChooser({
 }
 
 /** A single line of the next bill, with the reason underneath it. */
+/**
+ * A payment that has been started and not yet confirmed.
+ *
+ * This is the banner for the customer whose connection dropped on Stripe's page. Their money is
+ * already safe — the webhook, their return to this page, and the reconciliation sweep are three
+ * independent ways it lands — but without being told that, a billing page still reading "no plan"
+ * gives them every reason to pay a second time.
+ *
+ * After a quarter of an hour the wording changes rather than escalating. By then it is more likely
+ * they closed the tab at the card form than that anything is wrong, and neither case is helped by
+ * an alarming message.
+ */
+function PendingPaymentNotice({ pending }) {
+  if (!pending) return null
+
+  return (
+    <div className="rounded-card bg-cream px-4 py-3 text-sm">
+      <p className="font-medium">
+        {pending.isStale
+          ? `A payment for ${pending.planName} has not been confirmed yet.`
+          : `Confirming your ${pending.planName} payment…`}
+      </p>
+      <p className="mt-1 text-muted">
+        {pending.isStale
+          ? `Started ${day(pending.startedAt)}. If you completed payment it will appear here on its own —
+             you have not been charged twice, and there is nothing to do. If you did not finish, you can
+             choose a plan below and start again.`
+          : `We are waiting on ${exact(pending.amount, pending.currency)} from Stripe. You can leave this
+             page — your plan will be set up as soon as the payment clears.`}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * The free trial, while it is running and once it has run out.
+ *
+ * The second half is the one that matters: when a trial ends with no plan behind it the AI
+ * receptionist stops answering, and a customer whose phone has gone quiet has to be able to find
+ * out why on this page rather than by ringing their own number.
+ */
+function TrialNotice({ summary }) {
+  const { onTrial, trialExpired, trialEndsAt, trialDaysRemaining, hasSubscription } = summary
+
+  if (onTrial) {
+    return (
+      <div className="rounded-card bg-lavender px-4 py-3 text-sm">
+        <p className="font-medium">
+          Free trial — {trialDaysRemaining} day{trialDaysRemaining === 1 ? '' : 's'} left
+        </p>
+        <p className="mt-1 text-muted">
+          Your AI receptionist is answering at no charge until {day(trialEndsAt)}.
+          {!hasSubscription && ' Choose a plan before then to keep it taking calls.'}
+        </p>
+      </div>
+    )
+  }
+
+  // A plan taken out during the trial has already superseded it, so the expiry is not news.
+  if (!trialExpired || hasSubscription) return null
+
+  return (
+    <div className="rounded-card bg-danger-soft px-4 py-3">
+      <p className="text-sm font-semibold text-danger">Your free trial has ended</p>
+      <p className="mt-0.5 text-sm text-danger">
+        It ran out on {day(trialEndsAt)}, so your AI receptionist has stopped taking calls. Choosing
+        a plan below switches it back on.
+      </p>
+    </div>
+  )
+}
+
 function ChargeRow({ line, currency }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-line/60 py-3 last:border-0">
@@ -501,13 +573,19 @@ export default function Billing() {
         {notice && (
           <div className="rounded-card bg-mint px-4 py-3 text-sm font-medium">{notice}</div>
         )}
+        <PendingPaymentNotice pending={s.pendingPayment} />
+        <TrialNotice summary={s} />
         <Card>
           {/* Someone who has just paid is not "not set up" — they are mid-setup, and saying the
               wrong one of those to a customer who has been charged is how support tickets start. */}
           <EmptyState
             message={confirming
               ? 'Setting up your plan — this takes a moment.'
-              : 'No plan is set up on your account yet, so nothing is being charged. The plans on offer are below.'}
+              : s.pendingPayment
+                ? 'Your plan will appear here as soon as the payment is confirmed.'
+                : s.onTrial
+                  ? 'You are on a free trial, so nothing is being charged yet. The plans on offer are below.'
+                  : 'No plan is set up on your account yet, so nothing is being charged. The plans on offer are below.'}
           />
         </Card>
         {!confirming && (
@@ -558,6 +636,11 @@ export default function Billing() {
           Checkout was cancelled. Nothing has been charged.
         </div>
       )}
+      {/* A plan change paid for but not yet confirmed belongs here too, not only on the
+          no-plan screen — the customer is equally in the dark either way. */}
+      {!confirming && <PendingPaymentNotice pending={s.pendingPayment} />}
+
+      <TrialNotice summary={s} />
       {notice && (
         <div className="rounded-card bg-mint px-4 py-3 text-sm font-medium">{notice}</div>
       )}
@@ -571,6 +654,20 @@ export default function Billing() {
           <p className="mt-0.5 text-sm text-danger">
             {s.agentRestrictedReason ?? 'Your provider has paused it.'} Settling the balance below, or
             contacting your provider, will restore it.
+          </p>
+        </div>
+      )}
+
+      {/* Said before the customer leaves for Stripe, because the amount on the payment page is the
+          plan plus this — being charged more than you expected is worse than being told first. */}
+      {s.canSubscribe && s.pendingOverageAmount > 0 && (
+        <div className="rounded-card bg-cream px-4 py-3 text-sm">
+          <p className="font-medium">
+            {exact(s.pendingOverageAmount, cur)} of extra minutes is still owed from earlier periods
+          </p>
+          <p className="mt-1 text-muted">
+            It is added to the plan price when you pay, so a single payment settles everything —
+            you will see both parts itemised before you confirm.
           </p>
         </div>
       )}
@@ -667,6 +764,12 @@ export default function Billing() {
                 }
                 className="mt-3"
               />
+              {/* Stated, because it is the single most common thing a customer queries: their call
+                  log shows a handful of seconds and their bill shows a minute. The rule has always
+                  been per-call round-up; only saying so is new. */}
+              <p className="mt-3 text-xs text-muted">
+                Each call is rounded up to the next whole minute, so a 20-second call counts as one.
+              </p>
             </>
           ) : (
             <div className="py-4">

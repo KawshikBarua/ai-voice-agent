@@ -315,13 +315,22 @@ public class DashboardRepository : IDashboardRepository
         stats.PeriodStart = periodStart;
         stats.PeriodEnd = periodEnd;
 
-        // BillingSchema.MinutesExpression, so the rounding is literally the same expression the
-        // invoice is computed with rather than a copy that could drift from it.
+        // BillingSchema's own expression and predicate, so the rounding and the set of rows are
+        // literally what the invoice is computed from rather than a copy that could drift from it.
+        // Counting by the unbilled marker rather than the date window is also what keeps a call
+        // recorded after its period closed visible here instead of vanishing from both this tile
+        // and the bill.
+        //
+        // With no plan there are no closed periods, so every call ever made is unbilled; the figure
+        // is bounded to the month on screen rather than quietly becoming an all-time total. On a
+        // plan it is left unbounded, because that is exactly what the next invoice will charge.
+        var countFrom = plan is null ? periodStart : (DateTime?)null;
+
         stats.MinutesUsedThisPeriod = await conn.ExecuteScalarAsync<int>($@"
             SELECT {BillingSchema.MinutesExpression} FROM CallLogs
-            WHERE OrganizationId=@orgId AND IsDeleted=0
-              AND StartedAt >= @periodStart AND StartedAt < @periodEnd",
-            new { orgId, periodStart, periodEnd });
+            WHERE OrganizationId=@orgId AND {BillingSchema.UnbilledPredicate}
+              AND (@countFrom IS NULL OR StartedAt >= @countFrom)",
+            new { orgId, countFrom });
     }
 
     private class PlanRow

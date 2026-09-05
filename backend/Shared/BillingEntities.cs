@@ -93,9 +93,75 @@ public class PaymentRecord
 
     public string Source { get; set; } = PaymentSources.Manual;
     public string? StripeInvoiceId { get; set; }
+
+    /// <summary>The charge behind this payment, and the receipt for it. A refund or a chargeback is
+    /// raised against these, never against the invoice, so without them a reversal cannot be
+    /// matched back to the payment it undoes.</summary>
     public string? StripePaymentIntentId { get; set; }
+    public string? StripeChargeId { get; set; }
+    public string? ReceiptUrl { get; set; }
+
+    /// <summary>How much of this payment has been given back. The row is kept rather than deleted:
+    /// a payment that was made and then refunded is two facts, and erasing the first loses the
+    /// history that explains the second.</summary>
+    public decimal AmountRefunded { get; set; }
+    public DateTime? RefundedAt { get; set; }
 
     public bool FromStripe => string.Equals(Source, PaymentSources.Stripe, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What the customer actually kept — what a statement should total.</summary>
+    public decimal AmountNet => Math.Max(0, Amount - AmountRefunded);
+    public bool IsRefunded => AmountRefunded > 0;
+}
+
+/// <summary>
+/// One attempt to pay, opened the moment the customer is sent to Stripe Checkout and closed by
+/// whatever happens next.
+///
+/// This exists so the payment record starts at the beginning rather than at "paid". Three
+/// independent paths already make sure a completed payment lands — the webhook, the customer's own
+/// return, and the reconciliation sweep — but none of them leave any trace of an attempt that did
+/// not complete, which is exactly the case somebody rings up about.
+/// </summary>
+public class PaymentAttempt
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public string StripeSessionId { get; set; } = "";
+    public int? PlanId { get; set; }
+    public string PlanName { get; set; } = "";
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "USD";
+    public string Status { get; set; } = PaymentAttemptStatus.Started;
+    public int? StartedByUserId { get; set; }
+    public DateTime StartedAt { get; set; }
+    public DateTime? SettledAt { get; set; }
+    public string? StripeSubscriptionId { get; set; }
+    public string? StripeInvoiceId { get; set; }
+    public string? StripePaymentIntentId { get; set; }
+
+    /// <summary>Why it ended the way it did, in words a support conversation can use.</summary>
+    public string? Outcome { get; set; }
+
+    public bool IsSettled => !string.Equals(Status, PaymentAttemptStatus.Started, StringComparison.OrdinalIgnoreCase);
+    public bool Succeeded => string.Equals(Status, PaymentAttemptStatus.Paid, StringComparison.OrdinalIgnoreCase);
+}
+
+public static class PaymentAttemptStatus
+{
+    /// <summary>The customer has been sent to Stripe and has not come back yet. A row that stays
+    /// here for more than a few minutes is either an abandoned checkout or a delivery that never
+    /// arrived — and the difference is worth being able to see.</summary>
+    public const string Started = "Started";
+
+    /// <summary>Stripe collected, and the plan has been applied.</summary>
+    public const string Paid = "Paid";
+
+    /// <summary>The Checkout session expired without payment. Nothing was charged.</summary>
+    public const string Abandoned = "Abandoned";
+
+    /// <summary>Stripe tried to collect and could not — a declined card, most often.</summary>
+    public const string Failed = "Failed";
 }
 
 public static class PaymentSources

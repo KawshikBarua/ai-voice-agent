@@ -15,16 +15,56 @@ public class AppointmentsController : ControllerBase
 {
     private readonly IAppointmentRepository _appointments;
     private readonly ICustomerRepository _customers;
+    private readonly IEmployeeRepository _employees;
+    private readonly ISettingsRepository _settings;
     private readonly ITenantProvider _tenant;
     private readonly IAuditRepository _audit;
 
     public AppointmentsController(IAppointmentRepository appointments, ICustomerRepository customers,
-        ITenantProvider tenant, IAuditRepository audit)
+        IEmployeeRepository employees, ISettingsRepository settings, ITenantProvider tenant,
+        IAuditRepository audit)
     {
         _appointments = appointments;
         _customers = customers;
+        _employees = employees;
+        _settings = settings;
         _tenant = tenant;
         _audit = audit;
+    }
+
+    /// <summary>
+    /// Who can take a slot booked by hand from the dashboard, under the same roster rules the AI
+    /// works to — a receptionist typing a booking in and the agent taking one over the phone must
+    /// not be able to reach different answers about the same slot.
+    ///
+    /// Returns null once the organization has no roster, which puts the write back on the older
+    /// business-wide capacity rule. The message is the one shown in the dialog, so it says what to
+    /// do about it rather than just refusing.
+    /// </summary>
+    private async Task<(SlotAssignment? Assignment, string? Refusal)> ResolveStaffAsync(
+        DateTime startAtUtc, DateTime endAtUtc, int? requestedEmployeeId)
+    {
+        var org = await _settings.GetOrganizationAsync(_tenant.OrganizationId);
+        var tz = TenantTime.Resolve(org?.Timezone);
+        var startLocal = TenantTime.ToLocal(startAtUtc, tz);
+        var endLocal = TenantTime.ToLocal(endAtUtc, tz);
+
+        var roster = await _employees.LoadRosterAsync(_tenant.OrganizationId, startLocal.Date, startLocal.Date);
+        if (!roster.Enabled) return (null, null);
+
+        var onDuty = roster.OnDuty(startLocal, endLocal);
+        if (onDuty.Count == 0)
+            return (null, $"No one is working at {startLocal:HH:mm} on {startLocal:dddd d MMMM yyyy}. " +
+                          "Check the team's working hours and time off, or pick another time.");
+
+        var assignment = SlotAssignment.Any(onDuty.Select(e => e.Id));
+        if (requestedEmployeeId is not { } requested) return (assignment, null);
+
+        var person = roster.Employees.FirstOrDefault(e => e.Id == requested);
+        return onDuty.Any(e => e.Id == requested)
+            ? (assignment.Only(requested), null)
+            : (null, $"{person?.Name ?? "That team member"} is not working at " +
+                     $"{startLocal:HH:mm} on {startLocal:dddd d MMMM yyyy}.");
     }
 
     [HttpGet]
@@ -50,7 +90,15 @@ public class AppointmentsController : ControllerBase
         if (appt.EndAt <= appt.StartAt)
             return BadRequest(ApiResponse<object>.Fail("EndAt must be after StartAt."));
 
-        var created = await _appointments.TryCreateAsync(appt);
+        var (assignment, refusal) = await ResolveStaffAsync(appt.StartAt, appt.EndAt, appt.EmployeeId);
+        if (refusal is not null) return Conflict(ApiResponse<object>.Fail(refusal));
+
+        // With a roster the employee is chosen inside the write, from ids this tenant owns. Without
+        // one there is nobody to assign, so a value posted here is dropped rather than stored — it
+        // was never checked against anything.
+        if (assignment is null) appt.EmployeeId = null;
+
+        var created = await _appointments.TryCreateAsync(appt, assignment);
         if (created is null)
             return Conflict(ApiResponse<object>.Fail("The selected time slot is not available."));
         var id = created.Value;
@@ -130,7 +178,18 @@ public class AppointmentsController : ControllerBase
     {
         if (request.EndAt <= request.StartAt)
             return BadRequest(ApiResponse<object>.Fail("EndAt must be after StartAt."));
-        if (!await _appointments.TryRescheduleAsync(_tenant.OrganizationId, id, request.StartAt, request.EndAt))
+
+        var existing = await _appointments.GetAsync(_tenant.OrganizationId, id);
+        if (existing is null)
+            return NotFound(ApiResponse<object>.Fail("Appointment not found."));
+
+        var (assignment, refusal) = await ResolveStaffAsync(request.StartAt, request.EndAt, null);
+        if (refusal is not null) return Conflict(ApiResponse<object>.Fail(refusal));
+
+        // Whoever has it keeps it when they are free at the new time; otherwise it moves to
+        // someone who is, rather than failing outright.
+        if (!await _appointments.TryRescheduleAsync(_tenant.OrganizationId, id, request.StartAt, request.EndAt,
+                assignment?.Preferring(existing.EmployeeId)))
             return Conflict(ApiResponse<object>.Fail("The selected time slot is not available."));
 
         await _audit.LogAsync(_tenant.OrganizationId, _tenant.UserId, "AppointmentRescheduled", $"AppointmentId={id}");

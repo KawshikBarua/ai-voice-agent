@@ -1,0 +1,15 @@
+{
+  "name": "Frontly",
+  "short_name": "Frontly",
+  "description": "AI receptionist — calls answered and appointments booked while you work.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#0097b2",
+  "icons": [
+    { "src": "/logo-mark.png", "sizes": "191x191", "type": "image/png", "purpose": "any" },
+    { "src": "/logo-mark.png", "sizes": "191x191", "type": "image/png", "purpose": "maskable" }
+  ]
+}

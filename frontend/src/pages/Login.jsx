@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { api } from '../api/client'
-import { useAuthStore } from '../store/auth'
+import { setRemember, useAuthStore } from '../store/auth'
 
 /* Thin geometric line work behind the hero — kept very low opacity so it reads as texture. */
 function HeroPattern() {
@@ -230,6 +230,9 @@ export default function Login() {
   const [email, setEmail] = useState('admin@demo.com')
   const [password, setPassword] = useState('Admin123!')
   const [showPassword, setShowPassword] = useState(false)
+  // Ticked by default: most people sign in on their own machine. Clearing it makes the refresh
+  // cookie a session cookie, so closing the browser signs out — see AuthController.
+  const [rememberMe, setRememberMe] = useState(true)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const setSession = useAuthStore((s) => s.setSession)
@@ -240,9 +243,12 @@ export default function Login() {
     setLoading(true)
     setError('')
     try {
+      // Set before the call, so the identity the response persists lands in the storage the tick
+      // asked for rather than being moved after the fact.
+      setRemember(rememberMe)
       // Through the shared client: it carries withCredentials for the httpOnly refresh cookie
       // and seals the body, which matters most here — this is the request with the password in it.
-      const { data } = await api.post('/auth/login', { email, password })
+      const { data } = await api.post('/auth/login', { email, password, rememberMe })
       const { accessToken, user } = data.data
       setSession(user, accessToken)
       navigate('/')
@@ -309,7 +315,12 @@ export default function Login() {
 
               <div className="flex items-center justify-between pt-1">
                 <label className="flex items-center gap-2 text-sm text-ink-soft">
-                  <input type="checkbox" className="h-4 w-4 rounded border-line accent-[var(--color-brand-strong)]" defaultChecked />
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-line accent-[var(--color-brand-strong)]"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                  />
                   Keep me signed in
                 </label>
                

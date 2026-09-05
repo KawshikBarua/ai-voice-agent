@@ -29,6 +29,7 @@ public class OrganizationRepository : IOrganizationRepository
         SELECT o.Id, o.Name, o.Industry, o.Email, o.Phone, o.Currency, o.Timezone, o.CreatedAt,
                o.IsActive, o.SuspendedAt, o.SuspendedReason,
                o.AgentRestricted, o.AgentRestrictedAt, o.AgentRestrictedReason,
+               o.TrialStartedAt, o.TrialEndsAt,
                (SELECT COUNT(*) FROM Users u
                   WHERE u.OrganizationId = o.Id AND u.IsDeleted = 0 AND u.Role <> 'SuperAdmin') AS UserCount,
                (SELECT COUNT(*) FROM Customers c

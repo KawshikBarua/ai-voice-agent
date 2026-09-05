@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/logo-mark.png" />
     <link rel="apple-touch-icon" href="/logo-mark.png" />
+    <!-- Installable to a phone's home screen. On iOS that is not a nicety: Safari only delivers
+         push notifications to an installed app, so this is what lets an owner be told about an
+         overnight booking at all. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Frontly" />
     <meta name="theme-color" content="#0097b2" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

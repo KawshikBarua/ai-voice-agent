@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
-import { Card, CardTitle, PillButton, Chip, Avatar, EmptyState } from '../components/ui'
+import { Card, CardTitle, PageHeader, PillButton, Chip, Avatar, EmptyState, compactAction } from '../components/ui'
 
 export default function Customers() {
   const qc = useQueryClient()
@@ -38,10 +38,15 @@ export default function Customers() {
 
   return (
     <div className="mx-auto max-w-5xl">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Customers</h1>
-        <PillButton onClick={() => setShowForm((v) => !v)}>+ New Customer</PillButton>
-      </div>
+      <PageHeader
+        title="Customers"
+        action={
+          <PillButton className={compactAction} onClick={() => setShowForm((v) => !v)}>
+            <span className="sm:hidden">+ New</span>
+            <span className="hidden sm:inline">+ New Customer</span>
+          </PillButton>
+        }
+      />
 
       {showForm && (
         <Card className="mb-5">
@@ -86,15 +91,17 @@ export default function Customers() {
           {data?.items?.map((c, i) => (
             <div key={c.id} className="rounded-2xl bg-panel p-4">
               <button
-                className="flex w-full items-center gap-4 text-left"
+                className="flex w-full items-center gap-3 text-left sm:gap-4"
                 onClick={() => setExpanded(expanded === c.id ? null : c.id)}
               >
                 <Avatar name={c.name} tone={['lavender', 'mint', 'cream'][i % 3]} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-base font-bold">{c.name}</p>
-                  <p className="text-xs text-ink-soft">{c.phone}{c.email ? ` · ${c.email}` : ''}</p>
+                  {/* Both truncated: an email long enough to wrap took the contact line to two
+                      rows and left the "Returning" chip floating beside a ragged block. */}
+                  <p className="truncate text-sm font-bold sm:text-base">{c.name}</p>
+                  <p className="truncate text-xs text-ink-soft">{c.phone}{c.email ? ` · ${c.email}` : ''}</p>
                 </div>
-                {c.totalVisits > 1 && <Chip tone="mint">Returning</Chip>}
+                {c.totalVisits > 1 && <span className="shrink-0"><Chip tone="mint">Returning</Chip></span>}
                 <div className="hidden text-right sm:block">
                   <p className="text-xs text-muted">Last visit</p>
                   <p className="text-sm font-semibold">{fmtDate(c.lastVisit)}</p>

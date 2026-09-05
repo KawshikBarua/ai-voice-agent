@@ -247,7 +247,7 @@
 <!-- 05 -->
 <section>
   <h2>05 &nbsp;Database schema</h2>
-  <p>Twelve tables. <code>DbInitializer</code> creates the database, applies schema and additive
+  <p>Fourteen tables. <code>DbInitializer</code> creates the database, applies schema and additive
      migrations, and seeds demo data on an empty database — all idempotent, run at startup.</p>
 
   <table>
@@ -258,7 +258,9 @@
     <tr><td><code>Customers</code></td><td><code>Phone</code> canonicalised; <code>FirstVisit</code>, <code>LastVisit</code>, <code>TotalVisits</code>; index on <code>(OrganizationId, Phone)</code></td></tr>
     <tr><td><code>Services</code></td><td><code>DurationMinutes</code>, <code>MinPrice</code>/<code>MaxPrice</code>, <code>IsEmergency</code>, <code>IsAvailable</code></td></tr>
     <tr><td><code>Products</code></td><td><code>Sku</code>, <code>Category</code>, <code>Price</code>, <code>Quantity</code></td></tr>
-    <tr><td><code>Appointments</code></td><td>UTC <code>StartAt</code>/<code>EndAt</code>, <code>Status</code>, <code>PaymentStatus</code>, <code>Amount</code>, <code>ServiceAddress</code>, <code>IsEmergency</code>; covering index on <code>(OrganizationId, StartAt)</code></td></tr>
+    <tr><td><code>Appointments</code></td><td>UTC <code>StartAt</code>/<code>EndAt</code>, <code>Status</code>, <code>PaymentStatus</code>, <code>Amount</code>, <code>ServiceAddress</code>, <code>IsEmergency</code>, <code>EmployeeId</code> (who is handling it); covering indexes on <code>(OrganizationId, StartAt)</code> and <code>(OrganizationId, EmployeeId, StartAt)</code></td></tr>
+    <tr><td><code>Employees</code></td><td>The bookable roster. <code>WorkingHoursJson</code> (same shape as <code>BusinessHoursJson</code>; null = follows the business hours), <code>IsActive</code>. Slot capacity is how many of these are on duty and free, not one number per business</td></tr>
+    <tr><td><code>EmployeeTimeOff</code></td><td>Inclusive local <code>StartDate</code>/<code>EndDate</code> per employee; treated as absent for availability</td></tr>
     <tr><td><code>CallLogs</code></td><td><code>RetellCallId</code> (idempotency key), <code>Transcript</code>, <code>RecordingUrl</code>, <code>Summary</code>, <code>DurationSeconds</code></td></tr>
     <tr><td><code>KnowledgeBase</code></td><td><code>Category</code> ∈ BusinessInfo · FAQ · Policy · EmergencyRule · Custom</td></tr>
     <tr><td><code>AgentConfig</code></td><td>One per tenant (unique <code>OrganizationId</code>). Voice, language, greeting, transfer number, and provider ids: <code>RetellAgentId</code>, <code>RetellLlmId</code>, <code>RetellKnowledgeBaseId</code>, <code>LastSyncedAt</code></td></tr>
@@ -736,7 +738,8 @@ https://host/api/v1/ai/tools/1/book_appointment?k=36e98a8ba82d...</pre>
 
   <h3>Concurrent booking</h3>
   <p>Check-then-insert races when two calls are live simultaneously. Booking is a single statement
-     inside a transaction using range locks:</p>
+     inside a transaction using range locks. With no roster on file, capacity is one number for the
+     whole business:</p>
 <pre>INSERT INTO Appointments (...) OUTPUT INSERTED.Id
 SELECT @... WHERE
   (SELECT COUNT(*) FROM Appointments WITH (UPDLOCK, HOLDLOCK)
@@ -746,6 +749,35 @@ SELECT @... WHERE
   &lt; (SELECT ISNULL(MaxConcurrentAppointments,1) FROM Organizations WHERE Id=@o)</pre>
   <p>Returns <code>null</code> when the slot is full — callers translate that to <code>409</code>
      or a spoken "that time was just taken".</p>
+
+  <h3>Parallel bookings across a team</h3>
+  <p>Once an organization has employees, how many appointments may overlap stops being a property
+     of the business and becomes a property of the slot: it is however many people are on duty then
+     and not already with someone. Two employees means two callers can both be given 12:00, one
+     each; nobody on duty means neither can, whatever the business hours say.</p>
+  <p><code>StaffRoster</code> settles who is <em>on duty</em> — active, their own weekly hours cover
+     the slot end to end (intersected with the business hours), and no <code>EmployeeTimeOff</code>
+     over that date. Who is <em>free</em> is settled in SQL, under the same locks as the write,
+     because that is the only place it can be settled against a second call happening at the same
+     moment:</p>
+<pre>SELECT @FreeOnDuty = COUNT(*) FROM Employees e
+WHERE e.Id IN @OnDutyIds
+  AND NOT EXISTS (overlapping appointment for e.Id, UPDLOCK/HOLDLOCK);
+
+IF @FreeOnDuty &gt; @Unassigned          -- bookings over the slot with nobody named
+SELECT TOP 1 @Chosen = e.Id FROM Employees e
+WHERE e.Id IN @CandidateIds AND NOT EXISTS (overlapping appointment)
+ORDER BY CHARINDEX(',' + CAST(e.Id AS NVARCHAR(12)) + ',', @CandidateOrder), e.Id;
+
+INSERT INTO Appointments (..., EmployeeId, ...)
+SELECT ..., @Chosen, ... WHERE @Chosen IS NOT NULL;</pre>
+  <p><code>@Unassigned</code> is what keeps a tenant honest when they build a roster after they
+     already had bookings: an appointment with nobody named still occupies one person, so two
+     employees never read as three parallel slots. <code>@CandidateOrder</code> carries the
+     caller's preference — anyone at all for the AI, one named person for a dashboard booking,
+     the current holder first for a reschedule, so moving a booking does not needlessly move the
+     person. <code>check_availability</code> applies the same rule when listing a day, which is
+     why a time can still come back free straight after being booked for someone else.</p>
 
   <h3>Time zones</h3>
   <p>Appointments are stored in <strong>UTC</strong>; callers and the AI speak tenant-local time.

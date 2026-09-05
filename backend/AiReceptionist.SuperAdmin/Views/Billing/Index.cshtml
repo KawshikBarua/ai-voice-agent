@@ -5,6 +5,7 @@
     var overdue = Model.Count(o => o.BillingState == BillingState.Overdue);
     var dueSoon = Model.Count(o => o.BillingState == BillingState.DueSoon);
     var unbilled = Model.Count(o => !o.HasSubscription);
+    var onTrial = Model.Count(o => o.IsOnTrial);
     var runningUnpaid = Model.Count(o => o.NeedsAttention);
     var overAllowance = Model.Count(o => o.MinutesOver > 0);
     var pendingOverage = Model.Sum(o => o.PendingOverageAmount);
@@ -54,6 +55,11 @@
         <div class="label">No subscription</div>
         <div class="value">@unbilled</div>
         <div class="hint">never billed</div>
+    </div>
+    <div class="stat">
+        <div class="label">On trial</div>
+        <div class="value">@onTrial</div>
+        <div class="hint">free days left to run</div>
     </div>
     <div class="stat @(overAllowance > 0 ? "alert" : "")">
         <div class="label">Over allowance</div>
@@ -140,6 +146,10 @@
                     </td>
                     <td>
                         <span class="@Display.BillingChip(org)">@Display.BillingLabel(org)</span>
+                        @if (org.IsOnTrial)
+                        {
+                            <div class="meter-note">free until @Display.Day(org.TrialEndsAt)</div>
+                        }
                         @if (org.PendingOverageAmount > 0)
                         {
                             <div class="meter-note over">

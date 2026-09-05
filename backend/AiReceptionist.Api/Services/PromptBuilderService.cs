@@ -33,15 +33,18 @@ public class PromptBuilderService : IPromptBuilderService
     private readonly IKnowledgeRepository _knowledge;
     private readonly IHolidayRepository _holidays;
     private readonly IPromptTemplateRepository _template;
+    private readonly IEmployeeRepository _employees;
 
     public PromptBuilderService(ISettingsRepository settings, ICatalogRepository catalog,
-        IKnowledgeRepository knowledge, IHolidayRepository holidays, IPromptTemplateRepository template)
+        IKnowledgeRepository knowledge, IHolidayRepository holidays, IPromptTemplateRepository template,
+        IEmployeeRepository employees)
     {
         _settings = settings;
         _catalog = catalog;
         _knowledge = knowledge;
         _holidays = holidays;
         _template = template;
+        _employees = employees;
     }
 
     public async Task<string> BuildSystemPromptAsync(int orgId)
@@ -109,6 +112,29 @@ public class PromptBuilderService : IPromptBuilderService
         sb.AppendLine($"## Business hours (local time, {org.Timezone})");
         foreach (var line in BusinessHours.Describe(org.BusinessHoursJson))
             sb.AppendLine($"- {line}");
+
+        // The size of the team is a fact about the business the agent should know — with three
+        // stylists, "we can fit you in at two" can be true for two callers at once. Who is in on a
+        // given day is not stated: it changes with days off and leave, and a prompt written at
+        // sync time would be quietly wrong days later. check_availability is the live answer.
+        var roster = await _employees.LoadRosterAsync(orgId, TodayLocal(org), TodayLocal(org));
+        if (roster.Enabled)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## The team");
+            sb.AppendLine($"- {roster.Employees.Count} people take appointments here: " +
+                          $"{string.Join(", ", roster.Employees.Select(e => e.Name))}.");
+            sb.AppendLine(roster.Employees.Count > 1
+                ? $"- Up to {roster.Employees.Count} appointments can run at the same time, one with each of them. " +
+                  "Two callers wanting the same hour is not a clash on its own."
+                : "- One appointment at a time: there is a single person taking them.");
+            sb.AppendLine("- Who is actually in changes day to day — days off, holiday, sick leave. Never work " +
+                          "that out yourself and never tell a caller who is working. check_availability counts " +
+                          "only the people genuinely on duty, so any time it gives back is one somebody can cover, " +
+                          "and a day it says no one is working is a day with nothing to offer.");
+            sb.AppendLine("- Do not promise a particular person. When a booking succeeds it tells you who the " +
+                          "appointment is with, and that is the only name you may pass on.");
+        }
 
         var closures = (await _holidays.ListUpcomingAsync(orgId, TodayLocal(org))).ToList();
         sb.AppendLine();

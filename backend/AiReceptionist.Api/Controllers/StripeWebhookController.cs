@@ -117,7 +117,16 @@ public class StripeWebhookController : ControllerBase
                 if (e.Data.Object is Invoice created)
                 {
                     var orgId = await ResolveAsync(created.CustomerId);
-                    if (orgId is not null)
+
+                    // Only onto an invoice that can still take a line, and only onto a renewal.
+                    //
+                    // A subscription's *first* invoice already carries the carry-over: it was
+                    // charged on the Checkout page the customer paid on, or added as a pending item
+                    // before the operator started the subscription. Adding it again here would bill
+                    // the same minutes twice. And an invoice that has already finalized cannot take
+                    // an item at all — Stripe refuses, which used to fail the delivery and have it
+                    // retried forever over a charge that belongs on the next invoice anyway.
+                    if (orgId is not null && CanTakeAnotherLine(created))
                         await _billing.AttachPendingOverageAsync(orgId.Value, created.Id, ct);
 
                     // Read it back: the totals changed if a line was just added.
@@ -134,11 +143,39 @@ public class StripeWebhookController : ControllerBase
                 if (e.Data.Object is Invoice changed)
                 {
                     await _billing.MirrorInvoiceAsync(changed, ct);
+
+                    // A failure is part of the payment record, not just a log line. It is written
+                    // against the attempt that was waiting on it, so a customer whose card was
+                    // declined can be told what happened rather than left wondering.
                     if (e.Type == "invoice.payment_failed")
-                        _logger.LogWarning(
-                            "Stripe could not collect invoice {InvoiceId} for customer {CustomerId}.",
-                            changed.Id, changed.CustomerId);
+                        await _billing.HandlePaymentFailedAsync(changed, ct);
                 }
+                break;
+
+            // Nothing was charged — the customer started Checkout and never finished. Recorded so
+            // the trail says so, instead of leaving an attempt open forever.
+            case "checkout.session.expired":
+                if (e.Data.Object is Stripe.Checkout.Session expired)
+                    await _billing.HandleCheckoutExpiredAsync(expired, ct);
+                break;
+
+            // Money going back. Recorded against the payment it reverses so the history stays
+            // truthful; the refund itself was somebody's deliberate decision, and this only
+            // follows it.
+            case "charge.refunded":
+                if (e.Data.Object is Charge refunded)
+                    await _billing.HandleRefundAsync(refunded, ct);
+                break;
+
+            // A disputed charge is money at risk and a deadline to answer by, and neither is
+            // something a log line at debug level should be carrying.
+            case "charge.dispute.created":
+                if (e.Data.Object is Dispute dispute)
+                    _logger.LogError(
+                        "A Stripe charge has been disputed: {Amount} on charge {ChargeId}, reason " +
+                        "'{Reason}', status {Status}. Respond in the Stripe dashboard before the " +
+                        "evidence deadline.",
+                        dispute.Amount, dispute.ChargeId, dispute.Reason, dispute.Status);
                 break;
 
             case "invoice.paid":
@@ -256,6 +293,13 @@ public class StripeWebhookController : ControllerBase
 
         return await ResolveAsync(sub.CustomerId);
     }
+
+    /// <summary>Whether this platform may still add a line to an invoice Stripe has just opened:
+    /// it has to be a draft, and it must not be the first invoice of a new subscription, which is
+    /// raised with the carry-over already on it.</summary>
+    private static bool CanTakeAnotherLine(Invoice invoice) =>
+        string.Equals(invoice.Status, "draft", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(invoice.BillingReason, "subscription_create", StringComparison.OrdinalIgnoreCase);
 
     private async Task<int?> ResolveAsync(string? stripeCustomerId) =>
         string.IsNullOrWhiteSpace(stripeCustomerId)

@@ -10,6 +10,7 @@ import {
   MONTHS, compact, money, moneyExact, minutes as fmtMinutes, duration, pctChange, whenLabel,
 } from '../lib/format'
 import { useUsage } from '../api/usage'
+import { AttentionCard } from '../components/alerts'
 
 /* The three call outcomes, in the order they stack. One validated categorical set —
    see the palette note in index.css. */
@@ -283,6 +284,13 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/*
+        What happened while nobody was here, above everything else on the page. It renders only
+        when something is actually waiting — a banner that is always present is one nobody reads,
+        and this one has to still be noticed on the morning it matters.
+      */}
+      <AttentionCard />
 
       {/*
         Said plainly, and only when it is true. The tiles below are showing nothing because there

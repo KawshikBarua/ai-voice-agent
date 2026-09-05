@@ -135,6 +135,57 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Appointments_Org_Start')
 CREATE INDEX IX_Appointments_Org_Start ON Appointments(OrganizationId, StartAt) INCLUDE (Status);
 GO
 
+-- Who is handling the appointment (see the Employees table below). Nullable: bookings taken
+-- before the roster existed carry no assignment, and the availability rules account for them.
+IF COL_LENGTH('Appointments','EmployeeId') IS NULL ALTER TABLE Appointments ADD EmployeeId INT NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Appointments_Org_Employee_Start')
+CREATE INDEX IX_Appointments_Org_Employee_Start ON Appointments(OrganizationId, EmployeeId, StartAt) INCLUDE (EndAt, Status, IsDeleted);
+GO
+
+-- ---------------------------------------------------------------- team roster
+-- The people a caller can actually be booked with. Capacity for a slot is how many of them
+-- are on duty and free at that moment, which is what allows two 12:00 appointments when two
+-- employees are working and refuses both when neither is. An organization with no rows here
+-- falls back to Organizations.MaxConcurrentAppointments, so this is additive.
+IF OBJECT_ID('Employees') IS NULL
+CREATE TABLE Employees (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    Name NVARCHAR(200) NOT NULL,
+    JobTitle NVARCHAR(150) NULL,
+    Phone NVARCHAR(50) NULL,
+    Email NVARCHAR(256) NULL,
+    WorkingHoursJson NVARCHAR(MAX) NULL,               -- same shape as Organizations.BusinessHoursJson; NULL = follow the business hours
+    IsActive BIT NOT NULL DEFAULT 1,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    ModifiedAt DATETIME2 NULL,
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Employees_Org')
+CREATE INDEX IX_Employees_Org ON Employees(OrganizationId) INCLUDE (IsActive);
+
+GO
+
+-- Days an employee is away. Inclusive of both ends, local calendar dates.
+IF OBJECT_ID('EmployeeTimeOff') IS NULL
+CREATE TABLE EmployeeTimeOff (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    EmployeeId INT NOT NULL REFERENCES Employees(Id),
+    StartDate DATE NOT NULL,
+    EndDate DATE NOT NULL,
+    Reason NVARCHAR(200) NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_EmployeeTimeOff_Org_Employee')
+CREATE INDEX IX_EmployeeTimeOff_Org_Employee ON EmployeeTimeOff(OrganizationId, EmployeeId, StartDate);
+
+GO
+
 IF OBJECT_ID('CallLogs') IS NULL
 CREATE TABLE CallLogs (
     Id INT IDENTITY PRIMARY KEY,
@@ -154,6 +205,62 @@ CREATE TABLE CallLogs (
 );
 GO
 
+-- The billing period this call's minutes were counted into, named by that period's end.
+-- NULL means not yet counted. Minutes used to be totalled purely by StartedAt falling
+-- inside the window being closed, which silently lost any row that arrived after that
+-- close had run — a call still in progress at a period boundary, or a batch backfilled
+-- from Retell afterwards. Stamping the row makes "counted" a property of the call rather
+-- than of the clock, so a late arrival is swept into the next close instead of nobody's.
+--
+-- The backfill sits inside the same IF so it runs exactly once: every call within a period
+-- already closed is marked as counted by it. Without that, the first close after this ships
+-- would sweep up each customer's whole call history and bill them for all of it.
+IF COL_LENGTH('CallLogs','BilledPeriodEnd') IS NULL
+BEGIN
+    ALTER TABLE CallLogs ADD BilledPeriodEnd DATETIME2 NULL;
+
+    IF OBJECT_ID('OrganizationUsagePeriods') IS NOT NULL
+    EXEC('
+        UPDATE cl SET cl.BilledPeriodEnd = already.PeriodEnd
+        FROM CallLogs cl
+        CROSS APPLY (
+            SELECT MIN(up.PeriodEnd) AS PeriodEnd
+            FROM OrganizationUsagePeriods up
+            WHERE up.OrganizationId = cl.OrganizationId
+              AND up.PeriodEnd > cl.StartedAt
+        ) already
+        WHERE cl.BilledPeriodEnd IS NULL AND already.PeriodEnd IS NOT NULL;');
+END
+GO
+
+-- Retell retries a webhook until it is acknowledged, and two deliveries of the same
+-- call_ended can be in flight at once. Deduplication was a read-then-insert with nothing
+-- behind it, so both could pass the check and both insert — billing the call twice.
+-- Any duplicate already on record is one call counted twice, so the later rows are
+-- soft-deleted first; the CREATE would otherwise fail on the very data it prevents.
+UPDATE cl SET IsDeleted = 1
+FROM CallLogs cl
+JOIN (
+    SELECT Id, ROW_NUMBER() OVER (PARTITION BY OrganizationId, RetellCallId ORDER BY Id) AS Seq
+    FROM CallLogs
+    WHERE RetellCallId IS NOT NULL AND IsDeleted = 0
+) ranked ON ranked.Id = cl.Id
+WHERE ranked.Seq > 1;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_CallLogs_Org_RetellCallId')
+CREATE UNIQUE INDEX UX_CallLogs_Org_RetellCallId
+ON CallLogs (OrganizationId, RetellCallId)
+WHERE RetellCallId IS NOT NULL AND IsDeleted = 0;
+GO
+
+-- The period close claims rows with this; the live usage figure counts them.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CallLogs_Org_Unbilled')
+CREATE INDEX IX_CallLogs_Org_Unbilled
+ON CallLogs (OrganizationId, BilledPeriodEnd, StartedAt)
+INCLUDE (DurationSeconds, IsDeleted);
+GO
+
 -- Dates the business is closed, overriding Organizations.BusinessHoursJson for that day.
 -- Fed into the AI prompt and knowledge base, and enforced by the live booking tools.
 IF OBJECT_ID('Holidays') IS NULL
@@ -169,6 +276,59 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Holidays_Org_Date')
 CREATE UNIQUE INDEX IX_Holidays_Org_Date ON Holidays(OrganizationId, [Date]) WHERE IsDeleted = 0;
+GO
+
+
+-- ------------------------------------------------------- notifications
+-- Browsers that asked to be told when the diary changes. Web Push, so a booking taken at 2am
+-- reaches the owner's phone with the dashboard shut and without costing anything to send.
+IF OBJECT_ID('PushDevices') IS NULL
+CREATE TABLE PushDevices (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    UserId INT NOT NULL REFERENCES Users(Id),
+    Endpoint NVARCHAR(500) NOT NULL,
+    P256dh NVARCHAR(200) NOT NULL,
+    Auth NVARCHAR(100) NOT NULL,
+    Label NVARCHAR(200) NULL,
+    UrgentOnly BIT NOT NULL DEFAULT 0,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    LastNotifiedAt DATETIME2 NULL,
+    FailureCount INT NOT NULL DEFAULT 0,
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_PushDevices_Endpoint')
+CREATE UNIQUE INDEX IX_PushDevices_Endpoint ON PushDevices(Endpoint) WHERE IsDeleted = 0;
+
+GO
+
+-- Things that happened unattended, and whether anyone has since looked. Urgent rows are chased
+-- (re-notified) until AcknowledgedAt is set, which is what stops a missed emergency staying missed.
+IF OBJECT_ID('Alerts') IS NULL
+CREATE TABLE Alerts (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    Kind NVARCHAR(40) NOT NULL,
+    Severity NVARCHAR(20) NOT NULL DEFAULT 'Info',
+    Title NVARCHAR(200) NOT NULL,
+    Body NVARCHAR(500) NOT NULL,
+    Url NVARCHAR(300) NULL,
+    AppointmentId INT NULL,
+    AcknowledgedAt DATETIME2 NULL,
+    AcknowledgedByUserId INT NULL,
+    NotifiedCount INT NOT NULL DEFAULT 0,
+    LastNotifiedAt DATETIME2 NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+);
+GO
+
+-- The escalation worker's query: unacknowledged urgent rows, oldest first.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Alerts_Pending')
+CREATE INDEX IX_Alerts_Pending ON Alerts(AcknowledgedAt, Severity, LastNotifiedAt) INCLUDE (OrganizationId);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Alerts_Org_Created')
+CREATE INDEX IX_Alerts_Org_Created ON Alerts(OrganizationId, CreatedAt DESC);
 GO
 
 IF OBJECT_ID('KnowledgeBase') IS NULL

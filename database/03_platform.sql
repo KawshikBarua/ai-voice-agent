@@ -38,6 +38,19 @@ IF COL_LENGTH('Organizations', 'AgentRestrictedReason') IS NULL
 GO
 
 -- ---------------------------------------------------------------------------
+-- A free trial the operator grants, for as many days as they choose. Until
+-- TrialEndsAt the AI agent answers with no plan and no payment; past it, it
+-- stops. It lives on the organization because a trial is given before there is
+-- anything to bill — often before a subscription row exists at all.
+-- ---------------------------------------------------------------------------
+IF COL_LENGTH('Organizations', 'TrialStartedAt') IS NULL
+    ALTER TABLE Organizations ADD TrialStartedAt DATETIME2 NULL;
+GO
+IF COL_LENGTH('Organizations', 'TrialEndsAt') IS NULL
+    ALTER TABLE Organizations ADD TrialEndsAt DATETIME2 NULL;
+GO
+
+-- ---------------------------------------------------------------------------
 -- One subscription per organization. The numbers in force live here rather than
 -- being read through to the tier, so repricing a tier never silently re-bills
 -- everyone already on it.
@@ -246,6 +259,66 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_OrgPayments_StripeInvoice')
 CREATE UNIQUE INDEX UX_OrgPayments_StripeInvoice ON OrganizationPayments(StripeInvoiceId)
 WHERE StripeInvoiceId IS NOT NULL;
+GO
+
+-- Refunds and the charge behind a payment. StripePaymentIntentId already existed but
+-- was never written — the invoice id was the only reference kept, which is not enough
+-- to trace a refund or answer a chargeback, because both are raised against the charge.
+IF COL_LENGTH('OrganizationPayments','StripeChargeId') IS NULL
+    ALTER TABLE OrganizationPayments ADD StripeChargeId NVARCHAR(100) NULL;
+GO
+IF COL_LENGTH('OrganizationPayments','ReceiptUrl') IS NULL
+    ALTER TABLE OrganizationPayments ADD ReceiptUrl NVARCHAR(1000) NULL;
+GO
+IF COL_LENGTH('OrganizationPayments','AmountRefunded') IS NULL
+    ALTER TABLE OrganizationPayments ADD AmountRefunded DECIMAL(18,2) NOT NULL DEFAULT 0;
+GO
+IF COL_LENGTH('OrganizationPayments','RefundedAt') IS NULL
+    ALTER TABLE OrganizationPayments ADD RefundedAt DATETIME2 NULL;
+GO
+
+-- A refund arrives naming the charge, never the invoice, so this is how one is matched
+-- back to the payment it reverses.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_OrgPayments_PaymentIntent')
+CREATE INDEX IX_OrgPayments_PaymentIntent ON OrganizationPayments(StripePaymentIntentId)
+WHERE StripePaymentIntentId IS NOT NULL;
+GO
+
+-- ---------------------------------------------------------------------------
+-- Every attempt to pay, from the moment the customer is sent to Stripe.
+--
+-- The payment record used to begin at "paid": starting Checkout wrote a log line and
+-- nothing else. So a customer saying "I paid and nothing happened" could not be
+-- answered — there was no record they had ever started, which tier they chose, or
+-- which session it was. The money is safe without this (the webhook, the customer's
+-- return, and the reconciliation sweep are three independent ways it lands), but being
+-- safe and being able to show somebody that it is safe are not the same thing.
+-- ---------------------------------------------------------------------------
+IF OBJECT_ID('OrganizationPaymentAttempts') IS NULL
+CREATE TABLE OrganizationPaymentAttempts (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    -- Unique: one Checkout session must never open two attempts, however many
+    -- redeliveries or page reloads report it.
+    StripeSessionId NVARCHAR(200) NOT NULL UNIQUE,
+    PlanId INT NULL,
+    PlanName NVARCHAR(100) NOT NULL DEFAULT '',
+    Amount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    Currency NVARCHAR(10) NOT NULL DEFAULT 'USD',
+    Status NVARCHAR(20) NOT NULL DEFAULT 'Started',  -- Started | Paid | Abandoned | Failed
+    StartedByUserId INT NULL,
+    StartedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    SettledAt DATETIME2 NULL,
+    StripeSubscriptionId NVARCHAR(100) NULL,
+    StripeInvoiceId NVARCHAR(100) NULL,
+    StripePaymentIntentId NVARCHAR(100) NULL,
+    Outcome NVARCHAR(500) NULL
+);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_OrgPaymentAttempts_Org_Started')
+CREATE INDEX IX_OrgPaymentAttempts_Org_Started
+ON OrganizationPaymentAttempts(OrganizationId, StartedAt DESC) INCLUDE (Status);
 GO
 
 -- ---------------------------------------------------------------------------

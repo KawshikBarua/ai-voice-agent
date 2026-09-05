@@ -3,6 +3,18 @@ using Stripe.Checkout;
 
 namespace AiReceptionist.Api.Services;
 
+/// <summary>A Checkout session that has just been created: where to send the customer, and the id
+/// to file the attempt under.</summary>
+public record StartedCheckout(string SessionId, string Url);
+
+/// <summary>What a payment can be traced by after the fact. Any of these may be absent — an
+/// invoice settled from account credit has no charge at all — so nothing downstream may require
+/// them.</summary>
+public record PaymentReferences(string? PaymentIntentId, string? ChargeId, string? ReceiptUrl)
+{
+    public static readonly PaymentReferences None = new(null, null, null);
+}
+
 /// <summary>Where a customer is sent back to after Checkout or the billing portal. These are
 /// tenant-app URLs, so they are configured rather than guessed.</summary>
 public class StripeUrls
@@ -40,9 +52,28 @@ public interface IStripeGateway
     /// subscriptions already on it.</summary>
     Task<(string ProductId, string PriceId)> CreatePriceAsync(PricingPlan plan, CancellationToken ct = default);
 
-    /// <summary>Hosted Checkout for a customer subscribing themselves.</summary>
-    Task<string> CreateCheckoutSessionAsync(int orgId, int planId, string customerId, string priceId,
-        CancellationToken ct = default);
+    /// <summary>
+    /// Hosted Checkout for a customer subscribing themselves. The id comes back with the URL so the
+    /// attempt can be written down before the customer is sent anywhere.
+    ///
+    /// <paramref name="carried"/> is what is owed on top of the plan — overruns from periods that
+    /// have closed without being invoiced. They go on as one-off lines beside the subscription, so
+    /// the customer pays the whole of what they owe in one go and, just as importantly, reads every
+    /// part of it on Stripe's page before they agree to it.
+    /// </summary>
+    Task<StartedCheckout> CreateCheckoutSessionAsync(int orgId, int planId, string customerId,
+        string priceId, IReadOnlyList<CarriedCharge> carried, CancellationToken ct = default);
+
+    /// <summary>
+    /// The charge behind a paid invoice: payment intent, charge, and the receipt the customer was
+    /// shown.
+    ///
+    /// A second call rather than something read off the invoice, because in the current Stripe API
+    /// an invoice points at its payments rather than carrying them. Best-effort by design — a
+    /// payment must never fail to be recorded because the reference lookup did — so this returns
+    /// empties rather than throwing.
+    /// </summary>
+    Task<PaymentReferences> GetInvoicePaymentRefsAsync(string invoiceId, CancellationToken ct = default);
 
     /// <summary>Reads back a Checkout session by id. This is what lets the customer's return from
     /// Stripe confirm itself, instead of the account only coming to life when a webhook happens to
@@ -53,10 +84,18 @@ public interface IStripeGateway
     /// own invoices. Card details never touch this application.</summary>
     Task<string> CreatePortalSessionAsync(string customerId, CancellationToken ct = default);
 
-    /// <summary>Attaches a one-off charge. With <paramref name="invoiceId"/> it lands on that draft
-    /// invoice; without one it waits for the customer's next invoice.</summary>
+    /// <summary>
+    /// Attaches a one-off charge. With <paramref name="invoiceId"/> it lands on that draft invoice;
+    /// without one it waits for the customer's next invoice.
+    ///
+    /// <paramref name="idempotencyKey"/> is what makes this safe to retry. Creating an invoice item
+    /// moves money, and the caller cannot tell a request Stripe never received from one whose reply
+    /// was lost on the way back — so without a key, a dropped connection on a charge that actually
+    /// landed means the customer pays for the same minutes twice. Pass a key derived from the thing
+    /// being charged for, never from the attempt.
+    /// </summary>
     Task AddInvoiceItemAsync(string customerId, string? invoiceId, decimal amount, string currency,
-        string description, CancellationToken ct = default);
+        string description, string? idempotencyKey = null, CancellationToken ct = default);
 
     /// <summary>Raises and emails a one-off invoice — the operator-driven alternative to Checkout.
     /// Any pending invoice items are swept onto it.</summary>
@@ -243,24 +282,50 @@ public class StripeGateway : IStripeGateway
         return (price.ProductId, price.Id);
     }
 
-    public async Task<string> CreateCheckoutSessionAsync(int orgId, int planId, string customerId,
-        string priceId, CancellationToken ct = default)
+    public async Task<StartedCheckout> CreateCheckoutSessionAsync(int orgId, int planId,
+        string customerId, string priceId, IReadOnlyList<CarriedCharge> carried,
+        CancellationToken ct = default)
     {
+        // The plan first, then what is owed on top of it. A one-time line in subscription mode is
+        // charged on the subscription's first invoice, which is exactly where the carry-over would
+        // have landed anyway — the difference is that this way the customer sees it before paying.
+        var lineItems = new List<SessionLineItemOptions>
+        {
+            new() { Price = priceId, Quantity = 1 },
+        };
+
+        lineItems.AddRange(carried.Select(c => new SessionLineItemOptions
+        {
+            Quantity = 1,
+            PriceData = new SessionLineItemPriceDataOptions
+            {
+                Currency = c.Currency.ToLowerInvariant(),
+                UnitAmount = StripeMoney.ToMinorUnits(c.Amount, c.Currency),
+                // No Recurring: this is settled once, not every cycle.
+                ProductData = new SessionLineItemPriceDataProductDataOptions { Name = c.Description },
+            },
+        }));
+
         var sessions = new SessionService(Client);
         var session = await sessions.CreateAsync(new SessionCreateOptions
         {
             Mode = "subscription",
             Customer = customerId,
-            LineItems = [new SessionLineItemOptions { Price = priceId, Quantity = 1 }],
+            LineItems = lineItems,
             SuccessUrl = _urls.Success,
             CancelUrl = _urls.Cancel,
             ClientReferenceId = orgId.ToString(),
             // The chosen tier rides along so the webhook can put the account on it once payment
             // has actually gone through — picking a tier and abandoning Checkout changes nothing.
+            //
+            // So do the periods the carry-over came from: what is charged here has to be settled
+            // locally when the payment lands, and naming them means settling exactly what was
+            // charged rather than whatever happens to be pending by then.
             Metadata = new Dictionary<string, string>
             {
                 ["organizationId"] = orgId.ToString(),
                 ["planId"] = planId.ToString(),
+                ["overagePeriodIds"] = string.Join(',', carried.Select(c => c.PeriodId)),
             },
             SubscriptionData = new SessionSubscriptionDataOptions
             {
@@ -268,7 +333,38 @@ public class StripeGateway : IStripeGateway
             },
         }, cancellationToken: ct);
 
-        return session.Url;
+        return new StartedCheckout(session.Id, session.Url);
+    }
+
+    public async Task<PaymentReferences> GetInvoicePaymentRefsAsync(string invoiceId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var payments = await new InvoicePaymentService(Client).ListAsync(
+                new InvoicePaymentListOptions { Invoice = invoiceId, Limit = 1 },
+                cancellationToken: ct);
+
+            var paid = payments?.Data?.FirstOrDefault()?.Payment;
+            if (paid is null) return PaymentReferences.None;
+
+            // The receipt is on the charge, and only worth a second round-trip when there is one.
+            string? receiptUrl = null;
+            if (!string.IsNullOrWhiteSpace(paid.ChargeId))
+                receiptUrl = (await new ChargeService(Client)
+                    .GetAsync(paid.ChargeId, cancellationToken: ct))?.ReceiptUrl;
+
+            return new PaymentReferences(paid.PaymentIntentId, paid.ChargeId, receiptUrl);
+        }
+        catch (StripeException ex)
+        {
+            // Enrichment only. The payment itself is already recorded against its invoice id, and
+            // losing a receipt link is not a reason to make Stripe redeliver a payment event.
+            _logger.LogWarning(ex,
+                "Could not read the charge behind Stripe invoice {InvoiceId}. The payment is recorded; " +
+                "it just has no charge reference against it.", invoiceId);
+            return PaymentReferences.None;
+        }
     }
 
     public async Task<Stripe.Checkout.Session?> GetCheckoutSessionAsync(string sessionId,
@@ -300,7 +396,8 @@ public class StripeGateway : IStripeGateway
     }
 
     public async Task AddInvoiceItemAsync(string customerId, string? invoiceId, decimal amount,
-        string currency, string description, CancellationToken ct = default)
+        string currency, string description, string? idempotencyKey = null,
+        CancellationToken ct = default)
     {
         var items = new InvoiceItemService(Client);
         await items.CreateAsync(new InvoiceItemCreateOptions
@@ -312,8 +409,20 @@ public class StripeGateway : IStripeGateway
             // This description is what the customer reads on the invoice, so it carries the whole
             // explanation: how many minutes, at what rate, for which period.
             Description = description,
-        }, cancellationToken: ct);
+        }, Idempotently(idempotencyKey), ct);
     }
+
+    /// <summary>
+    /// Wraps a key for Stripe, or returns null when the caller has none.
+    ///
+    /// Stripe remembers a key for 24 hours and replays the original response rather than repeating
+    /// the action. That covers the case this exists for — a reply lost in transit and retried
+    /// moments later — and comfortably covers Stripe's own webhook redelivery schedule. It is not a
+    /// permanent record: a caller that first retries days later is on its own, which is why every
+    /// charge here is also settled in the database the moment Stripe accepts it.
+    /// </summary>
+    private static RequestOptions? Idempotently(string? key) =>
+        string.IsNullOrWhiteSpace(key) ? null : new RequestOptions { IdempotencyKey = key };
 
     public async Task<Invoice> CreateAndSendInvoiceAsync(string customerId, int daysUntilDue,
         CancellationToken ct = default)
@@ -322,11 +431,17 @@ public class StripeGateway : IStripeGateway
 
         // Sweeps up every pending invoice item on the customer — the plan charge the caller just
         // added, plus any overage carried over from a closed period.
+        //
+        // PendingInvoiceItemsBehavior has to be said out loud: Stripe defaults it to "exclude", so
+        // an invoice raised without it comes out empty — the very items this call exists to bill
+        // are left sitting on the customer for the next invoice, and the customer is emailed a
+        // request for nothing.
         var draft = await invoices.CreateAsync(new InvoiceCreateOptions
         {
             Customer = customerId,
             CollectionMethod = "send_invoice",
             DaysUntilDue = daysUntilDue,
+            PendingInvoiceItemsBehavior = "include",
         }, cancellationToken: ct);
 
         var finalized = await invoices.FinalizeInvoiceAsync(draft.Id, cancellationToken: ct);

@@ -33,6 +33,26 @@ public class Organization
     public bool AgentRestricted { get; set; }
     public DateTime? AgentRestrictedAt { get; set; }
     public string? AgentRestrictedReason { get; set; }
+
+    /// <summary>A free trial granted from the super admin console, for however many days the
+    /// operator chose. While it runs the AI agent answers without a plan or a payment; once
+    /// <see cref="TrialEndsAt"/> passes it stops, unless a plan has been taken out by then.
+    /// Both are null for an organization that has never been given one.</summary>
+    public DateTime? TrialStartedAt { get; set; }
+    public DateTime? TrialEndsAt { get; set; }
+
+    /// <summary>The trial is running right now. A null end date is not a trial, so this is false
+    /// for every organization that was never given one.</summary>
+    public bool IsOnTrial => TrialEndsAt > DateTime.UtcNow;
+
+    /// <summary>A trial was given and has run out. The distinction matters: this account has been
+    /// tried and lapsed, which is a different thing to say than "no plan has ever been taken
+    /// out".</summary>
+    public bool TrialExpired => TrialEndsAt is not null && !IsOnTrial;
+
+    /// <summary>Days left on the trial, rounded up so the last part-day still counts as one.</summary>
+    public int TrialDaysRemaining =>
+        IsOnTrial ? (int)Math.Ceiling((TrialEndsAt!.Value - DateTime.UtcNow).TotalDays) : 0;
 }
 
 public class User
@@ -72,6 +92,10 @@ public class RefreshToken
     public string Token { get; set; } = "";
     public DateTime ExpiresAt { get; set; }
     public bool Revoked { get; set; }
+    /// <summary>Whether the browser was asked to keep this cookie past the end of the session —
+    /// the "Keep me signed in" choice. Carried across every rotation, because a refresh must not
+    /// quietly promote a session that was meant to end when the browser closed.</summary>
+    public bool Persistent { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -138,6 +162,10 @@ public class Appointment
     public int CustomerId { get; set; }
     public int? ServiceId { get; set; }
     public int? StaffUserId { get; set; }
+    /// <summary>Which member of the roster is handling this appointment. This is what makes two
+    /// bookings in the same hour legitimate — one per employee. Null on bookings taken before the
+    /// organization had a roster, and on organizations that never build one.</summary>
+    public int? EmployeeId { get; set; }
     public DateTime StartAt { get; set; }
     public DateTime EndAt { get; set; }
     public string Status { get; set; } = AppointmentStatus.Scheduled;
@@ -158,6 +186,7 @@ public class Appointment
     public string? CustomerPhone { get; set; }
     public string? ServiceName { get; set; }
     public string? StaffName { get; set; }
+    public string? EmployeeName { get; set; }
 }
 
 public class CallLog
@@ -224,6 +253,144 @@ public class Holiday
     public bool IsDeleted { get; set; }
 }
 
+/// <summary>A person on the organization's roster — the barber, the technician, the dentist.
+///
+/// The roster is what lets one business take two appointments in the same hour: capacity for a
+/// slot is the number of employees on duty for it and not already booked, rather than one number
+/// for the whole business. An organization with an empty roster keeps the older behaviour
+/// (<see cref="Organization.MaxConcurrentAppointments"/>), so this is additive for existing tenants.
+///
+/// Deliberately not a <see cref="User"/>: most employees never sign in, and the people who do sign
+/// in (the receptionist, the owner's accountant) are usually not people a caller can be booked with.</summary>
+public class Employee
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public string Name { get; set; } = "";
+    public string? JobTitle { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    /// <summary>This person's own weekly hours, in the same format as
+    /// <see cref="Organization.BusinessHoursJson"/>. Null means they simply work the business
+    /// hours. Their effective window is always the intersection of the two, so an employee can
+    /// never be booked outside the hours the business is open.</summary>
+    public string? WorkingHoursJson { get; set; }
+    /// <summary>Off the roster for now — left, or on open-ended leave. An inactive employee is
+    /// never counted as available and is never assigned a booking.</summary>
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ModifiedAt { get; set; }
+    public bool IsDeleted { get; set; }
+
+    // joined
+    /// <summary>Appointments still to come that are assigned to this person. Shown on the team
+    /// screen so nobody is taken off the roster out from under a caller already booked with them.</summary>
+    public int UpcomingAppointments { get; set; }
+}
+
+/// <summary>A stretch of days one employee is away — holiday, sick leave, training. Inclusive of
+/// both ends, in the tenant's local calendar. The AI treats the person as absent on those dates:
+/// if nobody else is on duty the slot is never offered, and nothing is booked into it.</summary>
+public class EmployeeTimeOff
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public int EmployeeId { get; set; }
+    /// <summary>Local calendar date; the time component is always midnight and is never read.</summary>
+    public DateTime StartDate { get; set; }
+    /// <summary>Local calendar date, inclusive — a single day off carries the same value as
+    /// <see cref="StartDate"/>.</summary>
+    public DateTime EndDate { get; set; }
+    public string? Reason { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public bool IsDeleted { get; set; }
+
+    // joined
+    public string? EmployeeName { get; set; }
+}
+
+/// <summary>
+/// One browser that has asked to be told when something happens — a phone on the counter, a
+/// laptop at home. Registered per user per device, so the owner who signs in on two machines is
+/// reached on both, and a device is pruned the moment the push service says it is gone.
+///
+/// The three opaque strings are the whole of a Web Push subscription: an endpoint URL at the
+/// browser vendor's push service, and two keys the message is encrypted to. Nothing here is a
+/// credential of ours and none of it can be used to push to anyone else's device.
+/// </summary>
+public class PushDevice
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public int UserId { get; set; }
+    /// <summary>The push service URL for this device. Unique — re-subscribing the same browser
+    /// returns the same endpoint, so it is what makes registration idempotent.</summary>
+    public string Endpoint { get; set; } = "";
+    public string P256dh { get; set; } = "";
+    public string Auth { get; set; } = "";
+    /// <summary>What the device called itself, so a person with several can tell them apart when
+    /// turning one off.</summary>
+    public string? Label { get; set; }
+    /// <summary>Only send this device the things that cannot wait — emergencies and same-day
+    /// bookings. Someone who watches the dashboard all day does not want a buzz per booking.</summary>
+    public bool UrgentOnly { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? LastNotifiedAt { get; set; }
+    /// <summary>Consecutive delivery failures. A push service answering 404/410 means the
+    /// subscription is dead and the row is removed outright; this counts the softer failures.</summary>
+    public int FailureCount { get; set; }
+    public bool IsDeleted { get; set; }
+}
+
+public static class AlertKind
+{
+    public const string AppointmentBooked = "AppointmentBooked";
+    public const string AppointmentCancelled = "AppointmentCancelled";
+    public const string AppointmentRescheduled = "AppointmentRescheduled";
+}
+
+public static class AlertSeverity
+{
+    /// <summary>Worth knowing about. Notified once, and never chased.</summary>
+    public const string Info = "Info";
+    /// <summary>Cannot wait — an emergency, or something happening today. Notified with the
+    /// notification pinned on screen, and repeated until a human acknowledges it.</summary>
+    public const string Urgent = "Urgent";
+}
+
+/// <summary>
+/// Something that happened while nobody was looking, and the record of whether anybody has since
+/// looked at it.
+///
+/// A notification on its own is not enough for an emergency: it can arrive while the phone is face
+/// down and be gone by the time it is picked up. So an urgent alert is a small piece of state
+/// rather than an event — it stays unacknowledged, shows on the dashboard, and is re-sent on a
+/// timer until someone actually opens it. Acknowledging is the only thing that stops it.
+/// </summary>
+public class Alert
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public string Kind { get; set; } = AlertKind.AppointmentBooked;
+    public string Severity { get; set; } = AlertSeverity.Info;
+    /// <summary>The notification's heading — short, because a phone truncates it.</summary>
+    public string Title { get; set; } = "";
+    public string Body { get; set; } = "";
+    /// <summary>Where tapping the notification lands, relative to the app root.</summary>
+    public string? Url { get; set; }
+    public int? AppointmentId { get; set; }
+    public DateTime? AcknowledgedAt { get; set; }
+    public int? AcknowledgedByUserId { get; set; }
+    /// <summary>How many times this has been pushed, including the first. Capped, so a business
+    /// that closes for the night is not buzzed all night by something nobody will action.</summary>
+    public int NotifiedCount { get; set; }
+    public DateTime? LastNotifiedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+
+    // joined
+    public string? AcknowledgedByName { get; set; }
+}
+
 public class KnowledgeBaseEntry
 {
     public int Id { get; set; }
@@ -249,6 +416,16 @@ public class AgentConfig
     public string? RetellLlmId { get; set; }
     public string? RetellKnowledgeBaseId { get; set; }
     public string? RetellPhoneNumber { get; set; }
+
+    // Where a disconnect parks the Retell ids it just detached. Disconnecting deliberately leaves
+    // the resources alive on the shared Retell account so it stays reversible, but that means the
+    // next Connect would otherwise create a second agent, LLM and knowledge base and abandon the
+    // first — one orphaned set per connect/disconnect cycle. Connect deletes whatever is parked
+    // here before it creates anything, which is what keeps one tenant to one set of resources.
+    public string? DetachedRetellAgentId { get; set; }
+    public string? DetachedRetellLlmId { get; set; }
+    public string? DetachedRetellKnowledgeBaseId { get; set; }
+
     public DateTime? LastSyncedAt { get; set; }
     public bool Enabled { get; set; } = true;
     public string EnabledToolsJson { get; set; } = "[]";

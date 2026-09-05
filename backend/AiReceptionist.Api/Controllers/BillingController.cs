@@ -185,10 +185,66 @@ public class BillingController : ControllerBase
         if (!string.Equals(sub?.StripeCustomerId, customerId, StringComparison.Ordinal))
             await _repo.SetStripeCustomerAsync(orgId, customerId);
 
-        var url = await _stripe.CreateCheckoutSessionAsync(orgId, plan.Id, customerId, plan.StripePriceId!, ct);
+        // What the customer already owes goes through the same till as the plan they are choosing:
+        // minutes run past an allowance in a period that has closed are a debt, and letting someone
+        // set up a subscription while it sits behind them means chasing it separately later.
+        //
+        // Checkout takes at most 20 lines, and the plan is one of them. Anything beyond that stays
+        // pending and lands on the next invoice — the ordinary route — rather than failing the
+        // payment the customer is standing in front of.
+        var carried = (await _billing.ListCarriedChargesAsync(orgId, ct)).Take(19).ToList();
 
-        _logger.LogInformation("Organization {OrgId} started Stripe Checkout for tier {Plan}.", orgId, plan.Name);
-        return Ok(ApiResponse<object>.Ok(new { url }));
+        var checkout = await _stripe.CreateCheckoutSessionAsync(
+            orgId, plan.Id, customerId, plan.StripePriceId!, carried, ct);
+
+        // The attempt is written down before the customer leaves, not after they come back. The
+        // one that never comes back is precisely the one somebody rings up about, and until now it
+        // left nothing behind but a log line — no session id, no tier, no time. Recorded here, a
+        // support conversation can start from what the customer actually did.
+        //
+        // Failing to file it must not stop the payment: the money is what matters, and the webhook,
+        // the customer's return and the reconciliation sweep all still apply it without this row.
+        try
+        {
+            await _repo.StartPaymentAttemptAsync(new PaymentAttempt
+            {
+                OrganizationId = orgId,
+                StripeSessionId = checkout.SessionId,
+                PlanId = plan.Id,
+                PlanName = plan.Name,
+                // What Stripe was actually asked for, not just the plan price — otherwise a
+                // customer who rings up about "the payment I made" is quoted a figure that does
+                // not match their statement.
+                Amount = plan.Amount + carried.Sum(c => c.Amount),
+                Currency = plan.Currency,
+                Status = PaymentAttemptStatus.Started,
+                StartedByUserId = _tenant.UserId,
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Could not record the start of Checkout session {SessionId} for organization {OrgId}. " +
+                "The payment will still be applied; only the audit trail is missing.",
+                checkout.SessionId, orgId);
+        }
+
+        _logger.LogInformation(
+            "Organization {OrgId} started Stripe Checkout for tier {Plan} (session {SessionId}).",
+            orgId, plan.Name, checkout.SessionId);
+
+        return Ok(ApiResponse<object>.Ok(new { url = checkout.Url }));
+    }
+
+    /// <summary>Every attempt to pay this account has made, latest first — including the ones that
+    /// were abandoned or refused. The completed ones also appear as invoices and payments; this is
+    /// the view that shows what happened when a payment did <em>not</em> complete.</summary>
+    [HttpGet("payment-attempts")]
+    [Authorize(Roles = $"{Roles.OrgAdmin},{Roles.Manager}")]
+    public async Task<IActionResult> PaymentAttempts([FromQuery] int take = 20)
+    {
+        var attempts = await _repo.ListPaymentAttemptsAsync(_tenant.OrganizationId, Math.Clamp(take, 1, 100));
+        return Ok(ApiResponse<IReadOnlyList<PaymentAttempt>>.Ok(attempts));
     }
 
     /// <summary>

@@ -131,16 +131,19 @@
                 </form>
             </div>
             <p class="note">
-                Re-sync pushes the tenant's current knowledge base, services, products, greeting and
-                transfer number to the existing agent. Disconnecting detaches the agent from this
-                tenant; the agent itself remains on the Retell account.
+                Re-sync updates this tenant's existing agent and knowledge base in place with their
+                current services, products, greeting and transfer number — nothing is created or
+                replaced. Disconnecting detaches the agent from this tenant; it stays on the Retell
+                account until this organization is connected again, which deletes it and builds a
+                fresh one. Either action affects only this organization.
             </p>
         }
         else
         {
             <p class="note" style="margin-top:0;">
                 This organization has no AI agent yet. Connecting creates its Retell LLM and agent from
-                the tenant's knowledge base, services, products and greeting.
+                the tenant's knowledge base, services, products and greeting — after first deleting
+                anything it left on the Retell account when it was last disconnected.
             </p>
             <form method="post" asp-controller="Retell" asp-action="Connect"
                   asp-route-orgId="@org.Id" asp-route-returnTo="details">
@@ -193,6 +196,61 @@
                     <text>Saving stores the numbers; they take effect when this organization is connected to Retell.</text>
                 }
             </p>
+        }
+    </div>
+
+    @* ---------- Free trial ---------- *@
+    <div class="card">
+        <h2>Free trial</h2>
+        <p class="sub">
+            Free days on the AI agent, with no plan and no payment. When the trial ends the agent
+            stops taking calls — its number is detached and its live-call tools are refused — until
+            this customer is on a paid plan. Sign-in keeps working throughout.
+        </p>
+
+        <div class="kv">
+            <span>Trial</span>
+            <span>
+                @if (org.IsOnTrial)
+                {
+                    <span class="chip accent">@org.TrialDaysRemaining d left</span>
+                }
+                else if (org.TrialExpired)
+                {
+                    <span class="chip danger">Ended</span>
+                }
+                else
+                {
+                    <span class="chip">Never granted</span>
+                }
+            </span>
+        </div>
+        @if (org.TrialEndsAt is not null)
+        {
+            <div class="kv"><span>Started</span><span>@Display.Day(org.TrialStartedAt) (@org.TrialLengthDays d)</span></div>
+            <div class="kv"><span>@(org.IsOnTrial ? "Ends" : "Ended")</span><span>@Display.When(org.TrialEndsAt)</span></div>
+        }
+
+        <form method="post" asp-action="SetTrial" asp-route-id="@org.Id" style="margin-top:14px;">
+            @Html.AntiForgeryToken()
+            <div class="field">
+                <label for="days">Free days from today</label>
+                <input type="number" id="days" name="days" min="1" max="365" value="14" />
+                <div class="help">
+                    Counted from today, so this replaces whatever is left rather than adding to it.
+                </div>
+            </div>
+            <button class="btn" type="submit">@(org.IsOnTrial ? "Reset the trial" : "Start the trial")</button>
+        </form>
+
+        @if (org.IsOnTrial)
+        {
+            <form method="post" asp-action="SetTrial" asp-route-id="@org.Id" style="margin-top:10px;"
+                  onsubmit="return confirm('End @org.Name&#39;s trial now? Their agent stops taking calls unless they are on a paid plan.');">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="days" value="0" />
+                <button class="btn danger" type="submit">End the trial now</button>
+            </form>
         }
     </div>
 

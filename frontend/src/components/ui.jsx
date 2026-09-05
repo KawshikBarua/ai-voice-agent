@@ -28,6 +28,29 @@ export function CardTitle({ title, subtitle, action }) {
   )
 }
 
+/**
+ * The bar at the top of a page: title on the left, its one primary action on the right.
+ *
+ * Held on a single line at every width. Letting it wrap put a full-bleed button underneath the
+ * title on a phone, which reads as a banner rather than a control and pushes the actual content
+ * off the first screen. The title truncates instead — a page title is the one piece of text on
+ * screen the reader already knows.
+ */
+export function PageHeader({ title, action, className = '' }) {
+  return (
+    <div className={`mb-4 flex items-center justify-between gap-3 sm:mb-6 ${className}`}>
+      <h1 className="min-w-0 flex-1 truncate font-display text-xl font-semibold tracking-[-0.01em] sm:text-2xl">
+        {title}
+      </h1>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  )
+}
+
+/** Sizing for a control that sits in a PageHeader or a list row: thumb-sized on a phone without
+ *  crowding out the title, and back to the normal button size from sm. */
+export const compactAction = '!px-3 !py-2 !text-xs sm:!px-4 sm:!text-sm'
+
 export function PillButton({ children, variant = 'dark', className = '', ...rest }) {
   const styles = {
     // The brand fill, for the one action a screen is really about. It uses brand-strong

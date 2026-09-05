@@ -107,6 +107,39 @@ public class BillingSummary
     public string? PendingPlanName { get; set; }
     public bool AgentRestricted { get; set; }
     public string? AgentRestrictedReason { get; set; }
+
+    /// <summary>A free trial the provider granted is still running: the receptionist is answering
+    /// at no charge until <see cref="TrialEndsAt"/>, with or without a plan.</summary>
+    public bool OnTrial { get; set; }
+    /// <summary>When the trial stops. Null for an account that was never given one.</summary>
+    public DateTime? TrialEndsAt { get; set; }
+    public int TrialDaysRemaining { get; set; }
+    /// <summary>The trial has run out. With no plan behind it the receptionist has stopped
+    /// answering, which is the one thing this page must not leave a customer to guess.</summary>
+    public bool TrialExpired { get; set; }
+
+    /// <summary>A payment this account started and that has not been confirmed yet.
+    ///
+    /// This is what a customer whose connection dropped on Stripe's page needs to see. The payment
+    /// itself is safe either way — the webhook, their return, and the reconciliation sweep are
+    /// three independent ways it lands — but a billing page that simply says "no plan" while their
+    /// money is in flight gives them every reason to pay a second time.</summary>
+    public PendingPaymentView? PendingPayment { get; set; }
+}
+
+/// <summary>A payment the customer has started and that has not been confirmed yet, as their
+/// billing page should describe it.</summary>
+public class PendingPaymentView
+{
+    public string PlanName { get; set; } = "";
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "USD";
+    public DateTime StartedAt { get; set; }
+
+    /// <summary>True once it has sat unconfirmed long enough that something has probably gone
+    /// wrong — a webhook that never arrived, or a customer who closed the tab at the card form.
+    /// The page says something different in each case, and neither should be alarming.</summary>
+    public bool IsStale { get; set; }
 }
 
 /// <summary>
@@ -139,6 +172,16 @@ public class UsageSnapshot
 /// <summary>The outcome of applying a Checkout session. <see cref="Problem"/> is written for a
 /// customer to read, so it says what happened rather than naming an internal state.</summary>
 public record CheckoutOutcome(bool Applied, int? OrganizationId, string? Problem);
+
+/// <summary>
+/// One closed period's overrun, owed but not yet on any invoice — a charge that has to ride along
+/// with the plan price wherever the platform asks Stripe for money.
+///
+/// It carries the period it came from, not just an amount: that id is what makes the charge
+/// idempotent upstream and what is settled locally once it has been collected, so the same minutes
+/// can never be billed twice.
+/// </summary>
+public record CarriedCharge(int PeriodId, decimal Amount, string Currency, string Description);
 
 /// <summary>What a reconciliation pass found.</summary>
 public class ReconciliationResult
@@ -183,6 +226,18 @@ public interface IBillingService
     /// the carry-over. Called when Stripe raises the next invoice.</summary>
     Task<bool> AttachPendingOverageAsync(int orgId, string? stripeInvoiceId, CancellationToken ct = default);
 
+    /// <summary>
+    /// What this organization owes on top of its plan: one entry per closed period whose overrun
+    /// has not reached an invoice yet, worded exactly as it will read on the bill.
+    ///
+    /// Every route to Stripe asks for this — the invoice an operator sends, the subscription they
+    /// start, and the Checkout page a customer pays on — so that what is collected is the plan
+    /// price plus everything already carried over, whichever way the money is taken. Elapsed
+    /// periods are closed first, so a customer about to pay is charged for every period that has
+    /// actually finished rather than whatever was last swept.
+    /// </summary>
+    Task<IReadOnlyList<CarriedCharge>> ListCarriedChargesAsync(int orgId, CancellationToken ct = default);
+
     /// <summary>Copies a Stripe invoice and its lines into the local mirror.</summary>
     Task<int?> MirrorInvoiceAsync(Stripe.Invoice invoice, CancellationToken ct = default);
 
@@ -195,6 +250,20 @@ public interface IBillingService
     /// suspension. Idempotent: a redelivered webhook changes nothing. True when this call is what
     /// recorded the payment, so reconciliation can report what it actually recovered.</summary>
     Task<bool> HandleInvoicePaidAsync(Stripe.Invoice invoice, CancellationToken ct = default);
+
+    /// <summary>Closes the attempt behind a Checkout session that expired unpaid. Nothing was
+    /// charged; this is only so the trail says what became of it rather than trailing off.</summary>
+    Task HandleCheckoutExpiredAsync(Stripe.Checkout.Session session, CancellationToken ct = default);
+
+    /// <summary>Records that Stripe could not collect, against the attempt that was waiting on it.
+    /// The subscription itself is left alone — Stripe keeps retrying the card, and the platform's
+    /// own grace period is what decides when a late payment becomes an unpaid one.</summary>
+    Task HandlePaymentFailedAsync(Stripe.Invoice invoice, CancellationToken ct = default);
+
+    /// <summary>Writes a refund against the payment it reverses, so what the customer was left
+    /// paying is what the record shows. The payment row is kept: a payment made and then given
+    /// back is two facts, and erasing the first loses the history behind the second.</summary>
+    Task HandleRefundAsync(Stripe.Charge charge, CancellationToken ct = default);
 }
 
 public class BillingService : IBillingService
@@ -252,7 +321,9 @@ public class BillingService : IBillingService
         {
             ct.ThrowIfCancellationRequested();
 
-            var used = await _billing.MinutesUsedAsync(sub.OrganizationId, start, end);
+            // Claims the calls as it counts them, so a call recorded after this period closed is
+            // carried into the next close rather than falling down the gap between the two.
+            var used = await _billing.ClaimMinutesForPeriodAsync(sub.OrganizationId, end);
 
             // An unmetered plan (no included minutes) never overruns — it is priced on the flat
             // fee alone, so the period is filed for the record with nothing to charge.
@@ -330,12 +401,24 @@ public class BillingService : IBillingService
 
     // ---------------------------------------------------------------- charging the overrun
 
+    public async Task<IReadOnlyList<CarriedCharge>> ListCarriedChargesAsync(int orgId,
+        CancellationToken ct = default)
+    {
+        // Catch up first: a bill about to be raised marks the end of a period, and that period's
+        // overrun belongs on it rather than waiting another whole cycle.
+        await CloseElapsedPeriodsAsync(orgId, ct);
+
+        return (await _billing.ListUsagePeriodsAsync(orgId))
+            .Where(p => !p.IsBilled && p.OverageAmount > 0)
+            .OrderBy(p => p.PeriodStart)
+            .Select(p => new CarriedCharge(p.Id, p.OverageAmount, p.Currency, DescribeOverage(p)))
+            .ToList();
+    }
+
     public async Task<bool> AttachPendingOverageAsync(int orgId, string? stripeInvoiceId,
         CancellationToken ct = default)
     {
-        // Catch up first: the invoice Stripe has just raised marks the end of a period, and that
-        // period's overrun belongs on it rather than waiting another whole cycle.
-        await CloseElapsedPeriodsAsync(orgId, ct);
+        var carried = await ListCarriedChargesAsync(orgId, ct);
 
         var sub = await _billing.GetSubscriptionAsync(orgId);
         if (sub is null || sub.PendingOverageAmount <= 0) return false;
@@ -351,44 +434,60 @@ public class BillingService : IBillingService
             return false;
         }
 
-        var periods = (await _billing.ListUsagePeriodsAsync(orgId))
-            .Where(p => !p.IsBilled && p.OverageAmount > 0)
-            .OrderBy(p => p.PeriodStart)
-            .ToList();
+        // One invoice item per closed period, rather than a single merged line for the whole
+        // carry-over.
+        //
+        // The merged line could not be made safe to retry. Its idempotency key would have to be
+        // derived from the total, and the total legitimately changes the moment another period
+        // closes — so an attempt whose reply was lost, followed by an attempt for a larger sum,
+        // would carry a different key and charge the customer for the first set of minutes twice.
+        // A period's id never changes, so keying on it is exact and permanent. It reads better on
+        // the invoice too: each line names the dates it covers.
+        var charged = false;
 
-        var description = DescribeOverage(periods, sub);
+        foreach (var charge in carried)
+        {
+            await _stripe.AddInvoiceItemAsync(sub.StripeCustomerId, stripeInvoiceId,
+                charge.Amount, charge.Currency, charge.Description,
+                idempotencyKey: OverageIdempotencyKey(charge.PeriodId), ct);
 
-        await _stripe.AddInvoiceItemAsync(sub.StripeCustomerId, stripeInvoiceId,
-            sub.PendingOverageAmount, sub.Currency, description, ct);
+            // Settled one at a time, immediately after Stripe accepts each item. A failure part-way
+            // through leaves the periods already charged marked as such and the rest still pending,
+            // so the next attempt picks up exactly where this one stopped — it neither loses a
+            // charge nor repeats one.
+            await _billing.SettleUsagePeriodAsync(charge.PeriodId, stripeInvoiceId ?? "");
+            charged = true;
 
-        // Only settled after Stripe has accepted the item, so a failure here leaves the charge
-        // pending for the next attempt rather than quietly writing it off.
-        await _billing.SettlePendingOverageAsync(orgId, stripeInvoiceId ?? "");
+            _logger.LogInformation(
+                "Charged organization {OrgId} {Amount} {Currency} on invoice {InvoiceId} — {Detail}",
+                orgId, charge.Amount, charge.Currency, stripeInvoiceId ?? "(next invoice)",
+                charge.Description);
+        }
 
-        _logger.LogInformation(
-            "Charged organization {OrgId} {Amount} {Currency} for {Minutes} overage minute(s) on invoice {InvoiceId}.",
-            orgId, sub.PendingOverageAmount, sub.Currency, sub.PendingOverageMinutes,
-            stripeInvoiceId ?? "(next invoice)");
+        if (!charged)
+            // The carry-over says something is owed but no closed period accounts for it. Zeroing it
+            // silently would write off money; leaving it alone keeps the console showing it as due.
+            _logger.LogError(
+                "Organization {OrgId} carries {Amount} {Currency} of pending overage that no closed " +
+                "period accounts for. It has not been charged — this needs a human.",
+                orgId, sub.PendingOverageAmount, sub.Currency);
 
-        return true;
+        return charged;
     }
 
     /// <summary>The sentence the customer reads on their invoice. It carries the whole
     /// justification — how many minutes, over what allowance, at what rate, for which dates — so
     /// the charge needs no other explanation to make sense.</summary>
-    private static string DescribeOverage(IReadOnlyList<UsagePeriod> periods, SubscriptionRecord sub)
-    {
-        var minutes = periods.Sum(p => p.OverageMinutes);
-        var rate = periods.LastOrDefault()?.OverageRatePerMinute ?? sub.OverageRatePerMinute;
-        var included = periods.LastOrDefault()?.IncludedMinutes ?? sub.IncludedMinutes;
+    /// <summary>Keyed on the period rather than the amount: a period's id never changes, so a
+    /// retry after a lost reply charges the same minutes once, whatever else has closed since.</summary>
+    private static string OverageIdempotencyKey(int periodId) => $"overage-period-{periodId}";
 
-        var span = periods.Count == 0
-            ? ""
-            : $" ({periods[0].PeriodStart:d MMM} – {periods[^1].PeriodEnd:d MMM yyyy})";
-
-        return $"{OverageCharge.DescriptionPrefix}: {minutes:N0} min beyond the {included:N0} included, " +
-               $"at {rate.ToString("0.####", CultureInfo.InvariantCulture)} {sub.Currency} per minute{span}";
-    }
+    private static string DescribeOverage(UsagePeriod period) =>
+        $"{OverageCharge.DescriptionPrefix}: {period.OverageMinutes:N0} min beyond the " +
+        $"{period.IncludedMinutes:N0} included, at " +
+        $"{period.OverageRatePerMinute.ToString("0.####", CultureInfo.InvariantCulture)} " +
+        $"{period.Currency} per minute " +
+        $"({period.PeriodStart:d MMM} – {period.PeriodEnd:d MMM yyyy})";
 
     // ---------------------------------------------------------------- taking up a plan
 
@@ -429,6 +528,13 @@ public class BillingService : IBillingService
         if (!collected)
             return new CheckoutOutcome(false, orgId, "Your payment has not completed yet.");
 
+        // Closes the row opened when the customer was sent to Stripe. Only ever moves an attempt
+        // still marked Started, so a redelivery lands on nothing.
+        await _billing.SettlePaymentAttemptAsync(session.Id, PaymentAttemptStatus.Paid,
+            $"Stripe collected the payment ({session.PaymentStatus}).",
+            stripeSubscriptionId: session.SubscriptionId,
+            stripePaymentIntentId: session.PaymentIntentId);
+
         var existing = await _billing.GetSubscriptionAsync(orgId.Value);
 
         // Already done — by the webhook, or by an earlier press of the same button. Re-applying the
@@ -451,6 +557,13 @@ public class BillingService : IBillingService
                 await _billing.ApplyPlanAsync(orgId.Value, plan, null, null, null);
         }
 
+        // The overrun the customer has just paid for alongside the plan. Settling it here is what
+        // stops the next invoice charging for the same minutes again; the ids were written into the
+        // session, so this clears exactly what was collected and nothing that has closed since.
+        // Only a period still pending is counted off, so a redelivery settles nothing twice.
+        foreach (var periodId in ReadOveragePeriodIds(session.Metadata))
+            await _billing.SettleUsagePeriodAsync(periodId, session.InvoiceId ?? "");
+
         if (!string.IsNullOrWhiteSpace(session.CustomerId))
             await _billing.SetStripeCustomerAsync(orgId.Value, session.CustomerId);
 
@@ -468,6 +581,15 @@ public class BillingService : IBillingService
     private static int? ReadOrganizationId(IDictionary<string, string>? metadata) =>
         metadata is not null && metadata.TryGetValue("organizationId", out var raw) &&
         int.TryParse(raw, out var id) ? id : null;
+
+    /// <summary>The closed periods whose overrun was charged on the Checkout page, as written into
+    /// the session when it was created. Empty for a session that carried none.</summary>
+    private static IEnumerable<int> ReadOveragePeriodIds(IDictionary<string, string>? metadata) =>
+        metadata is not null && metadata.TryGetValue("overagePeriodIds", out var raw)
+            ? raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                 .Select(part => int.TryParse(part, out var id) ? id : 0)
+                 .Where(id => id > 0)
+            : [];
 
     private static int? ReadPlanId(IDictionary<string, string>? metadata) =>
         metadata is not null && metadata.TryGetValue("planId", out var raw) &&
@@ -574,6 +696,19 @@ public class BillingService : IBillingService
             Notes = null,
         });
 
+        // The charge behind the invoice, attached after the fact. A refund and a chargeback are
+        // both raised against the charge rather than the invoice, so without this reference a
+        // reversal arriving later cannot be matched to the payment it undoes. Deliberately outside
+        // the "was it recorded" branch: an earlier delivery may have recorded the payment before
+        // the charge existed to be read.
+        if (_stripe.IsConfigured)
+        {
+            var refs = await _stripe.GetInvoicePaymentRefsAsync(invoice.Id, ct);
+            if (refs.PaymentIntentId is not null || refs.ChargeId is not null)
+                await _billing.AttachPaymentReferencesAsync(
+                    invoice.Id, refs.PaymentIntentId, refs.ChargeId, refs.ReceiptUrl);
+        }
+
         if (!recorded)
         {
             // Stripe redelivers until acknowledged, and the reconciliation sweep re-reads the same
@@ -597,6 +732,79 @@ public class BillingService : IBillingService
         _logger.LogInformation("Recorded Stripe payment of {Amount} {Currency} for organization {OrgId}.",
             amount, currency, orgId);
         return true;
+    }
+
+    // ---------------------------------------------------------------- when it does not go through
+
+    public async Task HandleCheckoutExpiredAsync(Stripe.Checkout.Session session,
+        CancellationToken ct = default)
+    {
+        await _billing.SettlePaymentAttemptAsync(session.Id, PaymentAttemptStatus.Abandoned,
+            "The Checkout session expired before payment was completed. Nothing was charged.");
+
+        _logger.LogInformation(
+            "Checkout session {SessionId} expired unpaid. Nothing was charged.", session.Id);
+    }
+
+    public async Task HandlePaymentFailedAsync(Stripe.Invoice invoice, CancellationToken ct = default)
+    {
+        var orgId = await ResolveOrganizationAsync(invoice, ct);
+        if (orgId is null) return;
+
+        // Stripe's failure events name an invoice, never the Checkout session that started things,
+        // so a first payment that was refused is attached to whichever attempt this organization
+        // most recently left open. Bounded by age, so an unrelated abandoned attempt from weeks ago
+        // is not mislabelled as this failure.
+        var reason = invoice.LastFinalizationError?.Message
+            ?? $"Stripe could not collect invoice {invoice.Number ?? invoice.Id}.";
+
+        var attached = await _billing.SettleLatestOpenAttemptAsync(orgId.Value,
+            PaymentAttemptStatus.Failed, reason, invoice.Id, TimeSpan.FromDays(2));
+
+        _logger.LogWarning(
+            "Stripe could not collect invoice {InvoiceId} for organization {OrgId}: {Reason} " +
+            "{Attached}",
+            invoice.Id, orgId, reason,
+            attached
+                ? "It has been recorded against the payment attempt that was waiting on it."
+                : "No open payment attempt matched it; this is a renewal rather than a first payment.");
+    }
+
+    public async Task HandleRefundAsync(Stripe.Charge charge, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(charge.PaymentIntentId))
+        {
+            _logger.LogWarning(
+                "Stripe charge {ChargeId} was refunded but names no payment intent, so it cannot be " +
+                "matched to a payment here.", charge.Id);
+            return;
+        }
+
+        var currency = (charge.Currency ?? "usd").ToUpperInvariant();
+        var refunded = StripeMoney.FromMinorUnits(charge.AmountRefunded, currency);
+
+        // The running total Stripe holds, not this refund's own amount — a second partial refund
+        // arrives as the new cumulative figure, and adding them would double it.
+        var matched = await _billing.RecordRefundAsync(charge.PaymentIntentId, refunded, DateTime.UtcNow);
+
+        if (!matched)
+        {
+            // Nothing to correct. Most often a charge collected outside this platform, or one
+            // recorded before payment references were being kept.
+            _logger.LogWarning(
+                "Stripe refunded {Amount} {Currency} on charge {ChargeId}, which matches no payment " +
+                "recorded here.", refunded, currency, charge.Id);
+            return;
+        }
+
+        // Access is deliberately not withdrawn. A refund is issued for many reasons — a goodwill
+        // gesture, a billing correction, a duplicate charge — and cutting a customer's phone line
+        // off as a side effect of one would be the wrong call to make automatically. The overdue
+        // sweep still catches an account that genuinely stops paying.
+        _logger.LogWarning(
+            "Recorded a refund of {Amount} {Currency} against charge {ChargeId}. Access was left as " +
+            "it is; withdraw it from the console if that is what was meant.",
+            refunded, currency, charge.Id);
     }
 
     // ---------------------------------------------------------------- reconciliation
@@ -780,9 +988,14 @@ public class BillingService : IBillingService
             StripeAvailable = _stripe.IsConfigured,
             AgentRestricted = org?.AgentRestricted ?? false,
             AgentRestrictedReason = org?.AgentRestrictedReason,
+            OnTrial = org?.IsOnTrial ?? false,
+            TrialEndsAt = org?.TrialEndsAt,
+            TrialDaysRemaining = org?.TrialDaysRemaining ?? 0,
+            TrialExpired = org?.TrialExpired ?? false,
             // A row that exists only to hold a Stripe customer link carries a default currency
             // nobody chose, so the organization's own is the honest answer until a tier sets one.
             Currency = (sub is { HasPlan: true } ? sub.Currency : null) ?? org?.Currency ?? "USD",
+            PendingPayment = await FindPendingPaymentAsync(orgId),
         };
 
         if (sub is null || !sub.HasPlan)
@@ -822,7 +1035,7 @@ public class BillingService : IBillingService
 
         summary.CurrentPeriodStart = start;
         summary.CurrentPeriodEnd = end;
-        summary.MinutesUsed = await _billing.MinutesUsedAsync(orgId, start, end);
+        summary.MinutesUsed = await _billing.UnbilledMinutesAsync(orgId);
         summary.MinutesRemaining = sub.IsMetered
             ? Math.Max(0, sub.IncludedMinutes - summary.MinutesUsed) : 0;
         summary.MinutesOver = sub.IsMetered
@@ -843,6 +1056,35 @@ public class BillingService : IBillingService
         return summary;
     }
 
+    /// <summary>
+    /// A payment this account started and that has not been confirmed yet.
+    ///
+    /// The window is deliberately generous. A Checkout session lives for 24 hours, and an attempt
+    /// that is still open is either genuinely in flight or was abandoned at the card form — the
+    /// page can say both of those things kindly, and saying nothing at all is what leaves a
+    /// customer whose connection dropped believing their money has vanished.
+    /// </summary>
+    private async Task<PendingPaymentView?> FindPendingPaymentAsync(int orgId)
+    {
+        var attempts = await _billing.ListPaymentAttemptsAsync(orgId, 5);
+
+        var open = attempts.FirstOrDefault(a =>
+            !a.IsSettled && a.StartedAt > DateTime.UtcNow.AddHours(-24));
+
+        if (open is null) return null;
+
+        return new PendingPaymentView
+        {
+            PlanName = open.PlanName,
+            Amount = open.Amount,
+            Currency = open.Currency,
+            StartedAt = open.StartedAt,
+            // Long enough that both Stripe's redelivery and the customer's own return have had
+            // every chance. Past this it is worth telling them to check rather than keep waiting.
+            IsStale = open.StartedAt < DateTime.UtcNow.AddMinutes(-15),
+        };
+    }
+
     public async Task<UsageSnapshot> GetUsageAsync(int orgId, CancellationToken ct = default)
     {
         var sub = await _billing.GetSubscriptionAsync(orgId);
@@ -861,7 +1103,10 @@ public class BillingService : IBillingService
                 Currency = sub?.Currency ?? "USD",
                 PeriodStart = openStart,
                 PeriodEnd = openEnd,
-                MinutesUsed = await _billing.MinutesUsedAsync(orgId, openStart, openEnd),
+                // Bounded to the window shown. With no plan nothing has ever been closed, so every
+                // call ever made is technically unbilled — reporting that against a one-month
+                // window would be a number the page cannot justify.
+                MinutesUsed = await _billing.UnbilledMinutesAsync(orgId, openStart),
             };
         }
 
@@ -871,7 +1116,7 @@ public class BillingService : IBillingService
         var anchor = await _billing.LastClosedPeriodEndAsync(orgId) ?? sub.CurrentPeriodStart;
         var (start, end) = UsageWindows.Current(anchor, sub.BillingCycle, DateTime.UtcNow);
 
-        var used = await _billing.MinutesUsedAsync(orgId, start, end);
+        var used = await _billing.UnbilledMinutesAsync(orgId);
         var over = sub.IsMetered ? Math.Max(0, used - sub.IncludedMinutes) : 0;
 
         return new UsageSnapshot

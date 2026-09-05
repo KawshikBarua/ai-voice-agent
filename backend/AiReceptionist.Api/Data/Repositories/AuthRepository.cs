@@ -66,8 +66,8 @@ public class AuthRepository : IAuthRepository
     {
         using var conn = _db.Create();
         await conn.ExecuteAsync(
-            "INSERT INTO RefreshTokens (UserId, Token, ExpiresAt) VALUES (@UserId, @Token, @ExpiresAt)",
-            new { token.UserId, Token = TokenHash.Compute(token.Token), token.ExpiresAt });
+            "INSERT INTO RefreshTokens (UserId, Token, ExpiresAt, Persistent) VALUES (@UserId, @Token, @ExpiresAt, @Persistent)",
+            new { token.UserId, Token = TokenHash.Compute(token.Token), token.ExpiresAt, token.Persistent });
     }
 
     public async Task<RefreshToken?> FindRefreshTokenAsync(string token)

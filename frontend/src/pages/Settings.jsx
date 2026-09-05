@@ -6,11 +6,17 @@ import { api, signOut, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useThemeStore } from '../store/theme'
 import { Avatar, Chip, PillButton } from '../components/ui'
+import {
+  currentSubscription, disablePush, enablePush, iosNeedsInstall, permission, pushSupported,
+} from '../lib/push'
 
 /* ------------------------------------------------------------------ primitives */
 
+// min-w-0 is load-bearing, not tidiness: inputs (dates and times especially) have an intrinsic
+// width, and as grid/flex children their default min-width:auto lets that intrinsic width push
+// the page wider than the screen instead of the field shrinking to fit.
 const inputBase =
-  'w-full rounded-2xl border px-4 py-2.5 text-base outline-none transition-colors'
+  'w-full min-w-0 rounded-2xl border px-4 py-2.5 text-base outline-none transition-colors'
 
 /**
  * One labelled control. Locked fields keep the same shape as editable ones so the card does
@@ -85,7 +91,7 @@ function EditableCard({ title, subtitle, editing, onEdit, onCancel, onSave, savi
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
+      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
     >
       <div className="mb-5 flex items-start justify-between gap-3">
         <div>
@@ -112,7 +118,7 @@ function EditableCard({ title, subtitle, editing, onEdit, onCancel, onSave, savi
       )}
 
       {editing && (
-        <div className="mt-5 flex items-center gap-2.5">
+        <div className="mt-5 grid gap-2.5 sm:flex sm:items-center">
           <PillButton onClick={onSave} disabled={saving}>
             {saving ? 'Saving…' : 'Save changes'}
           </PillButton>
@@ -138,7 +144,7 @@ function CardState({ title, isPending, error }) {
         : error?.response?.data?.message ?? 'Could not load this section. Please retry.'
 
   return (
-    <section className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm">
+    <section className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5">
       <h2 className="text-md font-bold">{title}</h2>
       <p className={`mt-2 text-sm ${isPending ? 'text-muted' : 'text-danger'}`}>{message}</p>
     </section>
@@ -228,31 +234,42 @@ const serializeBusinessHours = (rows) =>
 const invalidHourRows = (rows) =>
   rows.filter((row) => row.open && !(isClockTime(row.start) && isClockTime(row.end) && row.end > row.start))
 
+/**
+ * One day's hours.
+ *
+ * A day name, a checkbox and two time pickers do not fit across a phone, and left to wrap they
+ * broke differently depending on the length of the weekday — seven rows, no two aligned. So below
+ * sm the row becomes two lines (day and open-state, then the times) and the times take the full
+ * width, which also makes them far easier to hit. `sm:contents` dissolves the first line's
+ * wrapper at larger widths so all four parts sit on the single row they always did.
+ */
 function HoursRow({ row, editing, onChange }) {
-  const timeInput = `rounded-xl border px-3 py-1.5 text-sm outline-none transition-colors ${
+  const timeInput = `min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm outline-none transition-colors sm:flex-none sm:py-1.5 ${
     editing ? 'border-line bg-card text-ink focus:border-ink' : 'border-transparent bg-card/60 text-ink-soft'
   }`
 
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl bg-panel px-4 py-2.5">
-      <span className="w-[92px] shrink-0 text-sm font-semibold">{row.label}</span>
+    <div className="flex flex-col gap-2 rounded-2xl bg-panel px-3.5 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-2 sm:px-4">
+      <div className="flex items-center justify-between gap-3 sm:contents">
+        <span className="text-sm font-semibold sm:w-[92px] sm:shrink-0">{row.label}</span>
 
-      <label className="flex shrink-0 items-center gap-2 text-sm text-ink-soft">
-        <input
-          type="checkbox"
-          className="h-4 w-4 rounded accent-ink"
-          checked={row.open}
-          disabled={!editing}
-          onChange={(e) => onChange({ ...row, open: e.target.checked })}
-        />
-        Open
-      </label>
+        <label className="flex shrink-0 items-center gap-2 text-sm text-ink-soft">
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded accent-ink"
+            checked={row.open}
+            disabled={!editing}
+            onChange={(e) => onChange({ ...row, open: e.target.checked })}
+          />
+          Open
+        </label>
+      </div>
 
       {row.open ? (
         <div className="flex items-center gap-2">
           <input type="time" className={timeInput} value={row.start} disabled={!editing}
             onChange={(e) => onChange({ ...row, start: e.target.value })} aria-label={`${row.label} opening time`} />
-          <span className="text-sm text-muted">to</span>
+          <span className="shrink-0 text-sm text-muted">to</span>
           <input type="time" className={timeInput} value={row.end} disabled={!editing}
             onChange={(e) => onChange({ ...row, end: e.target.value })} aria-label={`${row.label} closing time`} />
         </div>
@@ -304,14 +321,14 @@ function HolidaysCard() {
 
   const addError = errorText(add, 'Could not add that closure. Please retry.')
   const today = todayStart()
-  const field = 'rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
+  const field = 'min-w-0 rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 
   return (
     <motion.section
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
+      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
     >
       <h2 className="text-md font-bold">Holidays &amp; Closures</h2>
       <p className="mt-0.5 text-xs text-muted">
@@ -319,21 +336,22 @@ function HolidaysCard() {
         anyone in, and tells callers why.
       </p>
 
+      {/* Stacked and full-width on a phone; the same single line as before from sm. */}
       <form
-        className="mt-4 flex flex-wrap items-end gap-2.5"
+        className="mt-4 grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
         onSubmit={(e) => { e.preventDefault(); add.mutate({ date, name: name.trim() || 'Closed' }) }}
       >
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-date">Date</label>
-          <input id="closure-date" type="date" required className={field} value={date}
+          <input id="closure-date" type="date" required className={`${field} w-full sm:w-auto`} value={date}
             onChange={(e) => setDate(e.target.value)} />
         </div>
-        <div className="min-w-[180px] flex-1">
+        <div className="sm:min-w-[180px] sm:flex-1">
           <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-name">Reason</label>
           <input id="closure-name" className={`${field} w-full`} value={name} placeholder="e.g. Christmas Day"
             onChange={(e) => setName(e.target.value)} />
         </div>
-        <PillButton type="submit" disabled={add.isPending || !date}>
+        <PillButton type="submit" className="w-full sm:w-auto" disabled={add.isPending || !date}>
           {add.isPending ? 'Adding…' : 'Add closure'}
         </PillButton>
       </form>
@@ -354,8 +372,10 @@ function HolidaysCard() {
           const past = new Date(h.date) < today
           return (
             <div key={h.id}
-              className={`flex flex-wrap items-center gap-3 rounded-2xl bg-panel px-4 py-2.5 ${past ? 'opacity-60' : ''}`}>
-              <span className="w-[150px] shrink-0 text-sm font-semibold">{formatClosureDate(h.date)}</span>
+              className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl bg-panel px-4 py-2.5 ${past ? 'opacity-60' : ''}`}>
+              {/* Full width below sm, so the date gets its own line and the reason keeps a whole
+                  line to itself rather than being truncated to two words. */}
+              <span className="w-full text-sm font-semibold sm:w-[150px] sm:shrink-0">{formatClosureDate(h.date)}</span>
               <span className="min-w-0 flex-1 truncate text-sm text-ink-soft">{h.name}</span>
               {past && <Chip tone="cream">Past</Chip>}
               <button
@@ -370,6 +390,630 @@ function HolidaysCard() {
         })}
       </div>
     </motion.section>
+  )
+}
+
+/* ------------------------------------------------------------------- team */
+
+/**
+ * Seeds a rota editor. An employee with no hours of their own works the business hours, so that
+ * is what the editor starts from the moment someone gives them their own — an empty week would
+ * make "same as the business, but not Saturdays" a seven-row chore.
+ */
+const seedRota = (employee, businessHoursJson) =>
+  parseBusinessHours(employee.workingHoursJson ?? businessHoursJson)
+
+const formatDay = (value) =>
+  new Date(value).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+
+const formatAway = (t) =>
+  t.startDate === t.endDate || formatDay(t.startDate) === formatDay(t.endDate)
+    ? formatDay(t.startDate)
+    : `${formatDay(t.startDate)} – ${formatDay(t.endDate)}`
+
+/**
+ * One person's weekly rota. The default — no hours of their own — is the common case and stays a
+ * single checkbox; the seven rows only appear for someone who genuinely differs from the business.
+ */
+function RotaEditor({ value, businessHoursJson, onChange }) {
+  const custom = value != null
+  const rows = parseBusinessHours(custom ? value : businessHoursJson)
+
+  return (
+    <div className="space-y-2 sm:col-span-2">
+      <label className="flex items-center gap-2 text-sm font-semibold text-ink-soft">
+        <input
+          type="checkbox"
+          className="h-4 w-4 rounded accent-ink"
+          checked={!custom}
+          onChange={(e) => onChange(e.target.checked ? null : serializeBusinessHours(rows))}
+        />
+        Works whenever the business is open
+      </label>
+
+      {custom && rows.map((row, i) => (
+        <HoursRow
+          key={row.key}
+          row={row}
+          editing
+          onChange={(next) => onChange(serializeBusinessHours(rows.map((r, j) => (j === i ? next : r))))}
+        />
+      ))}
+
+      <p className="px-1 text-xs text-muted">
+        {custom
+          ? 'The AI books this person only inside these hours, and never outside the business hours.'
+          : 'Give someone their own hours when they work part of the week — a Saturday-only stylist, an early shift.'}
+      </p>
+    </div>
+  )
+}
+
+/** Days one person is away. Everyone else stays bookable — that is the point of a team. */
+function TimeOffEditor({ employee, entries, onAdd, onRemove, adding, error }) {
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [reason, setReason] = useState('')
+
+  const field = 'min-w-0 rounded-2xl border border-line bg-card px-3 py-2 text-sm outline-none focus:border-ink'
+
+  return (
+    <div className="sm:col-span-2">
+      <h4 className="text-xs font-semibold text-ink-soft">Time off</h4>
+
+      {/* The two dates share a line even on the narrowest phone — they are a pair, and reading
+          "first day" directly above "last day" is what makes the range obvious. */}
+      <form
+        className="mt-2 grid gap-2 sm:flex sm:flex-wrap sm:items-end"
+        onSubmit={(e) => {
+          e.preventDefault()
+          onAdd({ startDate: from, endDate: to || from, reason: reason.trim() || null })
+          setFrom(''); setTo(''); setReason('')
+        }}
+      >
+        <div className="grid grid-cols-2 gap-2 sm:contents">
+        <div className="min-w-0">
+          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-from-${employee.id}`}>First day</label>
+          <input id={`off-from-${employee.id}`} type="date" required className={`${field} w-full`} value={from}
+            onChange={(e) => setFrom(e.target.value)} />
+        </div>
+        <div className="min-w-0">
+          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-to-${employee.id}`}>Last day</label>
+          <input id={`off-to-${employee.id}`} type="date" className={`${field} w-full`} value={to} min={from}
+            onChange={(e) => setTo(e.target.value)} />
+        </div>
+        </div>
+        <div className="sm:min-w-[150px] sm:flex-1">
+          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-why-${employee.id}`}>Reason</label>
+          <input id={`off-why-${employee.id}`} className={`${field} w-full`} value={reason} placeholder="Holiday"
+            onChange={(e) => setReason(e.target.value)} />
+        </div>
+        <PillButton type="submit" variant="outline" className="w-full sm:w-auto" disabled={adding || !from}>
+          {adding ? 'Saving…' : 'Add time off'}
+        </PillButton>
+      </form>
+
+      {error && <p className="mt-2 text-xs font-medium text-danger">{error}</p>}
+
+      <div className="mt-3 space-y-1.5">
+        {entries.length === 0 && <p className="text-xs text-muted">No time off booked.</p>}
+        {entries.map((t) => (
+          <div key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl bg-card px-3 py-2">
+            {/* A date range is ~200px of unbreakable text; on a narrow phone it takes the line to
+                itself so the reason beside it is not squeezed down to nothing. */}
+            <span className="w-full text-xs font-semibold sm:w-auto">{formatAway(t)}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-muted">{t.reason ?? 'Away'}</span>
+            <button
+              onClick={() => onRemove(t.id)}
+              className="rounded-pill px-2.5 py-1 text-[11px] font-semibold text-danger transition hover:bg-danger-soft"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** One row of the roster, expanding into the full editor for that person. */
+function TeamMember({ employee, timeOff, businessHoursJson, open, onToggle, save, remove, addTimeOff, removeTimeOff }) {
+  const [form, setForm] = useState(employee)
+
+  // Re-seeded whenever the row reopens, so cancelling by collapsing leaves nothing half-edited.
+  useEffect(() => { if (open) setForm(employee) }, [open, employee])
+
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+  const rota = parseBusinessHours(form.workingHoursJson ?? businessHoursJson)
+  const badRows = invalidHourRows(rota)
+  const rotaError = form.workingHoursJson != null && badRows.length > 0
+    ? `Finish time must be after start time on ${badRows.map((r) => r.label).join(', ')}.`
+    : null
+
+  // Rendered in two places — beside the name on a wide screen, beneath it on a phone — so the
+  // conditions live here rather than being written out twice.
+  const statusChips = (
+    <>
+      {!employee.isActive && <Chip tone="cream">Not taking bookings</Chip>}
+      {employee.upcomingAppointments > 0 && (
+        <Chip tone="lavender">{employee.upcomingAppointments} upcoming</Chip>
+      )}
+    </>
+  )
+
+  return (
+    <div className="rounded-2xl bg-panel">
+      <div className="flex items-center gap-3 px-3.5 py-3 sm:px-4">
+        <Avatar name={employee.name} size="sm" tone={employee.isActive ? 'mint' : 'cream'} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-bold">{employee.name}</p>
+          <p className="truncate text-xs text-muted">
+            {employee.jobTitle || 'Team member'}
+            {employee.workingHoursJson ? ' · own hours' : ''}
+          </p>
+          {/* Below the name on a phone, where there is no room beside it — pushing the chips
+              onto the end of the row squeezed the name down to a couple of characters. */}
+          <div className="mt-1.5 flex flex-wrap gap-1.5 sm:hidden">{statusChips}</div>
+        </div>
+
+        <div className="hidden shrink-0 items-center gap-2 sm:flex">{statusChips}</div>
+
+        <button
+          onClick={onToggle}
+          className="shrink-0 rounded-pill border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:bg-panel"
+        >
+          {open ? 'Close' : 'Edit'}
+        </button>
+      </div>
+
+      {open && (
+        <div className="grid gap-4 border-t border-line px-3.5 py-4 sm:grid-cols-2 sm:px-4">
+          <Field label="Name">
+            <TextInput value={form.name ?? ''} onChange={set('name')} />
+          </Field>
+          <Field label="Job title">
+            <TextInput value={form.jobTitle ?? ''} onChange={set('jobTitle')} placeholder="Stylist, Technician…" />
+          </Field>
+          <Field label="Phone">
+            <TextInput value={form.phone ?? ''} onChange={set('phone')} />
+          </Field>
+          <Field label="Email">
+            <TextInput value={form.email ?? ''} onChange={set('email')} />
+          </Field>
+
+          <div className="sm:col-span-2">
+            <label className="flex items-center gap-2 text-sm font-semibold text-ink-soft">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded accent-ink"
+                checked={form.isActive}
+                onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
+              />
+              Taking bookings
+            </label>
+            <p className="mt-1 text-xs text-muted">
+              Turn this off and the AI stops booking them, while everything already in the diary stands.
+            </p>
+          </div>
+
+          <RotaEditor
+            value={form.workingHoursJson ?? null}
+            businessHoursJson={businessHoursJson}
+            onChange={(next) => setForm({ ...form, workingHoursJson: next })}
+          />
+
+          {(rotaError || save.error || remove.error) && (
+            <p className="rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger sm:col-span-2">
+              {rotaError ??
+                (remove.isError
+                  ? remove.error?.response?.data?.message ?? 'Could not remove them. Please retry.'
+                  : save.error?.response?.data?.message ?? 'Could not save. Please retry.')}
+            </p>
+          )}
+
+          <div className="grid gap-2 sm:col-span-2 sm:flex sm:flex-wrap">
+            <PillButton
+              disabled={save.isPending || !form.name?.trim() || rotaError != null}
+              onClick={() => save.mutate(form)}
+            >
+              {save.isPending ? 'Saving…' : 'Save'}
+            </PillButton>
+            <PillButton variant="outline" onClick={onToggle}>Cancel</PillButton>
+            <PillButton
+              variant="light"
+              className="!text-danger"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate(employee.id)}
+            >
+              {remove.isPending ? 'Removing…' : 'Remove'}
+            </PillButton>
+          </div>
+
+          <div className="border-t border-line pt-4 sm:col-span-2">
+            <TimeOffEditor
+              employee={employee}
+              entries={timeOff}
+              adding={addTimeOff.isPending}
+              error={errorText(addTimeOff, 'Could not save that time off. Please retry.')}
+              onAdd={(body) => addTimeOff.mutate({ id: employee.id, body })}
+              onRemove={(id) => removeTimeOff.mutate(id)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The roster the AI books against.
+ *
+ * This is what decides how many appointments can run at once: the agent offers a time while at
+ * least one person is on duty and free for it, so two people mean two callers can both have noon
+ * and an empty rota means neither can.
+ */
+function TeamPanel() {
+  const qc = useQueryClient()
+
+  const { data: org } = useQuery({
+    queryKey: ['organization'],
+    queryFn: () => api.get('/settings/organization').then(unwrap),
+  })
+  const { data: employees, isPending, error } = useQuery({
+    queryKey: ['employees'],
+    queryFn: () => api.get('/employees').then(unwrap),
+  })
+  const { data: timeOff } = useQuery({
+    queryKey: ['employee-time-off'],
+    queryFn: () => api.get('/employees/time-off').then(unwrap),
+  })
+
+  const [openId, setOpenId] = useState(null)
+  const [newName, setNewName] = useState('')
+  const [newTitle, setNewTitle] = useState('')
+
+  // The prompt states the size of the team, so its preview goes stale otherwise.
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['employees'] })
+    qc.invalidateQueries({ queryKey: ['employee-time-off'] })
+    qc.invalidateQueries({ queryKey: ['final-prompt'] })
+  }
+
+  const add = useMutation({
+    mutationFn: (body) => api.post('/employees', body).then(unwrap),
+    onSuccess: () => { refresh(); setNewName(''); setNewTitle('') },
+  })
+  const save = useMutation({
+    mutationFn: (body) => api.put(`/employees/${body.id}`, body).then(unwrap),
+    onSuccess: () => { refresh(); setOpenId(null) },
+  })
+  const remove = useMutation({
+    mutationFn: (id) => api.delete(`/employees/${id}`),
+    onSuccess: () => { refresh(); setOpenId(null) },
+  })
+  const addTimeOff = useMutation({
+    mutationFn: ({ id, body }) => api.post(`/employees/${id}/time-off`, body).then(unwrap),
+    onSuccess: refresh,
+  })
+  const removeTimeOff = useMutation({
+    mutationFn: (id) => api.delete(`/employees/time-off/${id}`),
+    onSuccess: refresh,
+  })
+
+  if (isPending || error) return <CardState title="Team" isPending={isPending} error={error} />
+
+  const active = employees.filter((e) => e.isActive).length
+  const field = 'min-w-0 rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
+
+  return (
+    <div className="space-y-4">
+      <motion.section
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28, ease: 'easeOut' }}
+        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+      >
+        <h2 className="text-md font-bold">Team</h2>
+        <p className="mt-0.5 text-xs text-muted">
+          Who takes appointments. The AI can book one caller with each person at the same time —
+          two people means two callers can both have noon.
+        </p>
+
+        <form
+          className="mt-4 grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
+          onSubmit={(e) => {
+            e.preventDefault()
+            add.mutate({ name: newName.trim(), jobTitle: newTitle.trim() || null, isActive: true })
+          }}
+        >
+          <div className="sm:min-w-[160px] sm:flex-1">
+            <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="new-employee">Name</label>
+            <input id="new-employee" required className={`${field} w-full`} value={newName} placeholder="e.g. James"
+              onChange={(e) => setNewName(e.target.value)} />
+          </div>
+          <div className="sm:min-w-[160px] sm:flex-1">
+            <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="new-employee-title">Job title</label>
+            <input id="new-employee-title" className={`${field} w-full`} value={newTitle} placeholder="Optional"
+              onChange={(e) => setNewTitle(e.target.value)} />
+          </div>
+          <PillButton type="submit" className="w-full sm:w-auto" disabled={add.isPending || !newName.trim()}>
+            {add.isPending ? 'Adding…' : 'Add person'}
+          </PillButton>
+        </form>
+
+        {add.isError && (
+          <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
+            {errorText(add, 'Could not add them. Please retry.')}
+          </p>
+        )}
+
+        <div className="mt-5 space-y-2">
+          {employees.length === 0 && (
+            <p className="rounded-2xl bg-panel px-4 py-3 text-sm text-muted">
+              No one on the team yet. Until someone is added the AI books one appointment at a time.
+            </p>
+          )}
+
+          {employees.map((employee) => (
+            <TeamMember
+              key={employee.id}
+              employee={employee}
+              businessHoursJson={org?.businessHoursJson}
+              timeOff={(timeOff ?? []).filter((t) => t.employeeId === employee.id)}
+              open={openId === employee.id}
+              onToggle={() => {
+                save.reset(); remove.reset(); addTimeOff.reset()
+                setOpenId(openId === employee.id ? null : employee.id)
+              }}
+              save={save}
+              remove={remove}
+              addTimeOff={addTimeOff}
+              removeTimeOff={removeTimeOff}
+            />
+          ))}
+        </div>
+
+        {employees.length > 0 && (
+          <p className="mt-4 px-1 text-xs text-muted">
+            {active === 0
+              ? 'Nobody is taking bookings, so the AI will not book anyone in. Mark at least one person as taking bookings.'
+              : `Up to ${active} appointment${active === 1 ? '' : 's'} can run at the same time, fewer on days ` +
+                'when someone is off. The AI works this out for itself on every call.'}
+          </p>
+        )}
+      </motion.section>
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------- notifications */
+
+/**
+ * Turning this device into something the AI can reach.
+ *
+ * The problem it solves is the one nobody notices until it costs them: an owner is not sitting in
+ * this dashboard, so a booking taken at 2am — or an emergency taken during a haircut — is
+ * invisible until they next happen to sign in. A browser notification reaches the phone with the
+ * app closed and costs nothing to send.
+ *
+ * Every state below is a real thing a person hits, and each one says what to do about it rather
+ * than just reporting that it is off.
+ */
+function NotificationsPanel() {
+  const qc = useQueryClient()
+
+  const { data: config, isPending, error } = useQuery({
+    queryKey: ['push-config'],
+    queryFn: () => api.get('/notifications/config').then(unwrap),
+    staleTime: Infinity,
+  })
+  const { data: devices } = useQuery({
+    queryKey: ['push-devices'],
+    queryFn: () => api.get('/notifications/devices').then(unwrap),
+  })
+
+  // What this browser is doing, as opposed to what the account has registered elsewhere.
+  const [endpoint, setEndpoint] = useState(null)
+  const [state, setState] = useState('checking')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState(null)
+
+  const readDevice = async () => {
+    if (!pushSupported()) {
+      setState(iosNeedsInstall() ? 'ios-needs-install' : 'unsupported')
+      return
+    }
+    const subscription = await currentSubscription()
+    setEndpoint(subscription?.endpoint ?? null)
+    setState(subscription ? 'on' : permission() === 'denied' ? 'denied' : 'off')
+  }
+
+  useEffect(() => { readDevice() }, [])
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['push-devices'] })
+    readDevice()
+  }
+
+  const thisDevice = devices?.find((d) => d.endpoint === endpoint) ?? null
+
+  const turnOn = async () => {
+    setBusy(true); setNote(null)
+    try {
+      const result = await enablePush(config?.publicKey)
+      if (!result.ok) {
+        setNote(
+          result.reason === 'denied'
+            ? 'Your browser is blocking notifications for this site. Allow them in the padlock menu beside the address bar, then try again.'
+            : result.reason === 'not-configured'
+              ? 'Notifications are not set up on this server yet.'
+              : 'No permission was given, so this device will not be notified.',
+        )
+      }
+    } catch {
+      setNote('Could not turn notifications on for this device. Please try again.')
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
+
+  const turnOff = async () => {
+    setBusy(true); setNote(null)
+    try { await disablePush() } finally { setBusy(false); refresh() }
+  }
+
+  const test = useMutation({
+    mutationFn: (id) => api.post(`/notifications/devices/${id}/test`),
+    onSuccess: () => setNote('Sent — it should appear in a moment.'),
+    onError: (err) => setNote(err.response?.data?.message ?? 'Could not send a test notification.'),
+  })
+
+  const setUrgentOnly = useMutation({
+    mutationFn: (urgentOnly) => enablePush(config?.publicKey, { urgentOnly }),
+    onSuccess: refresh,
+  })
+
+  const remove = useMutation({
+    mutationFn: (id) => api.delete(`/notifications/devices/${id}`),
+    onSuccess: refresh,
+  })
+
+  if (isPending || error) return <CardState title="Notifications" isPending={isPending} error={error} />
+
+  return (
+    <div className="space-y-4">
+      <motion.section
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28, ease: 'easeOut' }}
+        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+      >
+        <h2 className="text-md font-bold">Notifications</h2>
+        <p className="mt-0.5 text-xs text-muted">
+          Be told the moment your AI books someone in, even with this app closed. Emergencies and
+          anything happening today keep notifying until somebody marks them as seen.
+        </p>
+
+        {/* The server has no key pair, so nothing can be delivered to anyone. */}
+        {!config?.enabled && (
+          <p className="mt-4 rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
+            Notifications are not switched on for this server yet. Whoever runs it needs to
+            generate a key pair once — it is free and takes a minute. Until then, anything that
+            needs you still waits on your Dashboard.
+          </p>
+        )}
+
+        {config?.enabled && (
+          <div className="mt-4 space-y-3">
+            {state === 'ios-needs-install' && (
+              <div className="rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
+                <p className="font-semibold text-ink">Add Frontly to your Home Screen first</p>
+                <p className="mt-1">
+                  On iPhone and iPad, notifications only work once the app is installed. Tap the
+                  Share button, then <span className="font-semibold">Add to Home Screen</span>, and
+                  open Frontly from there — this page will then offer to turn them on.
+                </p>
+              </div>
+            )}
+
+            {state === 'unsupported' && (
+              <p className="rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
+                This browser cannot show notifications. Try Chrome, Edge or Firefox — or use your
+                phone, which is where these are most useful anyway.
+              </p>
+            )}
+
+            {(state === 'off' || state === 'denied' || state === 'on') && (
+              <div className="flex flex-col gap-3 rounded-2xl bg-panel px-4 py-3 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold">
+                    {state === 'on' ? 'This device is being notified' : 'This device is not being notified'}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    {state === 'on'
+                      ? 'You will hear about new bookings here.'
+                      : 'Turn this on wherever you will actually see it — usually your phone.'}
+                  </p>
+                </div>
+
+                {state === 'on' ? (
+                  <div className="grid gap-2 sm:flex sm:shrink-0 sm:flex-wrap">
+                    <PillButton variant="outline" disabled={test.isPending || !thisDevice}
+                      onClick={() => thisDevice && test.mutate(thisDevice.id)}>
+                      {test.isPending ? 'Sending…' : 'Send a test'}
+                    </PillButton>
+                    <PillButton variant="light" disabled={busy} onClick={turnOff}>
+                      {busy ? 'Working…' : 'Turn off'}
+                    </PillButton>
+                  </div>
+                ) : (
+                  <PillButton className="w-full sm:w-auto sm:shrink-0" disabled={busy} onClick={turnOn}>
+                    {busy ? 'Working…' : 'Turn on for this device'}
+                  </PillButton>
+                )}
+              </div>
+            )}
+
+            {state === 'on' && thisDevice && (
+              <label className="flex items-start gap-2.5 px-1 text-sm text-ink-soft">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded accent-ink"
+                  checked={thisDevice.urgentOnly}
+                  disabled={setUrgentOnly.isPending}
+                  onChange={(e) => setUrgentOnly.mutate(e.target.checked)}
+                />
+                <span>
+                  Only urgent things on this device
+                  <span className="block text-xs text-muted">
+                    Emergencies and anything booked for today. Quieter, but you will not hear about
+                    next week&rsquo;s bookings until you open the app.
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {note && (
+              <p className="rounded-2xl bg-panel px-4 py-2.5 text-sm font-medium text-ink-soft">{note}</p>
+            )}
+          </div>
+        )}
+      </motion.section>
+
+      {devices?.length > 0 && (
+        <motion.section
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.28, ease: 'easeOut' }}
+          className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+        >
+          <h2 className="text-md font-bold">Devices being notified</h2>
+          <p className="mt-0.5 text-xs text-muted">
+            Everyone on your team who has turned notifications on. Remove a phone you no longer carry.
+          </p>
+
+          <div className="mt-4 space-y-2">
+            {devices.map((device) => (
+              <div key={device.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-2xl bg-panel px-4 py-2.5">
+                <span className="w-full min-w-0 truncate text-sm font-semibold sm:w-auto sm:flex-1">
+                  {device.label ?? 'Unknown device'}
+                </span>
+                {device.endpoint === endpoint && <Chip tone="mint">This device</Chip>}
+                {device.urgentOnly && <Chip tone="cream">Urgent only</Chip>}
+                <button
+                  onClick={() => remove.mutate(device.id)}
+                  disabled={remove.isPending}
+                  className="rounded-pill px-3 py-1 text-xs font-semibold text-danger transition hover:bg-danger-soft disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        </motion.section>
+      )}
+    </div>
   )
 }
 
@@ -390,16 +1034,26 @@ function ProfilePanel() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
+        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
       >
-        <div className="flex flex-wrap items-center gap-4">
+        {/*
+          The role chip goes under the name on a phone rather than beside it. Sharing the row with
+          an 80px avatar left the text about 190px on a small screen, which truncated a person's
+          own name to "Vict…" — the one thing on this card that should always be readable.
+        */}
+        <div className="flex items-center gap-4">
           <Avatar name={name} size="xl" tone="lavender" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-lg font-bold">{name}</p>
             <p className="truncate text-sm text-ink-soft">{user?.email}</p>
             <p className="truncate text-xs text-muted">{org?.name ?? '—'}</p>
+            <div className="mt-2 sm:hidden">
+              <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
+            </div>
           </div>
-          <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
+          <div className="hidden shrink-0 sm:block">
+            <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
+          </div>
         </div>
       </motion.section>
 
@@ -529,7 +1183,8 @@ function BusinessPanel() {
             />
           ))}
           <p className="px-1 pt-1 text-xs text-muted">
-            The AI offers slots only inside these hours and refuses to book outside them.
+            The AI offers slots only inside these hours and refuses to book outside them. Someone
+            who works part of the week gets their own hours under Team.
           </p>
         </div>
       </EditableCard>
@@ -597,7 +1252,7 @@ function AgentPanel() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
+        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -697,7 +1352,7 @@ function AppearancePanel() {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
+      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
     >
       <h2 className="text-md font-bold">Appearance</h2>
       <p className="mt-0.5 text-xs text-muted">
@@ -740,6 +1395,8 @@ function AppearancePanel() {
 const SECTIONS = [
   { id: 'profile', label: 'Profile', Panel: ProfilePanel },
   { id: 'business', label: 'Business', Panel: BusinessPanel },
+  { id: 'team', label: 'Team', Panel: TeamPanel },
+  { id: 'notifications', label: 'Notifications', Panel: NotificationsPanel },
   { id: 'agent', label: 'AI Agent', Panel: AgentPanel },
   { id: 'appearance', label: 'Appearance', Panel: AppearancePanel },
 ]
@@ -752,22 +1409,28 @@ export default function Settings() {
 
   return (
     <div>
-      <header className="mb-6">
-        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Settings</h1>
+      <header className="mb-5 sm:mb-6">
+        <h1 className="font-display text-xl font-semibold tracking-[-0.01em] sm:text-2xl">Settings</h1>
         <p className="mt-1 text-sm text-ink-soft">
           Manage your account information and preferences
         </p>
       </header>
 
-      <div className="grid gap-5 lg:grid-cols-[210px_minmax(0,1fr)]">
-        <nav className="theme-fade h-max rounded-card border border-line bg-card p-3 shadow-sm lg:sticky lg:top-0">
-          <ul className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
+      <div className="grid gap-4 lg:grid-cols-[210px_minmax(0,1fr)] lg:gap-5">
+        <nav className="theme-fade h-max min-w-0 rounded-card border border-line bg-card p-2.5 shadow-sm lg:sticky lg:top-0 lg:p-3">
+          {/*
+            Every section visible at once. This was briefly a swipeable strip, which is the wrong
+            trade for navigation: it hides two of the five behind a gesture with nothing on screen
+            saying they are there, so finding Appearance means discovering the scroll first. Pills
+            that wrap cost one extra line and hide nothing. From lg it is the sidebar list again.
+          */}
+          <ul className="flex flex-wrap gap-1.5 lg:flex-col lg:gap-1">
             {SECTIONS.map((section) => (
-              <li key={section.id}>
+              <li key={section.id} className="lg:w-full">
                 <button
                   onClick={() => setActive(section.id)}
                   aria-current={active === section.id ? 'page' : undefined}
-                  className={`w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-base font-semibold transition ${
+                  className={`whitespace-nowrap rounded-2xl px-3 py-2 text-sm font-semibold transition lg:w-full lg:px-4 lg:py-2.5 lg:text-left lg:text-base ${
                     active === section.id
                       ? 'bg-lavender text-ink'
                       : 'text-ink-soft hover:bg-panel'
@@ -777,21 +1440,21 @@ export default function Settings() {
                 </button>
               </li>
             ))}
-
-            <li className="lg:mt-2 lg:border-t lg:border-line lg:pt-2">
-              <button
-                onClick={async () => { await signOut(); navigate('/login') }}
-                className="w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-base font-semibold text-danger transition hover:bg-danger-soft"
-              >
-                Sign out
-              </button>
-            </li>
           </ul>
+
+          <div className="mt-2 border-t border-line pt-2">
+            <button
+              onClick={async () => { await signOut(); navigate('/login') }}
+              className="w-full whitespace-nowrap rounded-2xl px-3 py-2 text-left text-sm font-semibold text-danger transition hover:bg-danger-soft lg:px-4 lg:py-2.5 lg:text-base"
+            >
+              Sign out
+            </button>
+          </div>
         </nav>
 
         {/* Remounting on section change replays the card entrance animation, so switching
             sections reads as a change of content rather than a silent swap. */}
-        <div key={active}>
+        <div key={active} className="min-w-0">
           <Panel />
         </div>
       </div>
