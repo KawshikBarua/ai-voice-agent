@@ -15,9 +15,37 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 builder.Services.AddScoped<IPlatformAuthRepository, PlatformAuthRepository>();
 builder.Services.AddScoped<IOrganizationRepository, OrganizationRepository>();
+builder.Services.AddScoped<IUserAccountRepository, UserAccountRepository>();
 builder.Services.AddScoped<IBillingRepository, BillingRepository>();
+builder.Services.AddScoped<ILandingContentRepository, LandingContentRepository>();
 builder.Services.AddScoped<IBillingService, BillingService>();
 builder.Services.AddHostedService<AutoSuspendWorker>();
+
+// The public marketing site is a separate React app on its own origin, so its browser needs
+// permission to read /api/landing-content. Origins are listed in configuration rather than
+// wildcarded: the endpoint is anonymous, and a wildcard would let any page on the internet embed
+// this console's responses.
+var landingOrigins = builder.Configuration.GetSection("Landing:AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:5400"];
+builder.Services.AddCors(options =>
+    options.AddPolicy(AiReceptionist.SuperAdmin.Controllers.LandingController.CorsPolicy, policy =>
+    {
+        policy.WithMethods("GET").WithHeaders("Accept", "Content-Type");
+
+        if (builder.Environment.IsDevelopment())
+        {
+            // Any loopback port is fine while developing. A dev server that finds its usual port
+            // busy moves to the next one, and pinning the allowlist to a single port turns that
+            // into a CORS error that reads as a bug in this app rather than a busy port.
+            // Loopback only — this is not a wildcard, and it never applies outside Development.
+            policy.SetIsOriginAllowed(origin =>
+                Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.IsLoopback);
+        }
+        else
+        {
+            policy.WithOrigins(landingOrigins);
+        }
+    }));
 
 // The platform key authenticates this app to the tenant API's /api/v1/platform endpoints, which
 // can rotate the Retell credential and re-point any tenant's agent. A shipped placeholder is
@@ -92,6 +120,9 @@ if (!app.Environment.IsDevelopment())
 
 app.UseStaticFiles();
 app.UseRouting();
+// Must sit between routing and authorization so the preflight and the actual cross-origin GET
+// both carry the policy's headers.
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 

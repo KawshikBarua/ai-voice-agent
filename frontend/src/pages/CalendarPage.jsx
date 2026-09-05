@@ -67,11 +67,11 @@ export default function CalendarPage() {
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[26px] font-bold">Calendar</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Calendar</h1>
         <div className="flex items-center gap-2">
           <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}
             className="grid h-9 w-9 place-items-center rounded-full bg-card shadow-sm hover:bg-line">‹</button>
-          <span className="min-w-40 text-center text-[15px] font-bold">
+          <span className="min-w-40 text-center text-md font-bold">
             {MONTHS[cursor.getMonth()]} {cursor.getFullYear()}
           </span>
           <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}
@@ -83,7 +83,7 @@ export default function CalendarPage() {
         <Card>
           <div className="grid grid-cols-7 gap-2">
             {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => (
-              <span key={d} className="pb-2 text-center text-[11.5px] font-semibold text-muted">{d}</span>
+              <span key={d} className="pb-2 text-center text-xs font-semibold text-muted">{d}</span>
             ))}
             {cells.map((d, i) => {
               const closure = d ? closureByDay[d] : null
@@ -97,7 +97,9 @@ export default function CalendarPage() {
                     !d
                       ? 'bg-transparent'
                       : selected === d
-                        ? 'bg-ink text-on-ink'
+                        // Brand, not ink — "today" is already marked with an ink disc, so a
+                        // selected day painted ink read as the same state at a glance.
+                        ? 'bg-brand-strong text-on-brand'
                         : closure
                           ? 'bg-cream hover:brightness-95'
                           : 'bg-panel hover:bg-line'
@@ -105,14 +107,14 @@ export default function CalendarPage() {
                 >
                   {d && (
                     <>
-                      <span className={`grid h-6 w-6 place-items-center rounded-full text-[12px] font-semibold ${
+                      <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-semibold ${
                         isToday(d) && selected !== d ? 'bg-ink text-on-ink' : ''
                       }`}>
                         {d}
                       </span>
                       {closure && (
-                        <p className={`mt-1 truncate text-[10px] font-semibold leading-tight ${
-                          selected === d ? 'text-on-ink/80' : 'text-ink-soft'
+                        <p className={`mt-1 truncate text-2xs font-semibold leading-tight ${
+                          selected === d ? 'text-on-brand/80' : 'text-ink-soft'
                         }`}>
                           {closure.name}
                         </p>
@@ -122,7 +124,7 @@ export default function CalendarPage() {
                       <div className="mt-1 flex flex-wrap gap-1">
                         {(byDay[d] ?? []).slice(0, 3).map((a) => (
                           <span key={a.id} className={`h-1.5 w-1.5 rounded-full ${
-                            selected === d ? 'bg-accent' : 'bg-leaf'
+                            selected === d ? 'bg-on-brand/90' : 'bg-leaf'
                           }`} />
                         ))}
                       </div>
@@ -133,7 +135,7 @@ export default function CalendarPage() {
             })}
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-3 text-[11.5px] text-muted">
+          <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-3 text-xs text-muted">
             <span className="flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-full bg-leaf" /> Appointment
             </span>
@@ -144,13 +146,13 @@ export default function CalendarPage() {
         </Card>
 
         <Card>
-          <h2 className="mb-4 text-[17px] font-bold">
+          <h2 className="mb-4 font-display text-lg font-semibold tracking-[-0.01em]">
             {selected ? `${MONTHS[cursor.getMonth()]} ${selected}` : 'Select a day'}
           </h2>
           {selectedClosure && (
             <div className="mb-4 rounded-2xl bg-cream p-3.5">
-              <p className="text-[13.5px] font-bold">Closed — {selectedClosure.name}</p>
-              <p className="mt-1 text-[12px] text-ink-soft">
+              <p className="text-base font-bold">Closed — {selectedClosure.name}</p>
+              <p className="mt-1 text-xs text-ink-soft">
                 The AI will not offer or book appointments on this date.
               </p>
             </div>
@@ -161,10 +163,10 @@ export default function CalendarPage() {
             {selectedAppts.map((a) => (
               <div key={a.id} className="rounded-2xl bg-lavender/70 p-3.5">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[13.5px] font-bold">{a.serviceName ?? 'Appointment'}</p>
+                  <p className="text-base font-bold">{a.serviceName ?? 'Appointment'}</p>
                   <Chip tone={statusTone(a.status)}>{a.status}</Chip>
                 </div>
-                <p className="mt-1 text-[12px] text-ink-soft">
+                <p className="mt-1 text-xs text-ink-soft">
                   {fmtTime(a.startAt)} – {fmtTime(a.endAt)} · {a.customerName}
                 </p>
               </div>

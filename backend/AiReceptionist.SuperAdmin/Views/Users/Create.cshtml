@@ -1,0 +1,196 @@
+@model NewAccountViewModel
+@{
+    ViewData["Title"] = "New account";
+    var input = Model.Input;
+    // With nothing to attach to, the picker has nothing to offer and the form opens on "new".
+    var newSelected = input.IsNewOrganization || !Model.CanUseExisting;
+
+    string Bad(string field) => Model.Error(field) is null ? "field" : "field bad";
+}
+
+<div class="page-head">
+    <div>
+        <h1>New account</h1>
+        <p>
+            Issue a sign-in for a customer. Attach it to an organization you already have, or create
+            the organization at the same time — a customer signed up over the phone can then find
+            their login waiting for them.
+        </p>
+    </div>
+    <a class="btn outline" asp-action="Index">Back to accounts</a>
+</div>
+
+@if (Model.Errors.Count > 0)
+{
+    <div class="error-list">
+        Nothing has been created. Please correct the fields marked below.
+    </div>
+}
+
+<div class="card" style="max-width:720px;">
+    <form method="post" asp-action="Create">
+        @Html.AntiForgeryToken()
+
+        @* The two radios sit ahead of the panels on purpose: the CSS reveals the matching panel
+           from :checked, which only reaches later siblings. *@
+        <input class="mode-input" type="radio" id="modeExisting" name="OrganizationMode"
+               value="@NewAccountInput.ModeExisting" checked="@(!newSelected)"
+               disabled="@(!Model.CanUseExisting)" />
+        <input class="mode-input" type="radio" id="modeNew" name="OrganizationMode"
+               value="@NewAccountInput.ModeNew" checked="@newSelected" />
+
+        <h2>Which organization?</h2>
+
+        <div class="choices">
+            @if (Model.CanUseExisting)
+            {
+                <label for="modeExisting">
+                    An existing organization
+                    <small>Add someone to a customer already on the platform.</small>
+                </label>
+            }
+            <label for="modeNew">
+                A new organization
+                <small>Create the customer and their first login together.</small>
+            </label>
+        </div>
+
+        @* ---------- attach to an existing organization ---------- *@
+        <div class="mode-panel for-existing">
+            <div class="@Bad("OrganizationId")">
+                <label for="OrganizationId">Organization</label>
+                <select id="OrganizationId" name="OrganizationId">
+                    <option value="">Choose an organization…</option>
+                    @foreach (var org in Model.Organizations)
+                    {
+                        <option value="@org.Id" selected="@(input.OrganizationId == org.Id)">
+                            @org.Name@(org.IsActive ? "" : " — disabled") (@org.UserCount @(org.UserCount == 1 ? "user" : "users"))
+                        </option>
+                    }
+                </select>
+                @if (Model.Error("OrganizationId") is string orgError)
+                {
+                    <div class="error">@orgError</div>
+                }
+                <div class="help">
+                    A disabled organization refuses sign-in for everyone on it, so a login added to one
+                    will not work until the account is re-enabled.
+                </div>
+            </div>
+        </div>
+
+        @* ---------- create the organization too ---------- *@
+        <div class="mode-panel for-new">
+            <div class="@Bad("OrganizationName")">
+                <label for="OrganizationName">Business name</label>
+                <input type="text" id="OrganizationName" name="OrganizationName"
+                       value="@input.OrganizationName" placeholder="Springfield Dental" maxlength="200" />
+                @if (Model.Error("OrganizationName") is string nameError)
+                {
+                    <div class="error">@nameError</div>
+                }
+            </div>
+            <div class="row">
+                <div class="field">
+                    <label for="OrganizationIndustry">Industry</label>
+                    <input type="text" id="OrganizationIndustry" name="OrganizationIndustry"
+                           value="@input.OrganizationIndustry" placeholder="Medical Clinic" maxlength="100" />
+                    <div class="help">Shapes how the AI receptionist introduces itself.</div>
+                </div>
+                <div class="field">
+                    <label for="OrganizationPhone">Business phone</label>
+                    <input type="text" id="OrganizationPhone" name="OrganizationPhone"
+                           value="@input.OrganizationPhone" placeholder="+15551234567" maxlength="50" />
+                </div>
+            </div>
+            <div class="@Bad("OrganizationEmail")">
+                <label for="OrganizationEmail">Business email</label>
+                <input type="text" id="OrganizationEmail" name="OrganizationEmail"
+                       value="@input.OrganizationEmail" placeholder="Defaults to the sign-in email below" maxlength="256" />
+                @if (Model.Error("OrganizationEmail") is string orgEmailError)
+                {
+                    <div class="error">@orgEmailError</div>
+                }
+                <div class="help">Where invoices and billing notices go. Leave blank to use the sign-in address.</div>
+            </div>
+            <p class="note" style="margin-top:0;">
+                Everything else — currency, timezone, opening hours — starts on the defaults and is
+                set by the customer in their own Settings. No plan is attached: put them on one from
+                the organization screen afterwards.
+            </p>
+        </div>
+
+        <h2 style="margin-top:22px;">Who is signing in?</h2>
+
+        <div class="@Bad("FullName")">
+            <label for="FullName">Full name</label>
+            <input type="text" id="FullName" name="FullName" value="@input.FullName"
+                   maxlength="200" required autofocus />
+            @if (Model.Error("FullName") is string fullNameError)
+            {
+                <div class="error">@fullNameError</div>
+            }
+        </div>
+
+        <div class="@Bad("Email")">
+            <label for="Email">Email</label>
+            <input type="email" id="Email" name="Email" value="@input.Email"
+                   autocomplete="off" maxlength="256" required />
+            @if (Model.Error("Email") is string emailError)
+            {
+                <div class="error">@emailError</div>
+            }
+            <div class="help">What they sign in with. One address, one account, across the whole platform.</div>
+        </div>
+
+        <div class="@Bad("Role")">
+            <label for="Role">Role</label>
+            <select id="Role" name="Role">
+                @foreach (var (value, label, detail) in AccountRoles.Assignable)
+                {
+                    <option value="@value" selected="@(input.Role == value)">@label — @detail</option>
+                }
+            </select>
+            @if (Model.Error("Role") is string roleError)
+            {
+                <div class="error">@roleError</div>
+            }
+            <div class="help">
+                The first person at a new customer should be an owner/admin — only that role can set
+                up billing and the AI agent.
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="@Bad("Password")">
+                <label for="Password">Password</label>
+                <input type="password" id="Password" name="Password"
+                       autocomplete="new-password" minlength="8" maxlength="100" required />
+                @if (Model.Error("Password") is string passwordError)
+                {
+                    <div class="error">@passwordError</div>
+                }
+            </div>
+            <div class="@Bad("ConfirmPassword")">
+                <label for="ConfirmPassword">Confirm password</label>
+                <input type="password" id="ConfirmPassword" name="ConfirmPassword"
+                       autocomplete="new-password" maxlength="100" required />
+                @if (Model.Error("ConfirmPassword") is string confirmError)
+                {
+                    <div class="error">@confirmError</div>
+                }
+            </div>
+        </div>
+
+        <p class="note" style="margin-top:0;">
+            At least 8 characters. You are setting this password, so pass it to the customer yourself
+            and have them change it once they are in — it is not stored anywhere readable and cannot
+            be shown again after this.
+        </p>
+
+        <div class="actions" style="margin-top:16px;">
+            <button class="btn" type="submit">Create account</button>
+            <a class="btn outline" asp-action="Index">Cancel</a>
+        </div>
+    </form>
+</div>

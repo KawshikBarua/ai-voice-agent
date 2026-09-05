@@ -20,8 +20,8 @@ export function CardTitle({ title, subtitle, action }) {
   return (
     <div className="mb-4 flex flex-wrap items-start justify-between gap-x-3 gap-y-2.5">
       <div className="min-w-[10rem] flex-1">
-        <h2 className="text-[17px] font-bold">{title}</h2>
-        {subtitle && <p className="mt-0.5 text-[12px] text-muted">{subtitle}</p>}
+        <h2 className="font-display text-lg font-semibold tracking-[-0.01em]">{title}</h2>
+        {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}
       </div>
       {action}
     </div>
@@ -30,6 +30,10 @@ export function CardTitle({ title, subtitle, action }) {
 
 export function PillButton({ children, variant = 'dark', className = '', ...rest }) {
   const styles = {
+    // The brand fill, for the one action a screen is really about. It uses brand-strong
+    // rather than the logo hue itself: #0097b2 under white text is 3.46:1, which is fine
+    // for an icon or a border but not for a button label.
+    primary: 'bg-brand-strong text-on-brand hover:opacity-90 disabled:opacity-50',
     // text-on-ink, not text-white: ink inverts at night, so a literal white would disappear.
     dark: 'bg-ink text-on-ink hover:opacity-90 disabled:opacity-50',
     light: 'bg-panel text-ink hover:bg-line disabled:opacity-50',
@@ -37,7 +41,7 @@ export function PillButton({ children, variant = 'dark', className = '', ...rest
   }
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-pill px-4 py-2 text-[13px] font-semibold transition ${styles[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-pill px-4 py-2 text-sm font-semibold transition ${styles[variant]} ${className}`}
       {...rest}
     >
       {children}
@@ -54,7 +58,7 @@ export function Chip({ children, tone = 'mint' }) {
     red: 'bg-danger-soft text-danger',
   }
   return (
-    <span className={`inline-flex items-center rounded-pill px-3 py-1 text-[11.5px] font-semibold ${tones[tone]}`}>
+    <span className={`inline-flex items-center rounded-pill px-3 py-1 text-xs font-semibold ${tones[tone]}`}>
       {children}
     </span>
   )
@@ -74,10 +78,10 @@ export function initialsOf(name) {
 export function Avatar({ name = '?', tone = 'lavender', size = 'md', className = '' }) {
   const tones = { lavender: 'bg-lavender', mint: 'bg-mint', cream: 'bg-cream', ink: 'bg-ink text-on-ink' }
   const sizes = {
-    sm: 'h-8 w-8 text-[11px]',
-    md: 'h-10 w-10 text-[13px]',
-    lg: 'h-16 w-16 text-[20px]',
-    xl: 'h-20 w-20 text-[24px]',
+    sm: 'h-8 w-8 text-xs',
+    md: 'h-10 w-10 text-sm',
+    lg: 'h-16 w-16 text-xl',
+    xl: 'h-20 w-20 text-2xl',
   }
   return (
     <span
@@ -91,7 +95,7 @@ export function Avatar({ name = '?', tone = 'lavender', size = 'md', className =
 
 /** Segmented control — the time-range switch above a chart. */
 export function Segmented({ value, onChange, options, size = 'md' }) {
-  const pad = size === 'sm' ? 'px-2.5 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]'
+  const pad = size === 'sm' ? 'px-2.5 py-1 text-xs' : 'px-3 py-1.5 text-xs'
   return (
     <div role="tablist" className="inline-flex shrink-0 gap-0.5 rounded-pill bg-panel p-0.5">
       {options.map((o) => (
@@ -118,7 +122,7 @@ export function Segmented({ value, onChange, options, size = 'md' }) {
  */
 export function Delta({ value, since, goodWhenUp = true }) {
   if (value == null) {
-    return <span className="text-[11.5px] text-muted">{since ? `No ${since} to compare` : 'No comparison'}</span>
+    return <span className="text-xs text-muted">{since ? `No ${since} to compare` : 'No comparison'}</span>
   }
   const flat = Math.abs(value) < 0.05
   const up = value > 0
@@ -126,7 +130,7 @@ export function Delta({ value, since, goodWhenUp = true }) {
   const tone = good == null ? 'text-muted' : good ? 'text-[var(--color-good)]' : 'text-[var(--color-crit)]'
   const text = `${up ? '+' : ''}${value.toFixed(Math.abs(value) >= 10 ? 0 : 1)}%`
   return (
-    <span className={`inline-flex items-center gap-1 text-[11.5px] font-semibold ${tone}`}>
+    <span className={`inline-flex items-center gap-1 text-xs font-semibold ${tone}`}>
       <span aria-hidden="true">{flat ? '→' : up ? '↑' : '↓'}</span>
       <span className="tabular-nums">{flat ? '0%' : text}</span>
       {since && <span className="font-medium text-muted">{since}</span>}
@@ -137,7 +141,7 @@ export function Delta({ value, since, goodWhenUp = true }) {
 export function EmptyState({ message }) {
   return (
     <div className="grid place-items-center rounded-2xl bg-panel py-10 text-center">
-      <p className="text-[13px] text-muted">{message}</p>
+      <p className="text-sm text-muted">{message}</p>
     </div>
   )
 }

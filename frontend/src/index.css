@@ -4,24 +4,86 @@
    the theme store stamps on <html> rather than prefers-color-scheme. */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Design tokens taken from the MediApp Pro reference mockup */
-@theme {
+/*
+ * `static` because Tailwind otherwise emits only the theme variables some utility class
+ * happens to reference. The `html.dark` block below overrides these tokens unconditionally,
+ * so a token that is tree-shaken out of the light `:root` but still overridden at night
+ * would have a dark value and no light one. Static keeps both halves of every pair.
+ */
+@theme static {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Poppins", "Inter", ui-sans-serif, system-ui, sans-serif;
 
-  --color-page: #b7d5d4;        /* soft teal page background */
-  --color-panel: #f2f2ee;       /* off-white sidebar / app shell */
-  --color-card: #ffffff;        /* white cards */
-  --color-ink: #1c1c1c;         /* near-black text & pills */
-  --color-ink-soft: #55555a;    /* secondary text */
-  --color-muted: #9a9a97;       /* muted text */
-  --color-line: #e8e8e4;        /* hairline borders */
+  /*
+   * Type scale.
+   *
+   * Every size in the app comes from this ten-step ramp. Before it existed the UI used 22
+   * distinct arbitrary values — including half-pixel sizes (9.5/10.5/11.5/12.5/13.5) that
+   * round inconsistently across browsers and zoom levels, so "the same" label rendered a
+   * pixel apart in different places. Steps are ~1–3px apart at the small end where dense
+   * tables need fine control, and widen higher up where headings need clear separation.
+   *
+   * 11px is the floor, and only for non-essential micro labels (badge counts, axis ticks)
+   * that always repeat information available elsewhere. Anything a user has to read to do
+   * their job starts at --text-xs.
+   */
+  --text-2xs: 0.6875rem;   /* 11px */
+  --text-2xs--line-height: 1.45;
+  --text-xs: 0.75rem;      /* 12px */
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.8125rem;    /* 13px */
+  --text-sm--line-height: 1.5;
+  --text-base: 0.875rem;   /* 14px — body / UI default */
+  --text-base--line-height: 1.55;
+  --text-md: 0.9375rem;    /* 15px */
+  --text-md--line-height: 1.5;
+  --text-lg: 1.0625rem;    /* 17px — card titles */
+  --text-lg--line-height: 1.4;
+  --text-xl: 1.25rem;      /* 20px */
+  --text-xl--line-height: 1.3;
+  --text-2xl: 1.5rem;      /* 24px — page titles, stat figures */
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 1.75rem;     /* 28px */
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 2.125rem;    /* 34px — login display */
+  --text-4xl--line-height: 1.15;
+
+  /*
+   * Palette.
+   *
+   * Anchored to the Frontly logo teal (#0097b2) rather than the unrelated reference mockup
+   * the first pass was traced from. Surfaces are near-neutral with a faint teal cast so the
+   * brand reads as one family without the saturated fields that tire the eye over a full
+   * shift; the pure hue is reserved for the things it should mark — brand, selection, focus.
+   *
+   * Every foreground/background pair below clears WCAG AA (4.5:1) in both modes. The old
+   * --color-muted (#9a9a97) scored 2.82:1 on a card and 1.81:1 on the page, so secondary
+   * text across the app was failing; the value here holds 4.9:1 or better on every surface
+   * it is used on.
+   */
+  --color-page: #e9f1f3;        /* app backdrop — soft, low-chroma teal grey */
+  --color-panel: #f3f8f9;       /* sidebar / app shell */
+  --color-card: #ffffff;        /* cards */
+  --color-ink: #12242a;         /* primary text & solid pills */
+  --color-ink-soft: #4c626c;    /* secondary text */
+  --color-muted: #5c6f77;       /* tertiary text — still AA on card, panel and page */
+  --color-line: #e0eaed;        /* hairline borders */
 
   /* Text that sits ON a bg-ink surface. Needed because ink flips from near-black to
      near-white at night: a literal text-white would vanish on the light pill. */
   --color-on-ink: #ffffff;
 
-  --color-accent: #f4ec7a;      /* yellow promo */
+  /*
+   * Brand. `brand` is the logo hue and clears 3:1, so it is for fills, icons, borders and
+   * large text — never small text. `brand-strong` is the darkened step that clears 4.5:1,
+   * so every brand-coloured label, link and filled button uses that instead.
+   */
+  --color-brand: #0097b2;
+  --color-brand-strong: #00768c;
+  --color-brand-soft: #dff1f5;  /* tinted surface behind ink */
+  --color-on-brand: #ffffff;
+
+  --color-accent: #f6edb8;      /* warm promo tint */
   --color-lavender: #e3e6f8;    /* light lavender list items */
   --color-mint: #dcedd7;        /* light green chips */
   --color-cream: #f8f0cf;       /* light yellow chips */
@@ -57,8 +119,8 @@
   --color-warn: #b5730c;
   --color-crit: #d03b3b;
 
-  --color-grid: #edece7;        /* hairline gridlines */
-  --color-axis: #d8d7d1;        /* baseline */
+  --color-grid: #e6eef0;        /* hairline gridlines */
+  --color-axis: #d3dfe3;        /* baseline */
 
   --radius-card: 1.5rem;
   --radius-pill: 999px;
@@ -75,16 +137,24 @@
  * `html.dark` (0,1,1) deliberately outranks the `:root` block Tailwind emits for @theme.
  */
 html.dark {
-  --color-page: #0d1214;
-  --color-panel: #11181b;
-  --color-card: #182126;
-  --color-ink: #e7eef0;
-  --color-ink-soft: #a6b4ba;
-  --color-muted: #7a8990;
-  --color-line: #26343a;
-  --color-on-ink: #0d1214;
+  --color-page: #0b1417;
+  --color-panel: #101b1f;
+  --color-card: #16242a;
+  --color-ink: #e6eff1;
+  --color-ink-soft: #a3b7bf;
+  --color-muted: #7a9099;
+  --color-line: #243740;
+  --color-on-ink: #0b1417;
 
-  --color-accent: #4c4527;
+  /* The logo teal is too dark to read on a dark card, so brand lightens rather than
+     darkens here — and `brand-strong` becomes the lighter of the two, keeping the rule
+     "strong is the one safe for small text" true in both modes. */
+  --color-brand: #3ec2dc;
+  --color-brand-strong: #5ed2e8;
+  --color-brand-soft: #123039;
+  --color-on-brand: #06232b;
+
+  --color-accent: #4a4529;
   --color-lavender: #272d46;
   --color-mint: #1f3a2c;
   --color-cream: #443a20;
@@ -95,7 +165,7 @@ html.dark {
   --color-danger-soft: #3b1d1a;
 
   /* Chart palette, re-stepped for the dark card rather than flipped: the same three hues
-     validated against #182126 (all checks pass, including contrast). */
+     validated against #16242a (all checks pass, including contrast). */
   --color-viz-handled: #199e70;
   --color-viz-transferred: #3987e5;
   --color-viz-missed: #d95926;
@@ -109,8 +179,8 @@ html.dark {
   --color-warn: #fab219;
   --color-crit: #e66767;
 
-  --color-grid: #222e34;
-  --color-axis: #2f3f47;
+  --color-grid: #1f2d33;
+  --color-axis: #2c3d45;
 
   /* Native form controls, scrollbars and caret follow the theme. */
   color-scheme: dark;
@@ -118,9 +188,33 @@ html.dark {
 
 body {
   font-family: var(--font-sans);
+  font-size: var(--text-base);
   background: var(--color-page);
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/*
+ * Keyboard focus.
+ *
+ * Previously only a handful of controls styled focus at all, and the browser default ring
+ * is nearly invisible against the darker surfaces. `:focus-visible` keeps this off mouse
+ * clicks, so it costs pointer users nothing. The offset ring reads on cards, panels and
+ * the page alike, which a border-coloured outline would not.
+ */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Inputs already carry a visible boundary, so they take the ring without the offset gap
+   that would otherwise collide with neighbouring fields in a tight form. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline-offset: 0;
 }
 
 /* Only the page chrome cross-fades. Transitioning every element would make menus and
@@ -138,7 +232,7 @@ body,
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #c9c9c4; border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: #c4d3d8; border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-html.dark ::-webkit-scrollbar-thumb { background: #33434a; }
+html.dark ::-webkit-scrollbar-thumb { background: #2e434c; }

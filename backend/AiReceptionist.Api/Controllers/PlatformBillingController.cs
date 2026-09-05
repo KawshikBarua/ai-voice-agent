@@ -359,4 +359,35 @@ public class PlatformBillingController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { closed },
             closed == 0 ? "No billing periods were due to close." : $"Closed {closed} billing period(s)."));
     }
+
+    // ---------------------------------------------------------------- reconciliation
+
+    /// <summary>Asks Stripe what it has collected and applies anything missing, instead of waiting
+    /// for the sweep. This is the answer to "the customer says they paid but it is not showing".</summary>
+    [HttpPost("reconcile")]
+    public async Task<IActionResult> Reconcile([FromQuery] int lookbackDays, CancellationToken ct)
+    {
+        var result = await _billing.ReconcileAsync(lookbackDays <= 0 ? 14 : lookbackDays, ct);
+
+        if (!result.StripeConfigured)
+            return Ok(ApiResponse<object>.Ok(result, "Stripe is not connected, so there is nothing to reconcile."));
+
+        var message = result.Recovered > 0
+            ? $"Recovered {result.Recovered} payment(s) that no webhook had applied, out of " +
+              $"{result.Examined} paid invoice(s). Check the webhook endpoint and signing secret."
+            : $"Checked {result.Examined} paid invoice(s); all were already recorded.";
+
+        return Ok(ApiResponse<object>.Ok(result, message));
+    }
+
+    /// <summary>Webhook deliveries that never completed. A non-empty list here is the signal that
+    /// something is wrong with the Stripe integration rather than with any one customer.</summary>
+    [HttpGet("webhook-failures")]
+    public async Task<IActionResult> WebhookFailures([FromQuery] int take)
+    {
+        var stuck = await _repo.ListUnfinishedWebhookEventsAsync(take <= 0 ? 50 : take);
+        return Ok(ApiResponse<object>.Ok(stuck, stuck.Count == 0
+            ? "Every Stripe webhook delivery has been applied."
+            : $"{stuck.Count} Stripe webhook delivery(s) never completed."));
+    }
 }

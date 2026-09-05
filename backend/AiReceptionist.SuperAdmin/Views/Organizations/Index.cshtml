@@ -18,6 +18,9 @@
         <h1>Organizations</h1>
         <p>Every tenant on the platform. Open one to manage its Retell agent, subscription and account status.</p>
     </div>
+    @* Creating the organization and its first login is one act, so the entry point is the account
+       form — there is no way to add an organization nobody can sign in to. *@
+    <a class="btn" asp-controller="Users" asp-action="Create">New organization &amp; login</a>
 </div>
 
 <form class="filters" method="get" asp-action="Index">

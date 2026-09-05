@@ -25,6 +25,7 @@
     <Compile Include="..\Shared\BillingSchema.cs" Link="Data\BillingSchema.cs" />
     <Compile Include="..\Shared\BillingMath.cs" Link="Data\BillingMath.cs" />
     <Compile Include="..\Shared\BillingEntities.cs" Link="Data\BillingEntities.cs" />
+    <Compile Include="..\Shared\RetellVoices.cs" Link="Data\RetellVoices.cs" />
   </ItemGroup>
 
 </Project>

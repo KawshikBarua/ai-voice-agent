@@ -56,6 +56,17 @@ public class SubscriptionRecord
     /// period is measured against — changing it early would re-measure minutes already spent.</summary>
     public int? PendingPlanId { get; set; }
 
+    /// <summary>
+    /// True once this organization is actually on something — a catalogue tier, a price, or an
+    /// allowance.
+    ///
+    /// A row can exist without any of those: one is created to hold the Stripe customer link
+    /// before Checkout, so that a payment arriving by any route has somewhere to land. That row is
+    /// bookkeeping, not a plan, and every screen must read it as "no plan yet" or a customer who
+    /// has paid nothing would be shown a phantom 0.00 subscription.
+    /// </summary>
+    public bool HasPlan => PlanId is > 0 || Amount > 0 || IncludedMinutes > 0;
+
     /// <summary>Stripe is collecting for this organization rather than the operator chasing it.</summary>
     public bool IsStripeLinked => !string.IsNullOrWhiteSpace(StripeSubscriptionId);
     public bool HasStripeCustomer => !string.IsNullOrWhiteSpace(StripeCustomerId);

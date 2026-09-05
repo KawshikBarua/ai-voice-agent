@@ -87,9 +87,46 @@ public interface IBillingRepository
     Task SetAgentRestrictedAsync(int orgId, bool restricted, string? reason);
 
     // ---------- webhook idempotency ----------
-    /// <summary>Claims a Stripe event id. False means it has been seen before and must be skipped.</summary>
-    Task<bool> TryClaimWebhookEventAsync(string eventId, string type);
+    /// <summary>
+    /// Claims a Stripe event id for processing. False means it has already been applied
+    /// successfully, or has failed so many times that it has been set aside, and must be skipped.
+    ///
+    /// A previous attempt that failed or was abandoned mid-flight is re-claimable — that is the
+    /// whole point. Idempotency here has to mean "do not apply twice", not "do not try twice",
+    /// because the second reading throws away money the platform has already collected.
+    /// </summary>
+    Task<WebhookClaim> TryClaimWebhookEventAsync(string eventId, string type, int maxAttempts,
+        int staleMinutes);
+
+    /// <summary>Marks the claim finished. A non-null <paramref name="error"/> leaves the event
+    /// eligible for another attempt.</summary>
     Task MarkWebhookDoneAsync(string eventId, string? error);
+
+    /// <summary>Events that never completed — the operator's "what is stuck" view.</summary>
+    Task<IReadOnlyList<StuckWebhookEvent>> ListUnfinishedWebhookEventsAsync(int take = 50);
+}
+
+/// <summary>The outcome of asking for a claim on a Stripe event.</summary>
+public enum WebhookClaim
+{
+    /// <summary>Nobody has applied this event; the caller owns it.</summary>
+    Granted,
+    /// <summary>Applied successfully already. Acknowledge and do nothing.</summary>
+    AlreadyApplied,
+    /// <summary>Failed too many times. Set aside for a human rather than retried forever.</summary>
+    Abandoned,
+}
+
+/// <summary>A webhook delivery that never finished cleanly.</summary>
+public class StuckWebhookEvent
+{
+    public string Id { get; set; } = "";
+    public string Type { get; set; } = "";
+    public DateTime ReceivedAt { get; set; }
+    public DateTime? ClaimedAt { get; set; }
+    public int Attempts { get; set; }
+    public bool Abandoned { get; set; }
+    public string? Error { get; set; }
 }
 
 public class BillingRepository : IBillingRepository
@@ -144,9 +181,27 @@ public class BillingRepository : IBillingRepository
     public async Task SetStripeCustomerAsync(int orgId, string stripeCustomerId)
     {
         using var conn = _db.Create();
-        await conn.ExecuteAsync(
-            "UPDATE OrganizationSubscriptions SET StripeCustomerId = @stripeCustomerId WHERE OrganizationId = @orgId",
-            new { orgId, stripeCustomerId });
+        // Upsert, because an organization that has never been on a plan has no row yet and this is
+        // the first thing that needs to be written about it. An UPDATE alone silently did nothing
+        // there, which left a customer who was about to pay unfindable by their Stripe customer id
+        // — so the invoice.paid that followed could not be matched to them.
+        //
+        // The row it creates carries no plan (see SubscriptionRecord.HasPlan): it is a place to
+        // hold the linkage until Checkout completes and the real tier is applied over it.
+        await conn.ExecuteAsync(@"
+            UPDATE OrganizationSubscriptions
+            SET StripeCustomerId = @stripeCustomerId, ModifiedAt = GETUTCDATE()
+            WHERE OrganizationId = @orgId;
+
+            IF @@ROWCOUNT = 0
+            INSERT INTO OrganizationSubscriptions
+                (OrganizationId, PlanName, BillingCycle, Amount, Currency, StartedAt,
+                 CurrentPeriodStart, CurrentPeriodEnd, IncludedMinutes, OverageRatePerMinute,
+                 StripeCustomerId, ModifiedAt)
+            SELECT @orgId, 'No plan', @cycle, 0, ISNULL(o.Currency, 'USD'), GETUTCDATE(),
+                   GETUTCDATE(), GETUTCDATE(), 0, 0, @stripeCustomerId, GETUTCDATE()
+            FROM Organizations o WHERE o.Id = @orgId;",
+            new { orgId, stripeCustomerId, cycle = BillingCycles.Monthly });
     }
 
     public async Task SetStripeSubscriptionAsync(int orgId, string? stripeSubscriptionId, string? status)
@@ -444,11 +499,24 @@ public class BillingRepository : IBillingRepository
         var cycle = BillingCycles.Normalize(plan.BillingCycle);
 
         using var conn = _db.Create();
+        // `hadNoPlan` reads the row as it was before this statement — every SET expression in an
+        // UPDATE sees the original values — so it identifies the placeholder row that was created
+        // to hold a Stripe customer link before Checkout. That row carries no access window, and
+        // taking it over is the moment the customer's first period actually begins. Rows that were
+        // already on a plan keep the window they have: a tier change must not silently re-date
+        // what someone has paid through.
         await conn.ExecuteAsync(@"
+            DECLARE @hadNoPlan BIT = (
+                SELECT CASE WHEN PlanId IS NULL AND Amount = 0 AND IncludedMinutes = 0 THEN 1 ELSE 0 END
+                FROM OrganizationSubscriptions WHERE OrganizationId = @orgId);
+
             UPDATE OrganizationSubscriptions
             SET PlanId = @planId, PlanName = @planName, BillingCycle = @cycle, Amount = @amount,
                 Currency = @currency, IncludedMinutes = @includedMinutes,
                 OverageRatePerMinute = @overageRate, ModifiedAt = GETUTCDATE(),
+                StartedAt = CASE WHEN @hadNoPlan = 1 THEN GETUTCDATE() ELSE StartedAt END,
+                CurrentPeriodStart = CASE WHEN @hadNoPlan = 1 THEN GETUTCDATE() ELSE CurrentPeriodStart END,
+                CurrentPeriodEnd = CASE WHEN @hadNoPlan = 1 THEN @firstPeriodEnd ELSE CurrentPeriodEnd END,
                 -- Whatever was queued has either just been applied or been overtaken by this.
                 PendingPlanId = NULL
             WHERE OrganizationId = @orgId;
@@ -509,20 +577,65 @@ public class BillingRepository : IBillingRepository
 
     // ---------- webhook idempotency ----------
 
-    public async Task<bool> TryClaimWebhookEventAsync(string eventId, string type)
+    public async Task<WebhookClaim> TryClaimWebhookEventAsync(string eventId, string type,
+        int maxAttempts, int staleMinutes)
     {
         using var conn = _db.Create();
         try
         {
-            var inserted = await conn.ExecuteAsync(@"
-                IF NOT EXISTS (SELECT 1 FROM StripeWebhookEvents WHERE Id = @eventId)
-                INSERT INTO StripeWebhookEvents (Id, Type) VALUES (@eventId, @type);",
-                new { eventId, type });
-            return inserted > 0;
+            // One statement, so two workers racing the same redelivery cannot both win. The UPDATE
+            // takes the row lock; the INSERT only runs when there is no row to lock, and a loser
+            // there surfaces as a duplicate-key which the catch below reads as "someone else has it".
+            var outcome = await conn.ExecuteScalarAsync<int>(@"
+                SET NOCOUNT ON;
+                DECLARE @result INT;
+
+                UPDATE StripeWebhookEvents
+                SET Attempts = Attempts + 1, ClaimedAt = GETUTCDATE(), ProcessedAt = NULL, Error = NULL
+                WHERE Id = @eventId
+                  AND Abandoned = 0
+                  AND (
+                        -- the last attempt failed outright
+                        Error IS NOT NULL
+                        -- or it was claimed and never finished: the process holding it is gone
+                        OR (ProcessedAt IS NULL
+                            AND (ClaimedAt IS NULL OR ClaimedAt < DATEADD(minute, -@staleMinutes, GETUTCDATE())))
+                      );
+
+                IF @@ROWCOUNT > 0
+                BEGIN
+                    -- One attempt too many. Set it aside so it stops consuming deliveries, and
+                    -- leave it visible: the reconciliation sweep is what recovers the money.
+                    UPDATE StripeWebhookEvents SET Abandoned = 1, ProcessedAt = GETUTCDATE()
+                    WHERE Id = @eventId AND Attempts > @maxAttempts;
+
+                    SET @result = CASE WHEN @@ROWCOUNT > 0 THEN 2 ELSE 0 END;
+                END
+                ELSE IF EXISTS (SELECT 1 FROM StripeWebhookEvents WHERE Id = @eventId)
+                    SET @result = (SELECT CASE WHEN Abandoned = 1 THEN 2 ELSE 1 END
+                                   FROM StripeWebhookEvents WHERE Id = @eventId);
+                ELSE
+                BEGIN
+                    INSERT INTO StripeWebhookEvents (Id, Type, Attempts, ClaimedAt)
+                    VALUES (@eventId, @type, 1, GETUTCDATE());
+                    SET @result = 0;
+                END
+
+                SELECT @result;",
+                new { eventId, type, maxAttempts, staleMinutes });
+
+            return outcome switch
+            {
+                0 => WebhookClaim.Granted,
+                2 => WebhookClaim.Abandoned,
+                _ => WebhookClaim.AlreadyApplied,
+            };
         }
         catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 2601 or 2627)
         {
-            return false;
+            // Another delivery of the same event inserted first. Theirs is in flight, so this one
+            // steps aside rather than running the handler alongside it.
+            return WebhookClaim.AlreadyApplied;
         }
     }
 
@@ -532,5 +645,16 @@ public class BillingRepository : IBillingRepository
         await conn.ExecuteAsync(
             "UPDATE StripeWebhookEvents SET ProcessedAt = GETUTCDATE(), Error = @error WHERE Id = @eventId",
             new { eventId, error = error?.Length > 1000 ? error[..1000] : error });
+    }
+
+    public async Task<IReadOnlyList<StuckWebhookEvent>> ListUnfinishedWebhookEventsAsync(int take = 50)
+    {
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync<StuckWebhookEvent>(@"
+            SELECT TOP (@take) Id, Type, ReceivedAt, ClaimedAt, Attempts, Abandoned, Error
+            FROM StripeWebhookEvents
+            WHERE Abandoned = 1 OR Error IS NOT NULL OR ProcessedAt IS NULL
+            ORDER BY ReceivedAt DESC", new { take });
+        return rows.ToList();
     }
 }

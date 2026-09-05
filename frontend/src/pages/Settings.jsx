@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { api, unwrap } from '../api/client'
+import { api, signOut, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useThemeStore } from '../store/theme'
 import { Avatar, Chip, PillButton } from '../components/ui'
@@ -10,7 +10,7 @@ import { Avatar, Chip, PillButton } from '../components/ui'
 /* ------------------------------------------------------------------ primitives */
 
 const inputBase =
-  'w-full rounded-2xl border px-4 py-2.5 text-[13.5px] outline-none transition-colors'
+  'w-full rounded-2xl border px-4 py-2.5 text-base outline-none transition-colors'
 
 /**
  * One labelled control. Locked fields keep the same shape as editable ones so the card does
@@ -19,9 +19,9 @@ const inputBase =
 function Field({ label, children, full = false, hint }) {
   return (
     <div className={full ? 'sm:col-span-2' : ''}>
-      <label className="mb-1.5 block text-[12px] font-semibold text-ink-soft">{label}</label>
+      <label className="mb-1.5 block text-xs font-semibold text-ink-soft">{label}</label>
       {children}
-      {hint && <p className="mt-1.5 text-[11.5px] text-muted">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-muted">{hint}</p>}
     </div>
   )
 }
@@ -89,14 +89,14 @@ function EditableCard({ title, subtitle, editing, onEdit, onCancel, onSave, savi
     >
       <div className="mb-5 flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-[15px] font-bold">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-[12px] text-muted">{subtitle}</p>}
+          <h2 className="text-md font-bold">{title}</h2>
+          {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}
         </div>
 
         {onEdit && !editing && (
           <button
             onClick={onEdit}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-line bg-card px-3 py-1.5 text-[12.5px] font-semibold text-ink-soft transition hover:bg-panel"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-line bg-card px-3 py-1.5 text-sm font-semibold text-ink-soft transition hover:bg-panel"
           >
             Edit <PencilIcon />
           </button>
@@ -106,7 +106,7 @@ function EditableCard({ title, subtitle, editing, onEdit, onCancel, onSave, savi
       <div className="grid gap-4 sm:grid-cols-2">{children}</div>
 
       {error && (
-        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-[12.5px] font-medium text-danger">
+        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
           {error}
         </p>
       )}
@@ -139,8 +139,8 @@ function CardState({ title, isPending, error }) {
 
   return (
     <section className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm">
-      <h2 className="text-[15px] font-bold">{title}</h2>
-      <p className={`mt-2 text-[13px] ${isPending ? 'text-muted' : 'text-danger'}`}>{message}</p>
+      <h2 className="text-md font-bold">{title}</h2>
+      <p className={`mt-2 text-sm ${isPending ? 'text-muted' : 'text-danger'}`}>{message}</p>
     </section>
   )
 }
@@ -229,15 +229,15 @@ const invalidHourRows = (rows) =>
   rows.filter((row) => row.open && !(isClockTime(row.start) && isClockTime(row.end) && row.end > row.start))
 
 function HoursRow({ row, editing, onChange }) {
-  const timeInput = `rounded-xl border px-3 py-1.5 text-[13px] outline-none transition-colors ${
+  const timeInput = `rounded-xl border px-3 py-1.5 text-sm outline-none transition-colors ${
     editing ? 'border-line bg-card text-ink focus:border-ink' : 'border-transparent bg-card/60 text-ink-soft'
   }`
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl bg-panel px-4 py-2.5">
-      <span className="w-[92px] shrink-0 text-[13px] font-semibold">{row.label}</span>
+      <span className="w-[92px] shrink-0 text-sm font-semibold">{row.label}</span>
 
-      <label className="flex shrink-0 items-center gap-2 text-[12.5px] text-ink-soft">
+      <label className="flex shrink-0 items-center gap-2 text-sm text-ink-soft">
         <input
           type="checkbox"
           className="h-4 w-4 rounded accent-ink"
@@ -252,12 +252,12 @@ function HoursRow({ row, editing, onChange }) {
         <div className="flex items-center gap-2">
           <input type="time" className={timeInput} value={row.start} disabled={!editing}
             onChange={(e) => onChange({ ...row, start: e.target.value })} aria-label={`${row.label} opening time`} />
-          <span className="text-[12.5px] text-muted">to</span>
+          <span className="text-sm text-muted">to</span>
           <input type="time" className={timeInput} value={row.end} disabled={!editing}
             onChange={(e) => onChange({ ...row, end: e.target.value })} aria-label={`${row.label} closing time`} />
         </div>
       ) : (
-        <span className="text-[12.5px] font-medium text-muted">Closed all day</span>
+        <span className="text-sm font-medium text-muted">Closed all day</span>
       )}
     </div>
   )
@@ -304,7 +304,7 @@ function HolidaysCard() {
 
   const addError = errorText(add, 'Could not add that closure. Please retry.')
   const today = todayStart()
-  const field = 'rounded-2xl border border-line bg-card px-4 py-2.5 text-[13.5px] outline-none focus:border-ink'
+  const field = 'rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 
   return (
     <motion.section
@@ -313,8 +313,8 @@ function HolidaysCard() {
       transition={{ duration: 0.28, ease: 'easeOut' }}
       className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
     >
-      <h2 className="text-[15px] font-bold">Holidays &amp; Closures</h2>
-      <p className="mt-0.5 text-[12px] text-muted">
+      <h2 className="text-md font-bold">Holidays &amp; Closures</h2>
+      <p className="mt-0.5 text-xs text-muted">
         Days the business is shut. These override your weekly hours — the AI will not book
         anyone in, and tells callers why.
       </p>
@@ -324,12 +324,12 @@ function HolidaysCard() {
         onSubmit={(e) => { e.preventDefault(); add.mutate({ date, name: name.trim() || 'Closed' }) }}
       >
         <div>
-          <label className="mb-1.5 block text-[12px] font-semibold text-ink-soft" htmlFor="closure-date">Date</label>
+          <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-date">Date</label>
           <input id="closure-date" type="date" required className={field} value={date}
             onChange={(e) => setDate(e.target.value)} />
         </div>
         <div className="min-w-[180px] flex-1">
-          <label className="mb-1.5 block text-[12px] font-semibold text-ink-soft" htmlFor="closure-name">Reason</label>
+          <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-name">Reason</label>
           <input id="closure-name" className={`${field} w-full`} value={name} placeholder="e.g. Christmas Day"
             onChange={(e) => setName(e.target.value)} />
         </div>
@@ -339,14 +339,14 @@ function HolidaysCard() {
       </form>
 
       {addError && (
-        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-[12.5px] font-medium text-danger">
+        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
           {addError}
         </p>
       )}
 
       <div className="mt-5 space-y-2">
         {holidays.length === 0 && (
-          <p className="rounded-2xl bg-panel px-4 py-3 text-[12.5px] text-muted">
+          <p className="rounded-2xl bg-panel px-4 py-3 text-sm text-muted">
             No closures yet. Your weekly hours apply on every date.
           </p>
         )}
@@ -355,13 +355,13 @@ function HolidaysCard() {
           return (
             <div key={h.id}
               className={`flex flex-wrap items-center gap-3 rounded-2xl bg-panel px-4 py-2.5 ${past ? 'opacity-60' : ''}`}>
-              <span className="w-[150px] shrink-0 text-[13px] font-semibold">{formatClosureDate(h.date)}</span>
-              <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-soft">{h.name}</span>
+              <span className="w-[150px] shrink-0 text-sm font-semibold">{formatClosureDate(h.date)}</span>
+              <span className="min-w-0 flex-1 truncate text-sm text-ink-soft">{h.name}</span>
               {past && <Chip tone="cream">Past</Chip>}
               <button
                 onClick={() => remove.mutate(h.id)}
                 disabled={remove.isPending}
-                className="rounded-pill px-3 py-1 text-[11.5px] font-semibold text-danger transition hover:bg-danger-soft disabled:opacity-50"
+                className="rounded-pill px-3 py-1 text-xs font-semibold text-danger transition hover:bg-danger-soft disabled:opacity-50"
               >
                 Remove
               </button>
@@ -395,9 +395,9 @@ function ProfilePanel() {
         <div className="flex flex-wrap items-center gap-4">
           <Avatar name={name} size="xl" tone="lavender" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[17px] font-bold">{name}</p>
-            <p className="truncate text-[13px] text-ink-soft">{user?.email}</p>
-            <p className="truncate text-[12px] text-muted">{org?.name ?? '—'}</p>
+            <p className="truncate text-lg font-bold">{name}</p>
+            <p className="truncate text-sm text-ink-soft">{user?.email}</p>
+            <p className="truncate text-xs text-muted">{org?.name ?? '—'}</p>
           </div>
           <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
         </div>
@@ -528,7 +528,7 @@ function BusinessPanel() {
               onChange={(next) => setHours(hours.map((r, j) => (j === i ? next : r)))}
             />
           ))}
-          <p className="px-1 pt-1 text-[11.5px] text-muted">
+          <p className="px-1 pt-1 text-xs text-muted">
             The AI offers slots only inside these hours and refuses to book outside them.
           </p>
         </div>
@@ -539,7 +539,27 @@ function BusinessPanel() {
   )
 }
 
-const VOICES = ['11labs-Adrian', '11labs-Grace', 'openai-Nova', 'openai-Alloy', 'openai-Shimmer', 'openai-Echo']
+// Retell platform voices. Mirrors backend/Shared/RetellVoices.cs — change both together.
+// The set is closed on purpose: expressive mode is on for every account and Retell only
+// honours it for platform voices, so anything else would quietly sound flatter.
+const VOICES = [
+  { id: 'retell-Grace', name: 'Grace', gender: 'female' },
+  { id: 'retell-Ashley', name: 'Ashley', gender: 'female' },
+  { id: 'retell-Chloe', name: 'Chloe', gender: 'female' },
+  { id: 'retell-Nico', name: 'Nico', gender: 'male' },
+]
+
+// Same rule the server applies on sync (RetellVoices.Resolve): a voice saved under an older
+// provider prefix is recognised by name, so an account still on 11labs-Grace shows Grace rather
+// than an empty box. Anything with no counterpart falls back to the first voice.
+const resolveVoice = (voice) => {
+  const text = (voice ?? '').trim().toLowerCase()
+  const match = VOICES.find(
+    (v) => text === v.id.toLowerCase() || text === v.name.toLowerCase() || text.endsWith(`-${v.name.toLowerCase()}`),
+  )
+  return (match ?? VOICES[0]).id
+}
+
 const LANGUAGES = ['en-US', 'en-GB', 'es-ES', 'fr-FR', 'de-DE']
 
 function AgentPanel() {
@@ -581,8 +601,8 @@ function AgentPanel() {
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-[15px] font-bold">AI phone agent</h2>
-            <p className="mt-0.5 text-[12px] text-muted">
+            <h2 className="text-md font-bold">AI phone agent</h2>
+            <p className="mt-0.5 text-xs text-muted">
               Set up and maintained for you by the platform team
             </p>
           </div>
@@ -593,20 +613,20 @@ function AgentPanel() {
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="flex items-center justify-between gap-3 rounded-2xl bg-panel px-4 py-3">
-            <span className="text-[12.5px] text-ink-soft">Retell phone number</span>
-            <span className="max-w-[55%] truncate text-[12px] font-semibold">
+            <span className="text-sm text-ink-soft">Retell phone number</span>
+            <span className="max-w-[55%] truncate text-xs font-semibold">
               {status?.retellPhoneNumber ?? 'Not assigned'}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3 rounded-2xl bg-panel px-4 py-3">
-            <span className="text-[12.5px] text-ink-soft">Transfer number</span>
-            <span className="max-w-[55%] truncate text-[12px] font-semibold">
+            <span className="text-sm text-ink-soft">Transfer number</span>
+            <span className="max-w-[55%] truncate text-xs font-semibold">
               {agent.transferNumber ?? 'Not set'}
             </span>
           </div>
         </div>
 
-        <p className="mt-3 text-[11.5px] text-muted">
+        <p className="mt-3 text-xs text-muted">
           Your phone numbers are managed for you — contact support to change the number your AI
           answers or where calls are transferred.
         </p>
@@ -622,11 +642,11 @@ function AgentPanel() {
         saving={save.isPending}
         error={errorText(save, 'Could not save. Please retry.')}
       >
-        <Field label="Voice (Retell voice id)">
-          <SelectInput locked={!editing} value={form.voice ?? VOICES[0]} onChange={set('voice')}>
-            {/* The stored voice is included even if it is not one of ours, so editing an
-                unfamiliar value cannot silently reset the agent to a different voice. */}
-            {[...new Set([...VOICES, form.voice].filter(Boolean))].map((v) => <option key={v}>{v}</option>)}
+        <Field label="Voice" hint="Expressive delivery is on for every voice here.">
+          <SelectInput locked={!editing} value={resolveVoice(form.voice)} onChange={set('voice')}>
+            {VOICES.map((v) => (
+              <option key={v.id} value={v.id}>{v.name} — {v.gender}</option>
+            ))}
           </SelectInput>
         </Field>
         <Field label="Language">
@@ -679,8 +699,8 @@ function AppearancePanel() {
       transition={{ duration: 0.28, ease: 'easeOut' }}
       className="theme-fade rounded-card border border-line bg-card p-5 shadow-sm"
     >
-      <h2 className="text-[15px] font-bold">Appearance</h2>
-      <p className="mt-0.5 text-[12px] text-muted">
+      <h2 className="text-md font-bold">Appearance</h2>
+      <p className="mt-0.5 text-xs text-muted">
         Applies across the whole app and is remembered on this device.
       </p>
 
@@ -705,8 +725,8 @@ function AppearancePanel() {
                   {option.icon.map((d, i) => <path key={i} d={d} />)}
                 </svg>
               </span>
-              <span className="text-[13.5px] font-semibold">{option.label}</span>
-              <span className="text-[11.5px] text-muted">{option.hint}</span>
+              <span className="text-base font-semibold">{option.label}</span>
+              <span className="text-xs text-muted">{option.hint}</span>
             </button>
           )
         })}
@@ -726,7 +746,6 @@ const SECTIONS = [
 
 export default function Settings() {
   const [active, setActive] = useState('profile')
-  const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
 
   const Panel = SECTIONS.find((s) => s.id === active).Panel
@@ -734,8 +753,8 @@ export default function Settings() {
   return (
     <div>
       <header className="mb-6">
-        <h1 className="text-[26px] font-bold">Settings</h1>
-        <p className="mt-1 text-[13px] text-ink-soft">
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Settings</h1>
+        <p className="mt-1 text-sm text-ink-soft">
           Manage your account information and preferences
         </p>
       </header>
@@ -748,7 +767,7 @@ export default function Settings() {
                 <button
                   onClick={() => setActive(section.id)}
                   aria-current={active === section.id ? 'page' : undefined}
-                  className={`w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-[13.5px] font-semibold transition ${
+                  className={`w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-base font-semibold transition ${
                     active === section.id
                       ? 'bg-lavender text-ink'
                       : 'text-ink-soft hover:bg-panel'
@@ -761,8 +780,8 @@ export default function Settings() {
 
             <li className="lg:mt-2 lg:border-t lg:border-line lg:pt-2">
               <button
-                onClick={() => { logout(); navigate('/login') }}
-                className="w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-[13.5px] font-semibold text-danger transition hover:bg-danger-soft"
+                onClick={async () => { await signOut(); navigate('/login') }}
+                className="w-full whitespace-nowrap rounded-2xl px-4 py-2.5 text-left text-base font-semibold text-danger transition hover:bg-danger-soft"
               >
                 Sign out
               </button>

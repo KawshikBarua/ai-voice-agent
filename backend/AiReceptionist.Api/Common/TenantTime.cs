@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace AiReceptionist.Api.Common;
@@ -21,6 +22,40 @@ public static class TenantTime
         TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), tz);
 
     public static DateTime NowLocal(TimeZoneInfo tz) => ToLocal(DateTime.UtcNow, tz);
+
+    /// <summary>Whether this server can resolve the id at all. <see cref="Resolve"/> answers a bad
+    /// id with UTC, which is indistinguishable from a tenant genuinely on UTC — every time the
+    /// agent quotes is then silently shifted, and it looks exactly like the agent not knowing what
+    /// time it is. Checked where the tenant types the value, so it never gets that far.</summary>
+    public static bool IsKnown(string? timezoneId)
+    {
+        if (string.IsNullOrWhiteSpace(timezoneId)) return true;   // unset falls back to UTC by design
+        try
+        {
+            TimeZoneInfo.FindSystemTimeZoneById(timezoneId);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The tenant's timezone as an IANA id ("Asia/Dhaka"). Retell's per-call clock
+    /// placeholder, <c>{{current_time_&lt;id&gt;}}</c>, only understands IANA ids, while Timezone
+    /// accepts a Windows id too and a Windows-hosted deployment may well hold one.</summary>
+    public static string IanaId(string? timezoneId)
+    {
+        var tz = Resolve(timezoneId);
+        if (tz.HasIanaId) return tz.Id;
+        return TimeZoneInfo.TryConvertWindowsIdToIanaId(tz.Id, out var iana) ? iana : "UTC";
+    }
+
+    /// <summary>A local time written the way a person says it — "Monday 17 August 2026 at 14:32".
+    /// Every place the agent is told what day it is uses this, so the wording it sees is the same
+    /// whether it came from the prompt, a dynamic variable or a tool reply.</summary>
+    public static string Describe(DateTime local) =>
+        local.ToString("dddd d MMMM yyyy 'at' HH:mm", CultureInfo.InvariantCulture);
 }
 
 public record DayWindow(TimeSpan Start, TimeSpan End);

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery } from '@tanstack/react-query'
-import { api, unwrap } from '../api/client'
+import { api, signOut, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useThemeStore, resolveTheme } from '../store/theme'
 import { Avatar } from './ui'
@@ -37,15 +37,19 @@ function Item({ to, icon, label, badge, end, onNavigate }) {
       end={end}
       onClick={onNavigate}
       className={({ isActive }) =>
-        `flex items-center gap-3 rounded-2xl px-4 py-2.5 text-[13.5px] font-medium transition-colors ${
-          isActive ? 'bg-card text-ink shadow-sm' : 'text-ink-soft hover:bg-card/60'
+        // The active row now carries the brand hue as well as the raised card, so the
+        // current page is legible at a glance instead of resting on a faint shadow alone.
+        `flex items-center gap-3 rounded-2xl px-4 py-2.5 text-base font-medium transition-colors ${
+          isActive
+            ? 'bg-card text-brand-strong font-semibold shadow-sm'
+            : 'text-ink-soft hover:bg-card/60'
         }`
       }
     >
       <Icon d={icon} />
       <span className="flex-1">{label}</span>
       {badge ? (
-        <span className="grid h-5 w-5 place-items-center rounded-full bg-ink text-[10px] font-semibold text-on-ink">
+        <span className="grid h-5 w-5 place-items-center rounded-full bg-ink text-2xs font-semibold text-on-ink">
           {badge}
         </span>
       ) : null}
@@ -57,8 +61,8 @@ function SnapshotStat({ label, value, highlight, onClick }) {
   return (
     <button onClick={onClick}
       className="relative flex w-full items-center justify-between gap-2 rounded-xl px-2 py-1.5 text-left transition hover:bg-card/40">
-      <span className="text-[11.5px] text-ink-soft">{label}</span>
-      <span className={`text-[13px] font-bold ${highlight ? 'text-danger' : 'text-ink'}`}>{value}</span>
+      <span className="text-xs text-ink-soft">{label}</span>
+      <span className={`text-sm font-bold ${highlight ? 'text-danger' : 'text-ink'}`}>{value}</span>
     </button>
   )
 }
@@ -87,7 +91,7 @@ function ThemeToggle() {
 }
 
 function SidebarContent({ onNavigate }) {
-  const { user, logout } = useAuthStore()
+  const { user } = useAuthStore()
   const navigate = useNavigate()
   const go = (to) => { onNavigate?.(); navigate(to) }
 
@@ -106,7 +110,7 @@ function SidebarContent({ onNavigate }) {
         <ThemeToggle />
       </div>
 
-      <p className="mb-2 px-4 text-[11px] font-medium uppercase tracking-wide text-muted">General</p>
+      <p className="mb-2 px-4 text-xs font-medium uppercase tracking-wide text-muted">General</p>
       <nav className="space-y-1">
         <Item to="/" end icon={icons.dashboard} label="Dashboard" onNavigate={onNavigate} />
         <Item to="/calendar" icon={icons.calendar} label="Calendar" onNavigate={onNavigate} />
@@ -115,7 +119,7 @@ function SidebarContent({ onNavigate }) {
         <Item to="/customers" icon={icons.users} label="Customers" onNavigate={onNavigate} />
       </nav>
 
-      <p className="mb-2 mt-6 px-4 text-[11px] font-medium uppercase tracking-wide text-muted">Tools</p>
+      <p className="mb-2 mt-6 px-4 text-xs font-medium uppercase tracking-wide text-muted">Tools</p>
       <nav className="space-y-1">
         <Item to="/calls" icon={icons.phone} label="Calls" badge={counts?.calls} onNavigate={onNavigate} />
         <Item to="/catalogue" icon={icons.tag} label="Services & Products" onNavigate={onNavigate} />
@@ -125,9 +129,9 @@ function SidebarContent({ onNavigate }) {
       </nav>
 
       <div className="mt-auto pt-6">
-        <div className="relative mb-4 overflow-hidden rounded-card bg-accent p-4">
+        <div className="relative mb-4 overflow-hidden rounded-card bg-brand-soft p-4">
           <div className="absolute -right-6 -top-6 h-20 w-20 rounded-full bg-card/50" />
-          <p className="relative mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+          <p className="relative mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
             Customer snapshot
           </p>
           <div className="relative -mx-2 space-y-0.5">
@@ -141,14 +145,14 @@ function SidebarContent({ onNavigate }) {
         </div>
 
         <button
-          onClick={() => { logout(); navigate('/login') }}
+          onClick={async () => { await signOut(); navigate('/login') }}
           className="flex w-full items-center gap-3 rounded-2xl bg-card px-3 py-2.5 text-left shadow-sm transition hover:shadow"
           title="Sign out"
         >
           <Avatar name={user?.fullName ?? 'User'} size="sm" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[13px] font-semibold">{user?.fullName}</span>
-            <span className="block truncate text-[11px] text-muted">{user?.email}</span>
+            <span className="block truncate text-sm font-semibold">{user?.fullName}</span>
+            <span className="block truncate text-xs text-muted">{user?.email}</span>
           </span>
           <svg viewBox="0 0 24 24" className="h-4 w-4 text-muted" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M6 9l6 6 6-6" />
@@ -169,7 +173,7 @@ export default function AppLayout() {
         on a tablet a 232px rail eats a third of the screen, so those widths keep the drawer
         and give the whole viewport to the content.
       */}
-      <aside className="hidden w-[208px] shrink-0 flex-col overflow-y-auto border-r border-line/60 p-5 lg:flex xl:w-[232px]">
+      <aside className="hidden w-[208px] shrink-0 flex-col overflow-y-auto border-r border-line/60 p-5 lg:flex xl:w-[232px] height-[calc(100dvh)]">
         <SidebarContent />
       </aside>
 

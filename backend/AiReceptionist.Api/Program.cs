@@ -66,6 +66,9 @@ builder.Services.AddScoped<IBillingRepository, BillingRepository>();
 builder.Services.AddSingleton<IStripeGateway, StripeGateway>();
 builder.Services.AddScoped<IBillingService, BillingService>();
 builder.Services.AddHostedService<BillingPeriodWorker>();
+// The webhook is the fast path for payments; this is the guarantee. It re-reads what Stripe has
+// actually collected and applies anything no delivery ever arrived for.
+builder.Services.AddHostedService<BillingReconciliationWorker>();
 
 // JWT authentication (SRS §5, §20)
 var jwtSecret = Environment.GetEnvironmentVariable("JWT__SECRET") ?? builder.Configuration["Jwt:Secret"];

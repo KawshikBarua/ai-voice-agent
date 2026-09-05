@@ -33,6 +33,11 @@ public static class PlatformDbInitializer
         foreach (var statement in Shared.BillingSchema.Statements)
             db.Execute(statement);
 
+        // The public marketing site's editable copy. Console-only, so unlike the billing tables
+        // it is not shared with the tenant API — nothing else reads or writes it.
+        foreach (var statement in LandingSchema.Statements)
+            db.Execute(statement);
+
         // Sign-in reuses the shared Users table, so without a SuperAdmin row nobody can get in.
         // The tenant API seeds one on first run; say so rather than failing silently at the login form.
         var superAdmins = db.ExecuteScalar<int>(

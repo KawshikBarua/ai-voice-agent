@@ -189,7 +189,7 @@ IF OBJECT_ID('AgentConfig') IS NULL
 CREATE TABLE AgentConfig (
     Id INT IDENTITY PRIMARY KEY,
     OrganizationId INT NOT NULL UNIQUE REFERENCES Organizations(Id),
-    Voice NVARCHAR(100) NOT NULL DEFAULT 'nova',
+    Voice NVARCHAR(100) NOT NULL DEFAULT 'retell-Grace',
     Language NVARCHAR(20) NOT NULL DEFAULT 'en-US',
     Greeting NVARCHAR(1000) NOT NULL DEFAULT '',
     TransferNumber NVARCHAR(50) NULL,

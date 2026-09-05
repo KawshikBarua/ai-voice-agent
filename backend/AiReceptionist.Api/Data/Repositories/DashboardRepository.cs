@@ -280,12 +280,34 @@ public class DashboardRepository : IDashboardRepository
                         THEN 0 ELSE 1 END");
 
         var plan = planTableReady == 0 ? null : await conn.QuerySingleOrDefaultAsync<PlanRow>(@"
-            SELECT PlanName, BillingCycle, IncludedMinutes, CurrentPeriodStart, CurrentPeriodEnd
+            SELECT PlanName, BillingCycle, IncludedMinutes, CurrentPeriodStart, CurrentPeriodEnd,
+                   CASE WHEN PlanId IS NULL AND Amount = 0 AND IncludedMinutes = 0 THEN 0 ELSE 1 END AS HasPlan
             FROM OrganizationSubscriptions WHERE OrganizationId = @orgId",
             new { orgId });
 
-        var periodStart = plan?.CurrentPeriodStart ?? w.MonthStartUtc;
-        var periodEnd = plan?.CurrentPeriodEnd ?? w.MonthEndUtc;
+        if (plan is { HasPlan: false }) plan = null;
+
+        // The *usage* window, not the subscription's CurrentPeriodStart/End.
+        //
+        // Those two track access — they move only when a payment is recorded, and stop when one is
+        // not. Counting minutes against them made this tile disagree with the billing page, which
+        // has always counted into fresh windows anchored on the last period closed. Two different
+        // answers to "how many minutes have I used" is the one thing a usage figure cannot afford,
+        // so both now read the same window (see UsageWindows).
+        DateTime periodStart, periodEnd;
+        if (plan is null)
+        {
+            periodStart = w.MonthStartUtc;
+            periodEnd = w.MonthEndUtc;
+        }
+        else
+        {
+            var anchor = await conn.ExecuteScalarAsync<DateTime?>(@"
+                SELECT MAX(PeriodEnd) FROM OrganizationUsagePeriods WHERE OrganizationId = @orgId",
+                new { orgId }) ?? plan.CurrentPeriodStart;
+
+            (periodStart, periodEnd) = UsageWindows.Current(anchor, plan.BillingCycle, DateTime.UtcNow);
+        }
 
         stats.PlanName = plan?.PlanName;
         stats.BillingCycle = plan?.BillingCycle;
@@ -293,8 +315,10 @@ public class DashboardRepository : IDashboardRepository
         stats.PeriodStart = periodStart;
         stats.PeriodEnd = periodEnd;
 
-        stats.MinutesUsedThisPeriod = await conn.ExecuteScalarAsync<int>(@"
-            SELECT ISNULL(SUM(CEILING(DurationSeconds / 60.0)),0) FROM CallLogs
+        // BillingSchema.MinutesExpression, so the rounding is literally the same expression the
+        // invoice is computed with rather than a copy that could drift from it.
+        stats.MinutesUsedThisPeriod = await conn.ExecuteScalarAsync<int>($@"
+            SELECT {BillingSchema.MinutesExpression} FROM CallLogs
             WHERE OrganizationId=@orgId AND IsDeleted=0
               AND StartedAt >= @periodStart AND StartedAt < @periodEnd",
             new { orgId, periodStart, periodEnd });
@@ -307,5 +331,10 @@ public class DashboardRepository : IDashboardRepository
         public int IncludedMinutes { get; set; }
         public DateTime CurrentPeriodStart { get; set; }
         public DateTime CurrentPeriodEnd { get; set; }
+
+        /// <summary>False for the row that exists only to hold a Stripe customer link before a
+        /// customer has chosen a tier — see <see cref="SubscriptionRecord.HasPlan"/>. The dashboard
+        /// must read that as no plan, or it would announce a 0-minute "No plan" allowance.</summary>
+        public bool HasPlan { get; set; }
     }
 }

@@ -51,6 +51,7 @@ public class PromptBuilderService : IPromptBuilderService
         var agent = await _settings.GetAgentConfigAsync(orgId);
         var profile = IndustryTemplates.Resolve(org.Industry);
         var kb = (await _knowledge.ListAsync(orgId)).ToList();
+        var services = (await _catalog.ListServicesAsync(orgId, 1, 500)).Items.ToList();
 
         // Style, rules, call shape and tool policy are platform-wide and edited in the super admin
         // console; everything below them is this tenant's own data.
@@ -86,6 +87,21 @@ public class PromptBuilderService : IPromptBuilderService
         if (!string.IsNullOrWhiteSpace(agent?.TransferNumber))
             sb.AppendLine($"- Human transfer number: {agent.TransferNumber}");
 
+        // This prompt is built when the tenant syncs, not per call, so a date written in here would
+        // be wrong by tomorrow. {{current_time_<iana>}} is Retell's own placeholder: it is filled in
+        // as each call starts, in this tenant's timezone — every organization gets its own, and the
+        // inbound webhook overwrites it with our value so a Retell-side fault cannot leave the agent
+        // guessing. The rules below it matter as much as the value: left to itself the model dates
+        // everything from its training cutoff, which is how "tomorrow" lands in the wrong year.
+        var clock = "{{current_time_" + TenantTime.IanaId(org.Timezone) + "}}";
+        sb.AppendLine();
+        sb.AppendLine("## Right now");
+        sb.AppendLine($"- The current local date and time is {clock}.");
+        sb.AppendLine($"- That is {org.Timezone}, the timezone this business works in. Every date and time you say is in it.");
+        sb.AppendLine("- That line is filled in fresh at the start of every call, so it is right. Your own sense of the date is not: never state or work out today's date, the day of the week, or the year from memory.");
+        sb.AppendLine("- Do not do date arithmetic yourself. Give check_availability what the caller actually said — \"tomorrow\", \"next Friday\", \"the 3rd\" — and use the date it hands back.");
+        sb.AppendLine("- Every tool reply carries the current date and time as well. Trust it over anything you worked out earlier in the call.");
+
         // Always emitted, even with no hours configured: BusinessHours falls back to 09:00–17:00
         // and the booking tools enforce that fallback, so staying silent here would leave the
         // agent guessing at hours it is actually being held to.
@@ -117,6 +133,27 @@ public class PromptBuilderService : IPromptBuilderService
             sb.AppendLine();
             sb.AppendLine("## Emergency rules (act on these immediately)");
             foreach (var e in emergencies) sb.AppendLine($"- {e.Title}: {e.Content}");
+        }
+
+        // Same-day handling for the services this tenant has flagged as emergency work. The flag
+        // already reaches the catalogue document, but that only tells the agent such a service
+        // exists — this is what tells it to do something about one. It sits after the emergency
+        // rules deliberately: those are safety instructions and have to win wherever the two ever
+        // point in different directions.
+        var urgent = services.Where(s => s.IsAvailable && s.IsEmergency).ToList();
+        if (urgent.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Urgent work (can usually be seen the same day)");
+            foreach (var s in urgent) sb.AppendLine($"- {s.Name}");
+            sb.AppendLine("When a caller needs one of these:");
+            sb.AppendLine("- Take the trouble seriously before you take the details. One short line in your own words — \"that sounds like a horrible thing to be dealing with, let's get someone out to you\" — and then get on with helping. Say it once: sympathy repeated turns into padding, and what they actually want is someone at the door.");
+            sb.AppendLine("- Check today before you ask which day suits. Give check_availability the word \"today\" and let it tell you what is left.");
+            sb.AppendLine("- If today has something, lead with it — \"I can get someone to you this afternoon, about three\" — and offer another day only if they would rather.");
+            sb.AppendLine("- If today has nothing, say so plainly and offer the earliest you do have. Do not talk around it, and do not leave them hoping.");
+            sb.AppendLine("- Never say today is possible until check_availability has shown you a slot on it. A same-day promise you cannot keep is worse than the honest answer.");
+            if (emergencies.Count > 0)
+                sb.AppendLine("- The emergency rules above still come first. Where one of them says to hang up, call emergency services or leave the property, that is the answer — deal with their safety and do not book around it.");
         }
 
         sb.AppendLine();
@@ -152,7 +189,7 @@ public class PromptBuilderService : IPromptBuilderService
                 sb.AppendLine($"### {s.Name}");
                 sb.AppendLine($"- Price range: {org.Currency} {s.MinPrice:0.##} to {org.Currency} {s.MaxPrice:0.##}");
                 sb.AppendLine($"- Typical duration: {s.DurationMinutes} minutes");
-                if (s.IsEmergency) sb.AppendLine("- Available as an emergency / same-day service");
+                if (s.IsEmergency) sb.AppendLine("- Urgent work: this can usually be seen the same day, depending on what is actually free today");
                 if (!string.IsNullOrWhiteSpace(s.Description)) sb.AppendLine($"- Details: {s.Description}");
                 sb.AppendLine();
             }

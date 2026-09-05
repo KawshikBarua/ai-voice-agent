@@ -1,0 +1,115 @@
+@model UserAccountListViewModel
+@{
+    ViewData["Title"] = "Accounts";
+    var org = Model.Organization;
+}
+
+<div class="page-head">
+    <div>
+        <h1>@(org is null ? "Accounts" : $"Accounts · {org.Name}")</h1>
+        <p>
+            @if (org is null)
+            {
+                <text>
+                    Every sign-in on the platform, and which organization it belongs to. Platform
+                    operator accounts are not listed here.
+                </text>
+            }
+            else
+            {
+                <text>Everyone who can sign in to @org.Name.</text>
+            }
+        </p>
+    </div>
+    <div class="actions">
+        @if (org is not null)
+        {
+            <a class="btn outline" asp-action="Index">All accounts</a>
+            <a class="btn outline" asp-controller="Organizations" asp-action="Details" asp-route-id="@org.Id">Open organization</a>
+        }
+        <a class="btn" asp-action="Create" asp-route-orgId="@org?.Id">New account</a>
+    </div>
+</div>
+
+@if (org is { IsActive: false })
+{
+    <div class="banner problem">
+        @org.Name is disabled, so nobody on it can sign in — whatever accounts exist. Re-enable the
+        organization from its own screen.
+    </div>
+}
+
+<form class="filters" method="get" asp-action="Index">
+    <input type="text" name="search" value="@Model.Search" placeholder="Search name, email, organization…" />
+    <input type="hidden" name="orgId" value="@org?.Id" />
+    <button class="btn small" type="submit">Search</button>
+    @if (!string.IsNullOrWhiteSpace(Model.Search))
+    {
+        <a class="btn small outline" asp-action="Index" asp-route-orgId="@org?.Id">Clear</a>
+    }
+</form>
+
+<div class="card">
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Person</th>
+                <th>Organization</th>
+                <th>Role</th>
+                <th>Can sign in</th>
+                <th>Created</th>
+            </tr>
+            </thead>
+            <tbody>
+            @if (Model.Accounts.Count == 0)
+            {
+                <tr>
+                    <td colspan="5" class="empty">
+                        @if (!string.IsNullOrWhiteSpace(Model.Search))
+                        {
+                            <text>No accounts match that search.</text>
+                        }
+                        else
+                        {
+                            <text>No accounts yet. Create one to give a customer their login.</text>
+                        }
+                    </td>
+                </tr>
+            }
+            @foreach (var account in Model.Accounts)
+            {
+                <tr>
+                    <td class="org-name">@account.FullName<small>@account.Email</small></td>
+                    <td>
+                        <a asp-controller="Organizations" asp-action="Details" asp-route-id="@account.OrganizationId">
+                            @account.OrganizationName
+                        </a>
+                    </td>
+                    <td>@AccountRoles.Label(account.Role)</td>
+                    <td>
+                        @if (account.OrganizationActive)
+                        {
+                            <span class="chip ok">Yes</span>
+                        }
+                        else
+                        {
+                            <span class="chip danger" title="Sign-in is refused while the organization is disabled.">
+                                Organization disabled
+                            </span>
+                        }
+                    </td>
+                    <td>@account.CreatedAt.ToString("d MMM yyyy")</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<p class="note">
+    Passwords are stored only as a hash and cannot be read back — not here, and not by anyone. There
+    is no password reset in the tenant app yet, so someone who forgets theirs cannot currently be
+    recovered from this screen either: their address is already taken, which blocks issuing them a
+    second account. Until a reset exists, the way back in is a new account on a different address.
+</p>

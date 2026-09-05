@@ -4,21 +4,52 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "cwd": "frontend",
       "port": 5173
     },
     {
       "name": "backend",
       "runtimeExecutable": "dotnet",
-      "runtimeArgs": ["run", "--project", "backend/AiReceptionist.Api"],
+      "runtimeArgs": [
+        "run",
+        "--project",
+        "backend/AiReceptionist.Api"
+      ],
       "port": 5200
     },
     {
       "name": "superadmin",
       "runtimeExecutable": "dotnet",
-      "runtimeArgs": ["run", "--project", "backend/AiReceptionist.SuperAdmin"],
+      "runtimeArgs": [
+        "run",
+        "--project",
+        "backend/AiReceptionist.SuperAdmin"
+      ],
       "port": 5300
+    },
+    {
+      "name": "landing",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "landing",
+      "port": 5400
+    },
+    {
+      "name": "landing-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "preview"
+      ],
+      "cwd": "landing",
+      "port": 4173
     }
   ]
 }

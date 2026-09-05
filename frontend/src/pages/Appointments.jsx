@@ -45,7 +45,7 @@ function NewAppointmentForm({ onDone }) {
     })
   }
 
-  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-[13.5px] outline-none focus:border-ink'
+  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 
   return (
     <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
@@ -65,7 +65,7 @@ function NewAppointmentForm({ onDone }) {
         onChange={(e) => setForm({ ...form, time: e.target.value })} />
       <input placeholder="Notes (optional)" className={`${input} sm:col-span-2`} value={form.notes}
         onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-      {error && <p className="text-[12px] font-medium text-danger sm:col-span-2">{error}</p>}
+      {error && <p className="text-xs font-medium text-danger sm:col-span-2">{error}</p>}
       <div className="flex gap-2 sm:col-span-2">
         <PillButton type="submit" disabled={create.isPending}>
           {create.isPending ? 'Saving…' : 'Book appointment'}
@@ -118,7 +118,7 @@ export default function Appointments() {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[26px] font-bold">Appointments</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Appointments</h1>
         <PillButton onClick={() => setShowForm((v) => !v)}>+ New Appointment</PillButton>
       </div>
 
@@ -133,7 +133,7 @@ export default function Appointments() {
         <div className="mb-4 flex flex-wrap gap-2">
           {['', 'Scheduled', 'Confirmed', 'Completed', 'Cancelled'].map((sVal) => (
             <button key={sVal} onClick={() => setStatus(sVal)}
-              className={`rounded-pill px-3.5 py-1.5 text-[12px] font-semibold transition ${
+              className={`rounded-pill px-3.5 py-1.5 text-xs font-semibold transition ${
                 status === sVal ? 'bg-ink text-on-ink' : 'bg-panel text-ink-soft hover:bg-line'
               }`}>
               {sVal || 'All'}
@@ -142,7 +142,7 @@ export default function Appointments() {
         </div>
 
         {actionError && (
-          <p className="mb-3 rounded-2xl bg-danger-soft px-4 py-2.5 text-[12.5px] font-medium text-danger">
+          <p className="mb-3 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
             {actionError}
           </p>
         )}
@@ -155,36 +155,36 @@ export default function Appointments() {
             <div key={a.id} className="flex flex-wrap items-center gap-4 rounded-2xl bg-lavender/60 p-4">
               <Avatar name={a.customerName ?? '?'} tone={['lavender', 'mint', 'cream'][i % 3]} />
               <div className="min-w-0 flex-1">
-                <p className="text-[14px] font-bold">{a.serviceName ?? 'Appointment'}</p>
-                <p className="text-[12px] text-ink-soft">{fmt(a.startAt)} · {a.customerName} · {a.customerPhone}</p>
-                {a.serviceAddress && <p className="text-[11.5px] text-muted">📍 {a.serviceAddress}</p>}
-                {a.notes && <p className="text-[11.5px] text-muted">{a.notes}</p>}
+                <p className="text-base font-bold">{a.serviceName ?? 'Appointment'}</p>
+                <p className="text-xs text-ink-soft">{fmt(a.startAt)} · {a.customerName} · {a.customerPhone}</p>
+                {a.serviceAddress && <p className="text-xs text-muted">📍 {a.serviceAddress}</p>}
+                {a.notes && <p className="text-xs text-muted">{a.notes}</p>}
               </div>
               {a.isEmergency && <Chip tone="red">Emergency</Chip>}
               <Chip tone={statusTone(a.status)}>{a.status}</Chip>
               <Chip tone={statusTone(a.paymentStatus)}>{a.paymentStatus}</Chip>
               <div className="flex flex-wrap gap-2">
                 {a.status === 'Scheduled' && (
-                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-[11.5px]"
+                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-xs"
                     disabled={busyId === `${a.id}-confirm`} onClick={() => action(a.id, 'confirm')}>
                     {busyId === `${a.id}-confirm` ? '…' : 'Confirm'}
                   </PillButton>
                 )}
                 {/* Payment can only be taken once the booking is confirmed */}
                 {(a.status === 'Confirmed' || a.status === 'Completed') && a.paymentStatus !== 'Paid' && (
-                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-[11.5px]"
+                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-xs"
                     disabled={busyId === `${a.id}-mark-paid`} onClick={() => action(a.id, 'mark-paid')}>
                     {busyId === `${a.id}-mark-paid` ? '…' : 'Mark paid'}
                   </PillButton>
                 )}
                 {a.status === 'Confirmed' && (
-                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-[11.5px]"
+                  <PillButton variant="outline" className="!px-3 !py-1.5 !text-xs"
                     disabled={busyId === `${a.id}-complete`} onClick={() => action(a.id, 'complete')}>
                     {busyId === `${a.id}-complete` ? '…' : 'Complete'}
                   </PillButton>
                 )}
                 {(a.status === 'Scheduled' || a.status === 'Confirmed') && (
-                  <PillButton variant="light" className="!px-3 !py-1.5 !text-[11.5px]"
+                  <PillButton variant="light" className="!px-3 !py-1.5 !text-xs"
                     disabled={busyId === `${a.id}-cancel`} onClick={() => action(a.id, 'cancel')}>
                     {busyId === `${a.id}-cancel` ? '…' : 'Cancel'}
                   </PillButton>

@@ -49,7 +49,7 @@ export default function App() {
   if (!ready) {
     return (
       <div className="grid min-h-screen place-items-center">
-        <p className="text-[13px] text-muted">Loading…</p>
+        <p className="text-sm text-muted">Loading…</p>
       </div>
     )
   }

@@ -21,6 +21,15 @@ namespace AiReceptionist.Api.Controllers;
 [Route("api/v1/webhooks/stripe")]
 public class StripeWebhookController : ControllerBase
 {
+    /// <summary>Attempts before an event is set aside. Stripe's own retry schedule spreads its
+    /// deliveries over roughly three days, so this is days of chances, not seconds of them.</summary>
+    private const int MaxAttempts = 6;
+
+    /// <summary>How long a claim can sit unfinished before it is treated as abandoned. Long enough
+    /// that a slow handler is never cut off underneath itself, short enough that a process killed
+    /// mid-delivery does not strand the event until someone notices.</summary>
+    private const int StaleClaimMinutes = 15;
+
     private readonly IStripeGateway _stripe;
     private readonly IBillingService _billing;
     private readonly IBillingRepository _repo;
@@ -54,13 +63,27 @@ public class StripeWebhookController : ControllerBase
             return BadRequest(new { error = "Invalid signature." });
         }
 
-        // Claim the event id before doing anything. A redelivery of something already handled ends
+        // Claim the event id before doing anything. A redelivery of something already applied ends
         // here, which is what keeps "record the payment" and "move the period on" happening once.
-        if (!await _repo.TryClaimWebhookEventAsync(stripeEvent.Id, stripeEvent.Type))
+        var claim = await _repo.TryClaimWebhookEventAsync(
+            stripeEvent.Id, stripeEvent.Type, MaxAttempts, StaleClaimMinutes);
+
+        switch (claim)
         {
-            _logger.LogInformation("Stripe event {EventId} ({Type}) has already been handled.",
-                stripeEvent.Id, stripeEvent.Type);
-            return Ok(new { received = true, duplicate = true });
+            case WebhookClaim.AlreadyApplied:
+                _logger.LogInformation("Stripe event {EventId} ({Type}) has already been applied.",
+                    stripeEvent.Id, stripeEvent.Type);
+                return Ok(new { received = true, duplicate = true });
+
+            case WebhookClaim.Abandoned:
+                // Retrying has stopped helping. Acknowledging keeps Stripe from hammering the
+                // endpoint; the reconciliation sweep is what recovers anything financial, and the
+                // row stays visible in the console's stuck-events list.
+                _logger.LogError(
+                    "Stripe event {EventId} ({Type}) failed {Attempts} times and has been set aside. " +
+                    "The reconciliation sweep will recover any payment it carried.",
+                    stripeEvent.Id, stripeEvent.Type, MaxAttempts);
+                return Ok(new { received = true, handled = false, abandoned = true });
         }
 
         try
@@ -70,13 +93,15 @@ public class StripeWebhookController : ControllerBase
         }
         catch (Exception ex)
         {
-            // The failure is recorded against the event, but the response is still 200: Stripe's
-            // retry would be refused by the claim above, so asking for one is pointless. The row
-            // in StripeWebhookEvents carries the error for whoever investigates.
-            _logger.LogError(ex, "Handling Stripe event {EventId} ({Type}) failed.",
+            // 500, deliberately. The claim above is released by recording the error, so Stripe's
+            // redelivery is now a real second attempt rather than something the claim refuses.
+            // Answering 200 here is what previously turned one transient database blip into a
+            // payment the platform had collected and never recorded.
+            _logger.LogError(ex, "Handling Stripe event {EventId} ({Type}) failed; asking Stripe to retry.",
                 stripeEvent.Id, stripeEvent.Type);
             await _repo.MarkWebhookDoneAsync(stripeEvent.Id, ex.Message);
-            return Ok(new { received = true, handled = false });
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                new { received = true, handled = false });
         }
 
         return Ok(new { received = true });
@@ -123,10 +148,12 @@ public class StripeWebhookController : ControllerBase
                 break;
 
             // The customer finished Checkout. This is where a self-serve subscription first
-            // becomes known here, so the linkage is written from the session.
+            // becomes known here, so the linkage is written from the session. The same call backs
+            // the customer's own return from Stripe, so whichever arrives first does the work and
+            // the other finds it done.
             case "checkout.session.completed":
                 if (e.Data.Object is Stripe.Checkout.Session session)
-                    await LinkFromCheckoutAsync(session);
+                    await _billing.ApplyCheckoutSessionAsync(session, null, ct);
                 break;
 
             case "customer.subscription.created":
@@ -162,50 +189,6 @@ public class StripeWebhookController : ControllerBase
                 _logger.LogDebug("Ignoring Stripe event type {Type}.", e.Type);
                 break;
         }
-    }
-
-    private async Task LinkFromCheckoutAsync(Stripe.Checkout.Session session)
-    {
-        // ClientReferenceId is set when the session is created, so it is the reliable answer even
-        // before any customer record here points at Stripe.
-        if (!int.TryParse(session.ClientReferenceId, out var orgId))
-        {
-            var resolved = await ResolveAsync(session.CustomerId);
-            if (resolved is null)
-            {
-                _logger.LogWarning(
-                    "Checkout session {SessionId} completed but could not be matched to an organization.",
-                    session.Id);
-                return;
-            }
-            orgId = resolved.Value;
-        }
-
-        // The tier the customer chose, applied only now that Stripe has taken the payment. It runs
-        // before the linkage below because those are UPDATEs: an organization subscribing for the
-        // first time has no subscription row until this creates one, and they would find nothing.
-        if (session.Metadata is not null &&
-            session.Metadata.TryGetValue("planId", out var rawPlanId) &&
-            int.TryParse(rawPlanId, out var planId))
-        {
-            var plan = await _repo.GetPlanAsync(planId);
-            if (plan is not null)
-                await _repo.ApplyPlanAsync(orgId, plan, null, null, null);
-            else
-                _logger.LogWarning(
-                    "Checkout session {SessionId} named tier {PlanId}, which no longer exists.",
-                    session.Id, planId);
-        }
-
-        if (!string.IsNullOrWhiteSpace(session.CustomerId))
-            await _repo.SetStripeCustomerAsync(orgId, session.CustomerId);
-
-        if (!string.IsNullOrWhiteSpace(session.SubscriptionId))
-            await _repo.SetStripeSubscriptionAsync(orgId, session.SubscriptionId, "active");
-
-        _logger.LogInformation(
-            "Organization {OrgId} subscribed through Stripe Checkout (customer {CustomerId}).",
-            orgId, session.CustomerId);
     }
 
     /// <summary>

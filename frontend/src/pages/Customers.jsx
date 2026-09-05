@@ -33,13 +33,13 @@ export default function Customers() {
     },
   })
 
-  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-[13.5px] outline-none focus:border-ink'
+  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString() : '—')
 
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[26px] font-bold">Customers</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Customers</h1>
         <PillButton onClick={() => setShowForm((v) => !v)}>+ New Customer</PillButton>
       </div>
 
@@ -73,7 +73,7 @@ export default function Customers() {
           </svg>
           <input
             placeholder="Search by name, phone or email…"
-            className="w-full bg-transparent text-[13px] outline-none placeholder:text-muted"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-muted"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -91,13 +91,13 @@ export default function Customers() {
               >
                 <Avatar name={c.name} tone={['lavender', 'mint', 'cream'][i % 3]} />
                 <div className="min-w-0 flex-1">
-                  <p className="text-[14px] font-bold">{c.name}</p>
-                  <p className="text-[12px] text-ink-soft">{c.phone}{c.email ? ` · ${c.email}` : ''}</p>
+                  <p className="text-base font-bold">{c.name}</p>
+                  <p className="text-xs text-ink-soft">{c.phone}{c.email ? ` · ${c.email}` : ''}</p>
                 </div>
                 {c.totalVisits > 1 && <Chip tone="mint">Returning</Chip>}
                 <div className="hidden text-right sm:block">
-                  <p className="text-[11px] text-muted">Last visit</p>
-                  <p className="text-[12.5px] font-semibold">{fmtDate(c.lastVisit)}</p>
+                  <p className="text-xs text-muted">Last visit</p>
+                  <p className="text-sm font-semibold">{fmtDate(c.lastVisit)}</p>
                 </div>
               </button>
 
@@ -105,29 +105,29 @@ export default function Customers() {
                 <div className="mt-4 border-t border-line pt-4">
                   <div className="mb-3 grid grid-cols-3 gap-3 text-center">
                     <div className="rounded-2xl bg-card p-3">
-                      <p className="text-[11px] text-muted">First visit</p>
-                      <p className="text-[13px] font-bold">{fmtDate(c.firstVisit)}</p>
+                      <p className="text-xs text-muted">First visit</p>
+                      <p className="text-sm font-bold">{fmtDate(c.firstVisit)}</p>
                     </div>
                     <div className="rounded-2xl bg-card p-3">
-                      <p className="text-[11px] text-muted">Total visits</p>
-                      <p className="text-[13px] font-bold">{c.totalVisits}</p>
+                      <p className="text-xs text-muted">Total visits</p>
+                      <p className="text-sm font-bold">{c.totalVisits}</p>
                     </div>
                     <div className="rounded-2xl bg-card p-3">
-                      <p className="text-[11px] text-muted">Address</p>
-                      <p className="truncate text-[13px] font-bold">{c.address ?? '—'}</p>
+                      <p className="text-xs text-muted">Address</p>
+                      <p className="truncate text-sm font-bold">{c.address ?? '—'}</p>
                     </div>
                   </div>
-                  <p className="mb-2 text-[12px] font-semibold text-ink-soft">Timeline</p>
-                  {!timeline?.length && <p className="text-[12px] text-muted">No events yet.</p>}
+                  <p className="mb-2 text-xs font-semibold text-ink-soft">Timeline</p>
+                  {!timeline?.length && <p className="text-xs text-muted">No events yet.</p>}
                   <div className="space-y-2">
                     {timeline?.map((t) => (
                       <div key={t.id} className="flex items-center gap-3 rounded-2xl bg-card p-3">
                         <span className="h-2 w-2 shrink-0 rounded-full bg-leaf" />
                         <div className="min-w-0 flex-1">
-                          <p className="text-[12.5px] font-semibold">{t.eventType}</p>
-                          {t.notes && <p className="truncate text-[11.5px] text-muted">{t.notes}</p>}
+                          <p className="text-sm font-semibold">{t.eventType}</p>
+                          {t.notes && <p className="truncate text-xs text-muted">{t.notes}</p>}
                         </div>
-                        <span className="text-[11px] text-muted">
+                        <span className="text-xs text-muted">
                           {new Date(t.occurredAt).toLocaleString()}
                         </span>
                         <Chip tone="lavender">{t.source}</Chip>

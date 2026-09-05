@@ -109,6 +109,51 @@ public class BillingSummary
     public string? AgentRestrictedReason { get; set; }
 }
 
+/// <summary>
+/// Minutes as they stand right now.
+///
+/// Deliberately small and cheap: it is polled while the page is open, so unlike
+/// <see cref="BillingSummary"/> it closes no periods, raises no Stripe calls and reads no invoice
+/// history. It is measured over the same <see cref="UsageWindows"/> window the bill is computed
+/// from, so the balance a customer watches during a call is the one they are charged against.
+/// </summary>
+public class UsageSnapshot
+{
+    public bool HasSubscription { get; set; }
+    public string PlanName { get; set; } = "";
+    public string Currency { get; set; } = "USD";
+    /// <summary>False when the plan does not meter minutes: there is no balance to run down.</summary>
+    public bool Metered { get; set; }
+    public int IncludedMinutes { get; set; }
+    public int MinutesUsed { get; set; }
+    public int MinutesRemaining { get; set; }
+    public int MinutesOver { get; set; }
+    public decimal OverageRatePerMinute { get; set; }
+    public decimal ProjectedOverageAmount { get; set; }
+    public DateTime PeriodStart { get; set; }
+    public DateTime PeriodEnd { get; set; }
+    /// <summary>When the server read these numbers, so the page can say how fresh they are.</summary>
+    public DateTime AsOf { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>The outcome of applying a Checkout session. <see cref="Problem"/> is written for a
+/// customer to read, so it says what happened rather than naming an internal state.</summary>
+public record CheckoutOutcome(bool Applied, int? OrganizationId, string? Problem);
+
+/// <summary>What a reconciliation pass found.</summary>
+public class ReconciliationResult
+{
+    /// <summary>Paid invoices Stripe returned for the window.</summary>
+    public int Examined { get; set; }
+    /// <summary>Payments recorded that the webhook had never landed — the ones this recovered.</summary>
+    public int Recovered { get; set; }
+    /// <summary>Invoices that could not be applied, with the reason.</summary>
+    public List<string> Failed { get; set; } = [];
+    /// <summary>False when Stripe is not connected, so the caller can say so rather than
+    /// reporting a clean run over nothing.</summary>
+    public bool StripeConfigured { get; set; } = true;
+}
+
 public interface IBillingService
 {
     /// <summary>Totals and files every usage window that has fully elapsed, adding any overrun to
@@ -119,6 +164,21 @@ public interface IBillingService
 
     Task<BillingSummary> GetSummaryAsync(int orgId, CancellationToken ct = default);
 
+    /// <summary>Just the minutes, cheaply enough to be polled while a page is open.</summary>
+    Task<UsageSnapshot> GetUsageAsync(int orgId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Puts an organization on the tier a completed Checkout session paid for, and records the
+    /// Stripe linkage.
+    ///
+    /// Both the webhook and the customer's own return from Stripe come through here, so a purchase
+    /// lands exactly once and identically whichever arrives first. <paramref name="expectedOrgId"/>
+    /// is set when the caller is a signed-in tenant: a session id travels in a URL, and it must
+    /// never be usable to apply a purchase to somebody else's account.
+    /// </summary>
+    Task<CheckoutOutcome> ApplyCheckoutSessionAsync(Stripe.Checkout.Session session,
+        int? expectedOrgId, CancellationToken ct = default);
+
     /// <summary>Puts the carried-over overage onto a Stripe invoice as its own line, then clears
     /// the carry-over. Called when Stripe raises the next invoice.</summary>
     Task<bool> AttachPendingOverageAsync(int orgId, string? stripeInvoiceId, CancellationToken ct = default);
@@ -126,9 +186,15 @@ public interface IBillingService
     /// <summary>Copies a Stripe invoice and its lines into the local mirror.</summary>
     Task<int?> MirrorInvoiceAsync(Stripe.Invoice invoice, CancellationToken ct = default);
 
+    /// <summary>Replays every invoice Stripe has marked paid in the recent past through the same
+    /// path the webhook uses, so a delivery that never arrived is still collected. Returns how many
+    /// payments this pass recorded that were not recorded before.</summary>
+    Task<ReconciliationResult> ReconcileAsync(int lookbackDays, CancellationToken ct = default);
+
     /// <summary>Records the payment, moves the access period on, and lifts an automatic
-    /// suspension. Idempotent: a redelivered webhook changes nothing.</summary>
-    Task HandleInvoicePaidAsync(Stripe.Invoice invoice, CancellationToken ct = default);
+    /// suspension. Idempotent: a redelivered webhook changes nothing. True when this call is what
+    /// recorded the payment, so reconciliation can report what it actually recovered.</summary>
+    Task<bool> HandleInvoicePaidAsync(Stripe.Invoice invoice, CancellationToken ct = default);
 }
 
 public class BillingService : IBillingService
@@ -324,11 +390,99 @@ public class BillingService : IBillingService
                $"at {rate.ToString("0.####", CultureInfo.InvariantCulture)} {sub.Currency} per minute{span}";
     }
 
+    // ---------------------------------------------------------------- taking up a plan
+
+    public async Task<CheckoutOutcome> ApplyCheckoutSessionAsync(Stripe.Checkout.Session session,
+        int? expectedOrgId, CancellationToken ct = default)
+    {
+        // ClientReferenceId is written when the session is created, so it answers even before
+        // anything here points at Stripe.
+        var orgId = int.TryParse(session.ClientReferenceId, out var fromReference)
+            ? fromReference
+            : ReadOrganizationId(session.Metadata) ?? await ResolveByCustomerAsync(session.CustomerId);
+
+        if (orgId is null)
+        {
+            _logger.LogWarning(
+                "Checkout session {SessionId} completed but could not be matched to an organization.",
+                session.Id);
+            return new CheckoutOutcome(false, null, "This payment could not be matched to your account.");
+        }
+
+        // A session id is not a credential. Applying one account's purchase to another because it
+        // was pasted into the URL would be a real hole, so the tenant asking has to own it.
+        if (expectedOrgId is not null && orgId != expectedOrgId)
+        {
+            _logger.LogWarning(
+                "Organization {OrgId} tried to confirm Checkout session {SessionId}, which belongs to {OwnerId}.",
+                expectedOrgId, session.Id, orgId);
+            return new CheckoutOutcome(false, null, "This payment belongs to a different account.");
+        }
+
+        // Only once Stripe has actually collected. A session abandoned at the card form is
+        // "complete" in no sense that should hand anyone a plan. A subscription that starts on a
+        // trial legitimately needs no payment, and does count.
+        var collected =
+            string.Equals(session.PaymentStatus, "paid", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(session.PaymentStatus, "no_payment_required", StringComparison.OrdinalIgnoreCase);
+
+        if (!collected)
+            return new CheckoutOutcome(false, orgId, "Your payment has not completed yet.");
+
+        var existing = await _billing.GetSubscriptionAsync(orgId.Value);
+
+        // Already done — by the webhook, or by an earlier press of the same button. Re-applying the
+        // tier named on an old session would quietly move a customer back off a plan they have
+        // since changed to, so this is where a repeat stops.
+        var alreadyApplied = existing is { } s && s.HasPlan &&
+            string.Equals(s.StripeSubscriptionId, session.SubscriptionId, StringComparison.Ordinal);
+
+        if (!alreadyApplied && ReadPlanId(session.Metadata) is { } planId)
+        {
+            var plan = await _billing.GetPlanAsync(planId);
+            if (plan is null)
+                // The money is collected either way, so this is not a failure to report back to the
+                // customer — but an operator needs to see it, because nobody is on a tier.
+                _logger.LogError(
+                    "Checkout session {SessionId} paid for tier {PlanId}, which no longer exists. " +
+                    "Organization {OrgId} has been charged and is on no plan.",
+                    session.Id, planId, orgId);
+            else
+                await _billing.ApplyPlanAsync(orgId.Value, plan, null, null, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.CustomerId))
+            await _billing.SetStripeCustomerAsync(orgId.Value, session.CustomerId);
+
+        if (!string.IsNullOrWhiteSpace(session.SubscriptionId))
+            await _billing.SetStripeSubscriptionAsync(orgId.Value, session.SubscriptionId, "active");
+
+        if (!alreadyApplied)
+            _logger.LogInformation(
+                "Organization {OrgId} subscribed through Stripe Checkout (customer {CustomerId}).",
+                orgId, session.CustomerId);
+
+        return new CheckoutOutcome(true, orgId, null);
+    }
+
+    private static int? ReadOrganizationId(IDictionary<string, string>? metadata) =>
+        metadata is not null && metadata.TryGetValue("organizationId", out var raw) &&
+        int.TryParse(raw, out var id) ? id : null;
+
+    private static int? ReadPlanId(IDictionary<string, string>? metadata) =>
+        metadata is not null && metadata.TryGetValue("planId", out var raw) &&
+        int.TryParse(raw, out var id) ? id : null;
+
+    private async Task<int?> ResolveByCustomerAsync(string? stripeCustomerId) =>
+        string.IsNullOrWhiteSpace(stripeCustomerId)
+            ? null
+            : (await _billing.FindByStripeCustomerAsync(stripeCustomerId))?.OrganizationId;
+
     // ---------------------------------------------------------------- mirroring Stripe
 
     public async Task<int?> MirrorInvoiceAsync(Stripe.Invoice invoice, CancellationToken ct = default)
     {
-        var orgId = await ResolveOrganizationAsync(invoice);
+        var orgId = await ResolveOrganizationAsync(invoice, ct);
         if (orgId is null)
         {
             _logger.LogWarning(
@@ -377,13 +531,28 @@ public class BillingService : IBillingService
         return orgId;
     }
 
-    public async Task HandleInvoicePaidAsync(Stripe.Invoice invoice, CancellationToken ct = default)
+    public async Task<bool> HandleInvoicePaidAsync(Stripe.Invoice invoice, CancellationToken ct = default)
     {
         var orgId = await MirrorInvoiceAsync(invoice, ct);
-        if (orgId is null) return;
+        if (orgId is null)
+            // Throwing, not returning: Stripe does not order its deliveries, so an invoice.paid
+            // routinely lands before the checkout.session.completed that creates the link. Swallowing
+            // it silently dropped a payment that would have resolved on the very next attempt.
+            throw new InvalidOperationException(
+                $"Stripe invoice {invoice.Id} (customer {invoice.CustomerId}) is not linked to any " +
+                "organization yet. Retrying — the link may still be arriving.");
 
         var sub = await _billing.GetSubscriptionAsync(orgId.Value);
-        if (sub is null) return;
+
+        // A first subscription whose Checkout session never reached us. Read the tier off Stripe
+        // rather than throwing: the customer has been charged, and refusing the payment for want of
+        // a local row would leave them paying for an account with no plan and no minutes on it.
+        if (sub is null || !sub.HasPlan)
+            sub = await AdoptPlanFromStripeAsync(orgId.Value, invoice, ct) ?? sub;
+
+        if (sub is null)
+            throw new InvalidOperationException(
+                $"Organization {orgId} has no subscription row to record Stripe invoice {invoice.Id} against.");
 
         var currency = (invoice.Currency ?? sub.Currency).ToUpperInvariant();
         var amount = StripeMoney.FromMinorUnits(invoice.AmountPaid, currency);
@@ -407,18 +576,19 @@ public class BillingService : IBillingService
 
         if (!recorded)
         {
-            // Stripe redelivers until acknowledged. Everything past this point has already been
-            // done for this invoice, and doing it again would push the period forward twice.
-            _logger.LogInformation("Stripe invoice {InvoiceId} was already recorded; nothing further to do.",
+            // Stripe redelivers until acknowledged, and the reconciliation sweep re-reads the same
+            // invoices on purpose. Everything past this point has already been done for this
+            // invoice, and doing it again would push the period forward twice.
+            _logger.LogDebug("Stripe invoice {InvoiceId} was already recorded; nothing further to do.",
                 invoice.Id);
-            return;
+            return false;
         }
 
         // Access moves on by exactly one cycle — the same rule the console's manual "record a
         // payment" uses, so an account billed both ways never ends up with two different notions
         // of what it has paid for.
-        await _billing.AdvanceAccessPeriodAsync(orgId.Value,
-            sub.CurrentPeriodEnd, sub.NextPeriodEnd());
+        var (accessStart, accessEnd) = NextAccessWindow(sub, invoice);
+        await _billing.AdvanceAccessPeriodAsync(orgId.Value, accessStart, accessEnd);
 
         if (await _billing.ReactivateIfOverdueSuspendedAsync(orgId.Value))
             _logger.LogInformation(
@@ -426,22 +596,172 @@ public class BillingService : IBillingService
 
         _logger.LogInformation("Recorded Stripe payment of {Amount} {Currency} for organization {OrgId}.",
             amount, currency, orgId);
+        return true;
     }
 
-    private async Task<int?> ResolveOrganizationAsync(Stripe.Invoice invoice)
+    // ---------------------------------------------------------------- reconciliation
+
+    public async Task<ReconciliationResult> ReconcileAsync(int lookbackDays,
+        CancellationToken ct = default)
+    {
+        var result = new ReconciliationResult();
+
+        if (!_stripe.IsConfigured)
+        {
+            result.StripeConfigured = false;
+            return result;
+        }
+
+        // Wider than Stripe's own retry window (roughly three days), so an outage that outlasted
+        // every redelivery is still inside the net when the platform comes back.
+        var since = DateTime.UtcNow.AddDays(-Math.Max(1, lookbackDays));
+
+        var invoices = await _stripe.ListPaidInvoicesSinceAsync(since, ct);
+        result.Examined = invoices.Count;
+
+        foreach (var invoice in invoices)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                // The same call the webhook makes. Everything downstream is guarded on the unique
+                // StripeInvoiceId, so an invoice already collected costs one no-op and nothing else.
+                if (await HandleInvoicePaidAsync(invoice, ct))
+                {
+                    result.Recovered++;
+                    _logger.LogWarning(
+                        "Reconciliation recorded Stripe invoice {InvoiceId} ({Number}), which no webhook " +
+                        "had applied. Check the webhook endpoint and signing secret.",
+                        invoice.Id, invoice.Number);
+                }
+            }
+            catch (Exception ex)
+            {
+                // One unmatched invoice must not stop the rest being recovered. Most often this is
+                // an invoice for a Stripe customer that belongs to a different environment sharing
+                // the same Stripe account.
+                result.Failed.Add($"{invoice.Id}: {ex.Message}");
+                _logger.LogError(ex, "Reconciliation could not apply Stripe invoice {InvoiceId}.", invoice.Id);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The access window a paid invoice buys.
+    ///
+    /// One invoice grants one cycle, which is right as long as every invoice is seen. It is not
+    /// self-correcting when one is missed: a lost delivery used to leave the account permanently a
+    /// cycle behind, and because the overdue sweep disables anything past
+    /// <c>GraceDays + CurrentPeriodEnd</c>, a customer who had paid every invoice could still be
+    /// suspended for non-payment.
+    ///
+    /// So Stripe gets the final say. Where the invoice states the period it covers and that period
+    /// runs past the cycle-advance, the invoice wins — it cannot grant more access than Stripe
+    /// actually billed for, and it closes any gap left by a delivery that never arrived.
+    /// </summary>
+    private static (DateTime Start, DateTime End) NextAccessWindow(
+        SubscriptionRecord sub, Stripe.Invoice invoice)
+    {
+        var start = sub.CurrentPeriodEnd;
+        var end = sub.NextPeriodEnd();
+
+        var billedThrough = invoice.PeriodEnd;
+        if (billedThrough > end)
+            return (invoice.PeriodStart > DateTime.MinValue && invoice.PeriodStart < billedThrough
+                ? invoice.PeriodStart
+                : start, billedThrough);
+
+        return (start, end);
+    }
+
+    /// <summary>
+    /// Whose invoice this is, asked four ways.
+    ///
+    /// Stripe does not order its deliveries, so an invoice can arrive before anything local points
+    /// at the customer it belongs to. Every route is therefore tried before giving up, ending with
+    /// the organization id written onto the subscription when Checkout created it — which exists
+    /// from the very first moment and needs nothing stored here at all.
+    /// </summary>
+    private async Task<int?> ResolveOrganizationAsync(Stripe.Invoice invoice, CancellationToken ct = default)
     {
         if (!string.IsNullOrWhiteSpace(invoice.CustomerId) &&
             await _billing.FindByStripeCustomerAsync(invoice.CustomerId) is { } byCustomer)
             return byCustomer.OrganizationId;
 
+        var subscriptionDetails = invoice.Parent?.SubscriptionDetails;
+
+        if (!string.IsNullOrWhiteSpace(subscriptionDetails?.SubscriptionId) &&
+            await _billing.FindByStripeSubscriptionAsync(subscriptionDetails.SubscriptionId) is { } bySubscription)
+            return bySubscription.OrganizationId;
+
         // Falls back to the id written onto the Stripe object when it was created, which covers
         // an invoice arriving before the local link has been stored.
-        if (invoice.Metadata is not null &&
-            invoice.Metadata.TryGetValue("organizationId", out var raw) &&
-            int.TryParse(raw, out var fromMetadata))
-            return fromMetadata;
+        var claimed = ReadOrganizationId(invoice.Metadata)
+            ?? ReadOrganizationId(subscriptionDetails?.Metadata);
 
-        return null;
+        // Last: the customer itself. EnsureCustomerAsync stamps every customer it creates with its
+        // organization id, so this identifies any payer this platform has ever set up — including
+        // one whose local link was never written, which is how an already-collected payment can
+        // end up belonging to nobody.
+        if (claimed is null && !string.IsNullOrWhiteSpace(invoice.CustomerId) && _stripe.IsConfigured)
+            claimed = ReadOrganizationId((await _stripe.GetCustomerAsync(invoice.CustomerId, ct))?.Metadata);
+
+        // Metadata is a claim, not proof: ids from a different environment sharing one Stripe test
+        // account resolve to organizations that do not exist here, and following one blindly turns
+        // a foreign invoice into a foreign-key error on every sweep, forever.
+        if (claimed is not null && await _settings.GetOrganizationAsync(claimed.Value) is null)
+        {
+            _logger.LogWarning(
+                "Stripe invoice {InvoiceId} names organization {OrgId}, which does not exist here. " +
+                "It most likely belongs to another environment on the same Stripe account.",
+                invoice.Id, claimed);
+            return null;
+        }
+
+        return claimed;
+    }
+
+    /// <summary>
+    /// Puts an organization on the tier Stripe is charging it for, when nothing here says what that
+    /// is yet.
+    ///
+    /// This is the safety net under a first subscription. The plan normally arrives with the
+    /// Checkout session; if that never lands — no reachable webhook endpoint, or a delivery lost
+    /// past every retry — the payment still turns up, and a customer who has paid must not be left
+    /// on nothing. The price Stripe is charging is the authority on what they bought.
+    /// </summary>
+    private async Task<SubscriptionRecord?> AdoptPlanFromStripeAsync(int orgId,
+        Stripe.Invoice invoice, CancellationToken ct)
+    {
+        var subscriptionId = invoice.Parent?.SubscriptionDetails?.SubscriptionId;
+        if (string.IsNullOrWhiteSpace(subscriptionId) || !_stripe.IsConfigured) return null;
+
+        var stripeSub = await _stripe.GetSubscriptionAsync(subscriptionId, ct);
+        var priceId = stripeSub?.Items?.Data?.FirstOrDefault()?.Price?.Id;
+        if (string.IsNullOrWhiteSpace(priceId)) return null;
+
+        var plan = await _billing.FindPlanByStripePriceAsync(priceId);
+        if (plan is null)
+        {
+            _logger.LogError(
+                "Organization {OrgId} has paid Stripe invoice {InvoiceId} on price {PriceId}, which " +
+                "matches no tier here. Nobody can be put on a plan for it.",
+                orgId, invoice.Id, priceId);
+            return null;
+        }
+
+        await _billing.ApplyPlanAsync(orgId, plan, null, null, null);
+        await _billing.SetStripeSubscriptionAsync(orgId, subscriptionId, stripeSub!.Status);
+
+        _logger.LogWarning(
+            "Organization {OrgId} was put on tier {Plan} from paid invoice {InvoiceId}: the payment " +
+            "arrived before anything recorded what they had bought. Check that " +
+            "checkout.session.completed is being delivered.",
+            orgId, plan.Name, invoice.Id);
+
+        return await _billing.GetSubscriptionAsync(orgId);
     }
 
     // ---------------------------------------------------------------- the customer's view
@@ -460,13 +780,16 @@ public class BillingService : IBillingService
             StripeAvailable = _stripe.IsConfigured,
             AgentRestricted = org?.AgentRestricted ?? false,
             AgentRestrictedReason = org?.AgentRestrictedReason,
-            Currency = sub?.Currency ?? org?.Currency ?? "USD",
+            // A row that exists only to hold a Stripe customer link carries a default currency
+            // nobody chose, so the organization's own is the honest answer until a tier sets one.
+            Currency = (sub is { HasPlan: true } ? sub.Currency : null) ?? org?.Currency ?? "USD",
         };
 
-        if (sub is null)
+        if (sub is null || !sub.HasPlan)
         {
             // No plan on file. The page says so rather than inventing a zero-cost subscription —
-            // but the tiers are still offered, so a customer can put themselves on one.
+            // but the tiers are still offered, so a customer can put themselves on one. A row
+            // already existing here means only that Checkout has been started once.
             summary.HasSubscription = false;
             summary.CanSubscribe = _stripe.IsConfigured;
             return summary;
@@ -518,6 +841,54 @@ public class BillingService : IBillingService
         summary.Invoices = invoices.Select(ToView).ToList();
 
         return summary;
+    }
+
+    public async Task<UsageSnapshot> GetUsageAsync(int orgId, CancellationToken ct = default)
+    {
+        var sub = await _billing.GetSubscriptionAsync(orgId);
+
+        if (sub is null || !sub.HasPlan)
+        {
+            // Still counted, and still shown. Minutes an organization has run up before it is on a
+            // tier are real, and hiding them until someone subscribes would make the page look
+            // broken during exactly the window this platform is being evaluated in.
+            var (openStart, openEnd) = UsageWindows.Current(
+                sub?.CurrentPeriodStart ?? DateTime.UtcNow, BillingCycles.Monthly, DateTime.UtcNow);
+
+            return new UsageSnapshot
+            {
+                HasSubscription = false,
+                Currency = sub?.Currency ?? "USD",
+                PeriodStart = openStart,
+                PeriodEnd = openEnd,
+                MinutesUsed = await _billing.MinutesUsedAsync(orgId, openStart, openEnd),
+            };
+        }
+
+        // The same anchor GetSummaryAsync and the period close use, so a customer watching this
+        // number tick up during a call is watching the one their bill is computed from. No periods
+        // are closed here: this is polled, and closing is the sweep's job.
+        var anchor = await _billing.LastClosedPeriodEndAsync(orgId) ?? sub.CurrentPeriodStart;
+        var (start, end) = UsageWindows.Current(anchor, sub.BillingCycle, DateTime.UtcNow);
+
+        var used = await _billing.MinutesUsedAsync(orgId, start, end);
+        var over = sub.IsMetered ? Math.Max(0, used - sub.IncludedMinutes) : 0;
+
+        return new UsageSnapshot
+        {
+            HasSubscription = true,
+            PlanName = sub.PlanName,
+            Currency = sub.Currency,
+            Metered = sub.IsMetered,
+            IncludedMinutes = sub.IncludedMinutes,
+            MinutesUsed = used,
+            MinutesRemaining = sub.IsMetered ? Math.Max(0, sub.IncludedMinutes - used) : 0,
+            MinutesOver = over,
+            OverageRatePerMinute = sub.OverageRatePerMinute,
+            ProjectedOverageAmount = StripeMoney.Round(over * sub.OverageRatePerMinute, sub.Currency),
+            PeriodStart = start,
+            PeriodEnd = end,
+        };
     }
 
     /// <summary>The next invoice, itemised. Three things can be on it: the plan, an overrun
@@ -649,6 +1020,93 @@ public class BillingPeriodWorker : BackgroundService
             {
                 // A database blip must not kill the worker for the lifetime of the process.
                 _logger.LogError(ex, "Billing period sweep failed; retrying at the next interval.");
+            }
+
+            try { await Task.Delay(interval, stoppingToken); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+}
+
+/// <summary>
+/// Re-reads what Stripe says it has collected and applies anything the webhook did not.
+///
+/// The webhook is the fast path, not the guarantee. It can be missed outright — a signing secret
+/// rotated without updating configuration rejects every delivery, and an endpoint that is down
+/// past Stripe's retry window never hears about the payment at all. In both cases Stripe has the
+/// customer's money and this platform does not know, which means a paid account keeps counting
+/// down to the overdue sweep and is eventually suspended for non-payment.
+///
+/// This closes that hole: Stripe is the source of truth for money, so it is asked directly, on a
+/// timer, and every recovery is logged loudly enough to point at the real fault.
+/// </summary>
+public class BillingReconciliationWorker : BackgroundService
+{
+    private readonly IServiceProvider _services;
+    private readonly IConfiguration _config;
+    private readonly ILogger<BillingReconciliationWorker> _logger;
+
+    public BillingReconciliationWorker(IServiceProvider services, IConfiguration config,
+        ILogger<BillingReconciliationWorker> logger)
+    {
+        _services = services;
+        _config = config;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!_config.GetValue("Billing:ReconcileEnabled", true))
+        {
+            _logger.LogInformation("Stripe reconciliation is disabled (Billing:ReconcileEnabled).");
+            return;
+        }
+
+        var interval = TimeSpan.FromHours(Math.Max(1, _config.GetValue("Billing:ReconcileSweepHours", 12)));
+        var lookbackDays = Math.Max(1, _config.GetValue("Billing:ReconcileLookbackDays", 14));
+
+        // Behind the period sweep's own startup delay, so a cold start closes periods before it
+        // starts asking Stripe what it has collected against them.
+        try { await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken); }
+        catch (OperationCanceledException) { return; }
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var scope = _services.CreateScope();
+                var billing = scope.ServiceProvider.GetRequiredService<IBillingService>();
+                var result = await billing.ReconcileAsync(lookbackDays, stoppingToken);
+
+                if (!result.StripeConfigured)
+                {
+                    _logger.LogInformation(
+                        "Stripe is not connected; there is nothing to reconcile. Stopping the sweep.");
+                    return;
+                }
+
+                if (result.Recovered > 0)
+                    _logger.LogWarning(
+                        "Reconciliation recovered {Recovered} payment(s) out of {Examined} paid invoice(s) " +
+                        "in the last {Days} day(s). Every one of these is a webhook that did not arrive.",
+                        result.Recovered, result.Examined, lookbackDays);
+                else
+                    _logger.LogInformation(
+                        "Reconciliation checked {Examined} paid invoice(s); all were already recorded.",
+                        result.Examined);
+
+                foreach (var failure in result.Failed)
+                    _logger.LogError("Reconciliation could not apply {Failure}", failure);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                // Stripe being unreachable is not a reason to stop checking for the rest of the
+                // process lifetime.
+                _logger.LogError(ex, "Stripe reconciliation sweep failed; retrying at the next interval.");
             }
 
             try { await Task.Delay(interval, stoppingToken); }

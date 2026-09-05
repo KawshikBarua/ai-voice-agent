@@ -164,6 +164,11 @@ public class BillingRepository : IBillingRepository
             FROM OrganizationSubscriptions s
             JOIN Organizations o ON o.Id = s.OrganizationId
             WHERE o.IsDeleted = 0 AND o.IsActive = 1 AND s.AutoSuspend = 1
+              -- On a plan at all. A subscription row also exists purely to hold the Stripe
+              -- customer link of someone who has not chosen a tier yet (SubscriptionRecord.HasPlan),
+              -- and suspending an organization for not paying an invoice nobody has raised would
+              -- lock a brand-new customer out before they ever got started.
+              AND (s.PlanId IS NOT NULL OR s.Amount > 0 OR s.IncludedMinutes > 0)
               AND DATEADD(day, s.GraceDays, s.CurrentPeriodEnd) < @utcNow", new { utcNow });
         return ids.ToList();
     }

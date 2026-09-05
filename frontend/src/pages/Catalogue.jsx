@@ -4,8 +4,8 @@ import { api, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { Card, CardTitle, PillButton, Chip, EmptyState } from '../components/ui'
 
-const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-[13.5px] outline-none focus:border-ink'
-const label = 'mb-1.5 block text-[12px] font-semibold text-ink-soft'
+const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
+const label = 'mb-1.5 block text-xs font-semibold text-ink-soft'
 
 const BLANK_SERVICE = {
   name: '', description: '', durationMinutes: 30,
@@ -19,7 +19,7 @@ const BLANK_PRODUCT = {
 /** Editing the catalogue re-syncs the agent, so changes reach callers automatically. */
 function SyncNote() {
   return (
-    <p className="mb-5 max-w-2xl text-[13px] text-ink-soft">
+    <p className="mb-5 max-w-2xl text-sm text-ink-soft">
       These feed the “Services and pricing” and “Product catalogue” documents your AI reads on
       calls, and are the source of truth for the quote tools — so the AI never invents a price.
       Changes re-sync to Retell automatically.
@@ -38,7 +38,7 @@ function Field({ label: text, children, className = '' }) {
 
 function Toggle({ checked, onChange, children }) {
   return (
-    <label className="flex items-center gap-2 text-[13px]">
+    <label className="flex items-center gap-2 text-sm">
       <input type="checkbox" checked={!!checked} onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 rounded border-line" />
       {children}
@@ -137,16 +137,16 @@ function Row({ title, meta, chips, onEdit, onDelete }) {
     <div className="flex items-start gap-4 rounded-2xl bg-panel p-4">
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex flex-wrap items-center gap-2">
-          <p className="text-[14px] font-bold">{title}</p>
+          <p className="text-base font-bold">{title}</p>
           {chips}
         </div>
-        <p className="text-[12.5px] text-ink-soft">{meta}</p>
+        <p className="text-sm text-ink-soft">{meta}</p>
       </div>
       <div className="flex shrink-0 gap-1">
         <button onClick={onEdit}
-          className="rounded-pill px-3 py-1 text-[11.5px] font-semibold text-ink hover:bg-line">Edit</button>
+          className="rounded-pill px-3 py-1 text-xs font-semibold text-ink hover:bg-line">Edit</button>
         <button onClick={onDelete}
-          className="rounded-pill px-3 py-1 text-[11.5px] font-semibold text-danger hover:bg-danger-soft">Delete</button>
+          className="rounded-pill px-3 py-1 text-xs font-semibold text-danger hover:bg-danger-soft">Delete</button>
       </div>
     </div>
   )
@@ -303,12 +303,12 @@ export default function Catalogue() {
 
   return (
     <div>
-      <h1 className="mb-6 text-[26px] font-bold">Services &amp; Products</h1>
+      <h1 className="mb-6 font-display text-2xl font-semibold tracking-[-0.01em]">Services &amp; Products</h1>
       <SyncNote />
 
       {!canManage && (
         <Card className="mb-5">
-          <p className="text-[13px] text-ink-soft">
+          <p className="text-sm text-ink-soft">
             You can view the catalogue, but only an administrator or manager can change it.
           </p>
         </Card>

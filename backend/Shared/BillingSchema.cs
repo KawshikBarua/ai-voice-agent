@@ -251,6 +251,11 @@ public static class BillingSchema
         // -------------------------------------------------------------------
         // Webhook deliveries seen. Stripe guarantees at-least-once delivery, so an event id is
         // claimed before it is acted on and the handler is skipped if it has been done already.
+        //
+        // "Already" means *successfully*. A claim used to be permanent the moment it was taken,
+        // which meant a handler that threw — or a process that died holding the claim — refused
+        // every redelivery of an event that had never actually been applied. For an invoice.paid
+        // that is a collected payment the platform never records.
         // -------------------------------------------------------------------
         """
         IF OBJECT_ID('StripeWebhookEvents') IS NULL
@@ -261,6 +266,29 @@ public static class BillingSchema
             ProcessedAt DATETIME2 NULL,
             Error NVARCHAR(1000) NULL
         );
+        """,
+
+        // How many times this event has been picked up, and when the current attempt took the
+        // claim. ClaimedAt is what makes an abandoned attempt recoverable: a row still unprocessed
+        // long after it was claimed belongs to a process that is no longer running.
+        "IF COL_LENGTH('StripeWebhookEvents','Attempts') IS NULL ALTER TABLE StripeWebhookEvents ADD Attempts INT NOT NULL DEFAULT 0;",
+        "IF COL_LENGTH('StripeWebhookEvents','ClaimedAt') IS NULL ALTER TABLE StripeWebhookEvents ADD ClaimedAt DATETIME2 NULL;",
+        "IF COL_LENGTH('StripeWebhookEvents','Abandoned') IS NULL ALTER TABLE StripeWebhookEvents ADD Abandoned BIT NOT NULL DEFAULT 0;",
+
+        // Existing rows predate the columns above. Anything already processed cleanly is backfilled
+        // as a finished single attempt so it is never replayed; anything left in error keeps
+        // Attempts = 0 and becomes eligible for the retry path on its next delivery.
+        """
+        UPDATE StripeWebhookEvents
+        SET Attempts = 1, ClaimedAt = ReceivedAt
+        WHERE Attempts = 0 AND ProcessedAt IS NOT NULL AND Error IS NULL;
+        """,
+
+        // The reconciliation sweep and the operator's "what is stuck" view both read this.
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_StripeWebhookEvents_Unfinished')
+        CREATE INDEX IX_StripeWebhookEvents_Unfinished
+        ON StripeWebhookEvents (ProcessedAt, Abandoned) INCLUDE (Type, Error, Attempts, ReceivedAt);
         """,
     ];
 }

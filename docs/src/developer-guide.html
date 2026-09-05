@@ -559,8 +559,11 @@ public record KnowledgeDocument(string Title, string Text);</pre>
         code) are rejected outright.</li>
     <li><strong><code>transfer_call</code> requires <code>transfer_option</code></strong> —
         omitting it fails schema validation.</li>
-    <li><strong>Voice ids are provider-prefixed</strong> — <code>openai-Nova</code>,
-        <code>11labs-Adrian</code>. <code>MapVoice</code> translates legacy bare names.</li>
+    <li><strong>Only Retell platform voices are offered</strong> — <code>retell-Grace</code>,
+        <code>retell-Ashley</code>, <code>retell-Chloe</code>, <code>retell-Nico</code>
+        (<code>Shared/RetellVoices.cs</code>). <code>enable_expressive_mode</code> is on for every
+        tenant and Retell honours it for platform voices only, so <code>MapVoice</code> settles
+        anything else onto this set, matching older provider-prefixed ids by name.</li>
     <li><strong>Knowledge bases are immutable once indexed</strong> — content changes mean creating
         a new one and swapping.</li>
   </ul>

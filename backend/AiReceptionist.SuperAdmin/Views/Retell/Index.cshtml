@@ -80,8 +80,19 @@
                     <div class="help">Public address of the tenant API. Retell posts call events here.</div>
                 </div>
                 <div class="field">
+                    @{ var selectedVoice = RetellVoices.Resolve(connection.DefaultVoiceId); }
                     <label for="DefaultVoiceId">Default voice</label>
-                    <input type="text" id="DefaultVoiceId" name="DefaultVoiceId" value="@connection.DefaultVoiceId" />
+                    <select id="DefaultVoiceId" name="DefaultVoiceId">
+                        @foreach (var voice in RetellVoices.All)
+                        {
+                            <option value="@voice.Id" selected="@(voice.Id == selectedVoice)">@voice.Label</option>
+                        }
+                    </select>
+                    <div class="help">
+                        What a tenant gets until they pick their own. All four are Retell platform
+                        voices — expressive mode is on for every tenant and Retell only honours it
+                        for these, so the choice is deliberately closed.
+                    </div>
                 </div>
                 <label class="check">
                     <input type="checkbox" name="VerifySignature" value="true" checked="@connection.VerifySignature" />
@@ -103,6 +114,26 @@
         <p class="note">
             Tenant edits to the knowledge base, services or settings re-sync automatically in the
             background. Re-sync here is for forcing it immediately or recovering from a failed sync.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>Agent defaults</h2>
+        <p class="sub">Applied to every tenant on their next sync. Not editable per account.</p>
+        <div class="kv"><span>Model</span><span class="mono">gemini-3.0-flash</span></div>
+        <div class="kv"><span>Expressive mode</span><span>On</span></div>
+        <div class="kv">
+            <span>Voices</span>
+            <span style="font-weight:400;text-align:left;">
+                @string.Join(", ", RetellVoices.All.Select(v => v.Label))
+            </span>
+        </div>
+        <p class="note">
+            Tenants choose from these four in their own AI Agent settings; the default voice above
+            is what they start on. Anything stored from an earlier voice list is matched by name on
+            the next sync — <span class="mono">11labs-Grace</span> becomes
+            <span class="mono">retell-Grace</span> — and anything with no counterpart falls back to
+            the default.
         </p>
     </div>
 </div>

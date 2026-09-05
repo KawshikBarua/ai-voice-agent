@@ -89,7 +89,7 @@ function Tooltip({ x, y, width, children }) {
   return (
     <div
       ref={ref}
-      className="pointer-events-none absolute z-10 w-max rounded-xl bg-ink px-3 py-2 text-[11.5px] leading-snug text-on-ink shadow-lg"
+      className="pointer-events-none absolute z-10 w-max rounded-xl bg-ink px-3 py-2 text-xs leading-snug text-on-ink shadow-lg"
       style={{ left, top: Math.max(0, y - 12), maxWidth: Math.max(140, width - 8) }}
     >
       {children}
@@ -115,8 +115,8 @@ export function Legend({ items, className = '' }) {
       {items.map((s) => (
         <li key={s.label} className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: s.color }} />
-          <span className="text-[12px] font-medium text-ink-soft">{s.label}</span>
-          {s.value != null && <span className="text-[12px] font-bold tabular-nums">{s.value}</span>}
+          <span className="text-xs font-medium text-ink-soft">{s.label}</span>
+          {s.value != null && <span className="text-xs font-bold tabular-nums">{s.value}</span>}
         </li>
       ))}
     </ul>
@@ -161,7 +161,7 @@ export function StackedColumns({
             <line x1={padLeft} x2={width - padRight} y1={y(v)} y2={y(v)}
               stroke="var(--color-grid)" strokeWidth="1" />
             <text x={padLeft - 8} y={y(v) + 4} textAnchor="end"
-              className="fill-muted text-[10px] tabular-nums">{formatValue(v)}</text>
+              className="fill-muted text-2xs tabular-nums">{formatValue(v)}</text>
           </g>
         ))}
 
@@ -217,7 +217,7 @@ export function StackedColumns({
           if (i % every !== 0 && i !== data.length - 1) return null
           return (
             <text key={d.label + i} x={padLeft + band * i + band / 2} y={height - 6}
-              textAnchor="middle" className="fill-muted text-[10.5px]">
+              textAnchor="middle" className="fill-muted text-2xs">
               {d.label}
             </text>
           )
@@ -301,7 +301,7 @@ export function AreaTrend({
             <line x1={padLeft} x2={width - padRight} y1={y(v)} y2={y(v)}
               stroke="var(--color-grid)" strokeWidth="1" />
             <text x={padLeft - 8} y={y(v) + 4} textAnchor="end"
-              className="fill-muted text-[10px] tabular-nums">{formatTick(v)}</text>
+              className="fill-muted text-2xs tabular-nums">{formatTick(v)}</text>
           </g>
         ))}
 
@@ -313,13 +313,13 @@ export function AreaTrend({
             <line x1={padLeft} x2={width - padRight} y1={y(mean)} y2={y(mean)}
               stroke="var(--color-axis)" strokeWidth="1" />
             <text x={width - padRight} y={y(mean) - 6} textAnchor="end"
-              className="fill-muted text-[10px]">avg {formatTick(Math.round(mean))}</text>
+              className="fill-muted text-2xs">avg {formatTick(Math.round(mean))}</text>
           </>
         )}
 
         {values[peak] > 0 && (
           <text x={x(peak)} y={y(values[peak]) - 12} textAnchor={peak > data.length - 3 ? 'end' : 'middle'}
-            className="fill-ink text-[11px] font-bold tabular-nums">
+            className="fill-ink text-xs font-bold tabular-nums">
             {formatValue(values[peak])}
           </text>
         )}
@@ -345,7 +345,7 @@ export function AreaTrend({
           if (i % every !== 0 && i !== last) return null
           return (
             <text key={d.label + i} x={x(i)} y={height - 6} textAnchor="middle"
-              className="fill-muted text-[10.5px]">{d.label}</text>
+              className="fill-muted text-2xs">{d.label}</text>
           )
         })}
       </svg>
@@ -403,14 +403,14 @@ export function GaugeMeter({ used, allowance, height = 172, caption, unit = 'min
           <path d={`M ${sx} ${sy} A ${r} ${r} 0 0 1 ${px} ${py}`}
             fill="none" stroke={fill} strokeWidth={stroke} strokeLinecap="round" />
         )}
-        <text x={cx} y={cy - 34} textAnchor="middle" className="fill-ink text-[30px] font-bold">
+        <text x={cx} y={cy - 34} textAnchor="middle" className="fill-ink text-3xl font-bold">
           {allowance > 0 ? remaining.toLocaleString() : used.toLocaleString()}
         </text>
-        <text x={cx} y={cy - 14} textAnchor="middle" className="fill-muted text-[11.5px]">
+        <text x={cx} y={cy - 14} textAnchor="middle" className="fill-muted text-xs">
           {allowance > 0 ? unit : 'minutes used'}
         </text>
       </svg>
-      {caption && <p className="-mt-1 text-center text-[11.5px] text-muted">{caption}</p>}
+      {caption && <p className="-mt-1 text-center text-xs text-muted">{caption}</p>}
     </div>
   )
 }
@@ -494,10 +494,10 @@ export function HourHeat({ hours, labelFor = (h) => h }) {
           )
         })}
       </div>
-      <div className="mt-1.5 flex justify-between text-[10.5px] text-muted">
+      <div className="mt-1.5 flex justify-between text-2xs text-muted">
         <span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>11p</span>
       </div>
-      <p className="mt-2 min-h-[18px] text-[12px] text-ink-soft">
+      <p className="mt-2 min-h-[18px] text-xs text-ink-soft">
         {hover
           ? <><span className="font-semibold">{labelFor(hover.hour)}</span> · {hover.value} call{hover.value === 1 ? '' : 's'}</>
           : 'Hover an hour to see its call count.'}

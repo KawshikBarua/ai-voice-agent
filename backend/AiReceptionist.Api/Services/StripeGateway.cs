@@ -30,6 +30,11 @@ public interface IStripeGateway
     Task<string> EnsureCustomerAsync(int orgId, string orgName, string? email,
         string? existingCustomerId, CancellationToken ct = default);
 
+    /// <summary>Reads a customer back. Every customer this platform creates is stamped with its
+    /// organization id, so this is the last way to tell whose money an invoice is when nothing
+    /// stored here points at it.</summary>
+    Task<Customer?> GetCustomerAsync(string customerId, CancellationToken ct = default);
+
     /// <summary>Creates the Stripe product and recurring price behind a tier. Prices are immutable
     /// in Stripe, so repricing a tier creates a new one and leaves the old one serving the
     /// subscriptions already on it.</summary>
@@ -38,6 +43,11 @@ public interface IStripeGateway
     /// <summary>Hosted Checkout for a customer subscribing themselves.</summary>
     Task<string> CreateCheckoutSessionAsync(int orgId, int planId, string customerId, string priceId,
         CancellationToken ct = default);
+
+    /// <summary>Reads back a Checkout session by id. This is what lets the customer's return from
+    /// Stripe confirm itself, instead of the account only coming to life when a webhook happens to
+    /// arrive — which on a deployment with no reachable webhook endpoint is never.</summary>
+    Task<Stripe.Checkout.Session?> GetCheckoutSessionAsync(string sessionId, CancellationToken ct = default);
 
     /// <summary>The Stripe billing portal — where the customer changes their card and reads their
     /// own invoices. Card details never touch this application.</summary>
@@ -56,6 +66,11 @@ public interface IStripeGateway
     Task<Subscription> CreateSubscriptionAsync(int orgId, string customerId, string priceId,
         CancellationToken ct = default);
 
+    /// <summary>Reads a subscription back. Used to find the tier behind a payment when the local
+    /// record does not know it yet — the price Stripe is charging is the authority on what the
+    /// customer bought.</summary>
+    Task<Subscription?> GetSubscriptionAsync(string subscriptionId, CancellationToken ct = default);
+
     Task CancelSubscriptionAsync(string subscriptionId, CancellationToken ct = default);
 
     /// <summary>Moves a live subscription onto a different price, charged from the next renewal
@@ -64,6 +79,11 @@ public interface IStripeGateway
         CancellationToken ct = default);
 
     Task<Invoice?> GetInvoiceAsync(string invoiceId, CancellationToken ct = default);
+
+    /// <summary>Every invoice Stripe has marked paid since <paramref name="since"/>, oldest first.
+    /// This is the reconciliation read: the webhook is the fast path, and this is what notices when
+    /// the fast path never ran.</summary>
+    Task<IReadOnlyList<Invoice>> ListPaidInvoicesSinceAsync(DateTime since, CancellationToken ct = default);
 
     /// <summary>Verifies the signature and parses the event. Throws <see cref="StripeException"/>
     /// on a bad signature, which the controller turns into a 400.</summary>
@@ -105,7 +125,11 @@ public class StripeGateway : IStripeGateway
 
         _urls = new StripeUrls
         {
-            Success = FirstNonBlank(config["Stripe:SuccessUrl"], $"{appBase}/billing?checkout=success")!,
+            // The session id rides back on the return URL so the page the customer lands on can
+            // confirm the purchase itself. Stripe substitutes the placeholder; it is deliberately
+            // not escaped, and a configured SuccessUrl gets it too.
+            Success = WithSessionId(
+                FirstNonBlank(config["Stripe:SuccessUrl"], $"{appBase}/billing?checkout=success")!),
             Cancel = FirstNonBlank(config["Stripe:CancelUrl"], $"{appBase}/billing?checkout=cancelled")!,
             PortalReturn = FirstNonBlank(config["Stripe:PortalReturnUrl"], $"{appBase}/billing")!,
         };
@@ -124,6 +148,13 @@ public class StripeGateway : IStripeGateway
     /// placeholders have to fall through to the next candidate, which <c>??</c> does not do.</summary>
     private static string? FirstNonBlank(params string?[] candidates) =>
         Array.Find(candidates, c => !string.IsNullOrWhiteSpace(c));
+
+    /// <summary>Adds Stripe's session-id placeholder to a return URL, respecting whatever query
+    /// string it already carries, and leaving it alone if someone has configured it in already.</summary>
+    private static string WithSessionId(string url) =>
+        url.Contains("{CHECKOUT_SESSION_ID}", StringComparison.Ordinal)
+            ? url
+            : $"{url}{(url.Contains('?') ? '&' : '?')}session_id={{CHECKOUT_SESSION_ID}}";
 
     public bool IsConfigured => _client is not null;
 
@@ -168,6 +199,20 @@ public class StripeGateway : IStripeGateway
         _logger.LogInformation("Created Stripe customer {CustomerId} for organization {OrgId}.",
             created.Id, orgId);
         return created.Id;
+    }
+
+    public async Task<Customer?> GetCustomerAsync(string customerId, CancellationToken ct = default)
+    {
+        try
+        {
+            var customer = await new CustomerService(Client).GetAsync(customerId, cancellationToken: ct);
+            return customer?.Deleted == true ? null : customer;
+        }
+        catch (StripeException ex)
+        {
+            _logger.LogWarning(ex, "Could not read Stripe customer {CustomerId}.", customerId);
+            return null;
+        }
     }
 
     public async Task<(string ProductId, string PriceId)> CreatePriceAsync(
@@ -224,6 +269,22 @@ public class StripeGateway : IStripeGateway
         }, cancellationToken: ct);
 
         return session.Url;
+    }
+
+    public async Task<Stripe.Checkout.Session?> GetCheckoutSessionAsync(string sessionId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            return await new SessionService(Client).GetAsync(sessionId, cancellationToken: ct);
+        }
+        catch (StripeException ex)
+        {
+            // An id from another Stripe account, or one long since expired. The caller reports it
+            // as "could not confirm" rather than failing the page.
+            _logger.LogWarning(ex, "Could not read Stripe Checkout session {SessionId}.", sessionId);
+            return null;
+        }
     }
 
     public async Task<string> CreatePortalSessionAsync(string customerId, CancellationToken ct = default)
@@ -284,6 +345,20 @@ public class StripeGateway : IStripeGateway
         }, cancellationToken: ct);
     }
 
+    public async Task<Subscription?> GetSubscriptionAsync(string subscriptionId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            return await new SubscriptionService(Client).GetAsync(subscriptionId, cancellationToken: ct);
+        }
+        catch (StripeException ex)
+        {
+            _logger.LogWarning(ex, "Could not read Stripe subscription {SubscriptionId}.", subscriptionId);
+            return null;
+        }
+    }
+
     public async Task CancelSubscriptionAsync(string subscriptionId, CancellationToken ct = default)
     {
         var subscriptions = new SubscriptionService(Client);
@@ -325,6 +400,31 @@ public class StripeGateway : IStripeGateway
             _logger.LogWarning(ex, "Could not read Stripe invoice {InvoiceId}.", invoiceId);
             return null;
         }
+    }
+
+    public async Task<IReadOnlyList<Invoice>> ListPaidInvoicesSinceAsync(DateTime since,
+        CancellationToken ct = default)
+    {
+        var invoices = new InvoiceService(Client);
+        var found = new List<Invoice>();
+
+        // Auto-paging: a platform catching up after a long webhook outage can easily have more
+        // than one page of invoices to replay, and stopping at the first would silently
+        // reconcile only the newest of them.
+        var options = new InvoiceListOptions
+        {
+            Status = "paid",
+            Created = new DateRangeOptions { GreaterThanOrEqual = since },
+            Limit = 100,
+        };
+
+        await foreach (var invoice in invoices.ListAutoPagingAsync(options, cancellationToken: ct))
+            found.Add(invoice);
+
+        // Oldest first, so replaying a backlog advances the access period in the order the
+        // customer actually paid rather than jumping to the newest invoice and back.
+        found.Reverse();
+        return found;
     }
 
     public Event ConstructEvent(string payload, string signatureHeader)

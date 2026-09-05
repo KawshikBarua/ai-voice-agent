@@ -98,7 +98,21 @@ public class AiToolsController : ControllerBase
             ? v.GetString()
             : null;
 
-    private IActionResult Speak(object payload) => Ok(payload);
+    /// <summary>Returns a reply for the agent to read, with the tenant's current local date and
+    /// time attached to it. Dynamic variables are resolved once, when the call starts, and can be
+    /// lost to a Retell-side fault; this is our own channel and cannot be. Restating the clock on
+    /// every tool reply re-anchors the agent several times a call, so a long conversation cannot
+    /// drift back to the date the model assumes from its training data.</summary>
+    private IActionResult Speak(object payload, ToolContext? ctx = null)
+    {
+        if (ctx is null) return Ok(payload);
+
+        var body = JsonSerializer.SerializeToNode(payload)?.AsObject();
+        if (body is null) return Ok(payload);
+
+        body["current_datetime"] = $"{TenantTime.Describe(TenantTime.NowLocal(ctx.Tz))} ({ctx.Org.Timezone})";
+        return Ok(body);
+    }
 
     private static string SpokenTime(DateTime utc, TimeZoneInfo tz) =>
         TenantTime.ToLocal(utc, tz).ToString("dddd, MMMM d 'at' HH:mm");
@@ -142,13 +156,13 @@ public class AiToolsController : ControllerBase
         var customer = await _customers.FindReturningAsync(orgId,
             Str(ctx.Args, "phone"), Str(ctx.Args, "email"), Str(ctx.Args, "name"));
         if (customer is null)
-            return Speak(new { result = "No existing customer found — treat the caller as a new customer." });
+            return Speak(new { result = "No existing customer found — treat the caller as a new customer." }, ctx);
 
         return Speak(new
         {
             result = $"Returning customer: {customer.Name}, {customer.TotalVisits} previous visits.",
             customer = new { customer.Name, customer.Phone, customer.TotalVisits, lastVisit = customer.LastVisit?.ToString("yyyy-MM-dd") },
-        });
+        }, ctx);
     }
 
     [HttpPost("check_availability")]
@@ -159,17 +173,17 @@ public class AiToolsController : ControllerBase
 
         var nowLocal = TenantTime.NowLocal(ctx.Tz);
         if (ResolveRequestedDate(Str(ctx.Args, "date"), nowLocal) is not { } date)
-            return Speak(new { result = "That is not a day I can read. Ask the caller which day suits them, then check that." });
+            return Speak(new { result = "That is not a day I can read. Ask the caller which day suits them, then check that." }, ctx);
 
         if (date.Date < nowLocal.Date)
             return Speak(new
             {
-                result = $"{date:dddd d MMMM} has already passed — today is {nowLocal:dddd d MMMM}. " +
+                result = $"{date:dddd d MMMM yyyy} has already passed — today is {nowLocal:dddd d MMMM yyyy}. " +
                          "Ask the caller for a day that has not gone yet.",
-            });
+            }, ctx);
 
         var (window, closed) = await ResolveDayAsync(orgId, ctx.Org, date);
-        if (window is null) return Speak(new { result = closed });
+        if (window is null) return Speak(new { result = closed }, ctx);
 
         var duration = 30;
         if (Str(ctx.Args, "service") is { } serviceName &&
@@ -198,27 +212,49 @@ public class AiToolsController : ControllerBase
             ? new
             {
                 date = date.ToString("yyyy-MM-dd"),
-                result = $"Nothing free on {date:dddd d MMMM}. Tell the caller and offer another day.",
+                result = $"Nothing free on {date:dddd d MMMM yyyy}. Tell the caller and offer another day.",
             }
             : new
             {
                 date = date.ToString("yyyy-MM-dd"),
-                result = $"Free on {date:dddd d MMMM}: {string.Join(", ", open.Take(8))}. " +
+                result = $"Free on {date:dddd d MMMM yyyy}: {string.Join(", ", open.Take(8))}. " +
                          "Offer two or three of these, not the whole list, and keep them for the rest " +
-                         "of the call — this date is now checked, do not check it again.",
+                         "of the call — this date is now checked, do not check it again. When you book, " +
+                         $"send this date back as it is written here: {date:yyyy-MM-dd}.",
                 slots = open,
-            });
+            }, ctx);
+    }
+
+    /// <summary>
+    /// The confirmed start of a booking, in the tenant's local time.
+    ///
+    /// The agent is dependable about the time of day — the caller says it out loud — and much less
+    /// so about which date that time falls on, because it has to hold the day in its head across
+    /// the conversation. So when the agent also passes the day in the caller's own words, that day
+    /// wins and only the clock time is taken from <paramref name="startTime"/>. Booking then does
+    /// no date arithmetic in the model at all: the same reader that answered check_availability
+    /// decides the date, against this server's clock.
+    /// </summary>
+    private static DateTime? ResolveStartLocal(string? startTime, string? date, DateTime nowLocal)
+    {
+        if (!DateTime.TryParse(startTime, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start))
+            return null;
+
+        return ResolveRequestedDate(date, nowLocal) is { } day
+            ? day.Date + start.TimeOfDay
+            : start;
     }
 
     /// <summary>
     /// Turns whatever the caller said into a local date: "2026-08-14", "tomorrow", "friday",
     /// "next tuesday".
     ///
-    /// The agent has no clock — its prompt is built when the tenant syncs, not per call — so it
-    /// cannot resolve "tomorrow" on its own. Left to guess, it either invents a date or checks
-    /// several until one lands, which is exactly the repeated-lookup behaviour that makes a call
-    /// drag. Resolving the caller's own words here, in the tenant's timezone, keeps "can you do
-    /// Friday?" to a single lookup. Returns null when nothing usable was given.
+    /// The agent's own clock cannot be relied on for this: the prompt is told the current time at
+    /// the start of each call, but left to work out "tomorrow" from it, the model either dates it
+    /// from its training data or checks several days until one lands — which is exactly the
+    /// repeated-lookup behaviour that makes a call drag. Resolving the caller's own words here, in
+    /// the tenant's timezone, keeps "can you do Friday?" to a single lookup and puts the date
+    /// beyond the model's reach. Returns null when nothing usable was given.
     /// </summary>
     private static DateTime? ResolveRequestedDate(string? value, DateTime nowLocal)
     {
@@ -260,15 +296,20 @@ public class AiToolsController : ControllerBase
         var (ctx, error) = await ReadAsync(orgId);
         if (ctx is null) return error!;
 
+        var nowLocal = TenantTime.NowLocal(ctx.Tz);
         var name = Str(ctx.Args, "name");
         var phone = Str(ctx.Args, "phone");
         var serviceName = Str(ctx.Args, "service");
         if (name is null || phone is null || serviceName is null ||
-            !DateTime.TryParse(Str(ctx.Args, "start_time"), out var startLocal))
-            return Speak(new { result = "Missing details — ask for name, phone, service and a confirmed start time." });
+            ResolveStartLocal(Str(ctx.Args, "start_time"), Str(ctx.Args, "date"), nowLocal) is not { } startLocal)
+            return Speak(new { result = "Missing details — ask for name, phone, service and a confirmed start time." }, ctx);
 
-        if (startLocal <= TenantTime.NowLocal(ctx.Tz))
-            return Speak(new { result = "That time is in the past. Ask for a future date and time." });
+        if (startLocal <= nowLocal)
+            return Speak(new
+            {
+                result = $"{startLocal:dddd d MMMM yyyy} at {startLocal:HH:mm} has already passed — it is now " +
+                         $"{TenantTime.Describe(nowLocal)}. Ask for a day and time still to come.",
+            }, ctx);
 
         // Field-service trades dispatch a technician — a job address is mandatory.
         var profile = IndustryTemplates.Resolve(ctx.Org.Industry);
@@ -278,17 +319,17 @@ public class AiToolsController : ControllerBase
             {
                 result = "A service address is required before booking. Ask for the full street " +
                          "address, city, and any access details such as apartment number or gate code.",
-            });
+            }, ctx);
 
         var (window, closed) = await ResolveDayAsync(orgId, ctx.Org, startLocal);
-        if (window is null) return Speak(new { result = closed });
+        if (window is null) return Speak(new { result = closed }, ctx);
 
         var service = await _ai.FindServiceByNameAsync(orgId, serviceName);
         if (service is null)
-            return Speak(new { result = $"No service matching '{serviceName}' was found. Ask which listed service they want." });
+            return Speak(new { result = $"No service matching '{serviceName}' was found. Ask which listed service they want." }, ctx);
 
         if (startLocal.TimeOfDay < window.Start || startLocal.TimeOfDay + TimeSpan.FromMinutes(service.DurationMinutes) > window.End)
-            return Speak(new { result = $"That time is outside business hours ({window.Start:hh\\:mm}–{window.End:hh\\:mm}). Offer a time within hours." });
+            return Speak(new { result = $"That time is outside business hours ({window.Start:hh\\:mm}–{window.End:hh\\:mm}). Offer a time within hours." }, ctx);
 
         var startUtc = TenantTime.ToUtc(startLocal, ctx.Tz);
         var endUtc = startUtc.AddMinutes(service.DurationMinutes);
@@ -316,7 +357,7 @@ public class AiToolsController : ControllerBase
             Notes = Str(ctx.Args, "notes") is { } n ? $"[AI] {n}" : "[AI] Booked during phone call",
         });
         if (appointmentId is null)
-            return Speak(new { result = "That time was just taken. Use check_availability to offer alternatives." });
+            return Speak(new { result = "That time was just taken. Use check_availability to offer alternatives." }, ctx);
 
         await _customers.AddTimelineEventAsync(new TimelineEvent
         {
@@ -331,7 +372,7 @@ public class AiToolsController : ControllerBase
                      (string.IsNullOrWhiteSpace(serviceAddress) ? "" : $" Technician will attend {serviceAddress}.") +
                      $" Confirmation number {appointmentId}.",
             appointmentId,
-        });
+        }, ctx);
     }
 
     [HttpPost("cancel_appointment")]
@@ -341,7 +382,7 @@ public class AiToolsController : ControllerBase
         if (ctx is null) return error!;
 
         var (appt, message) = await FindCallerAppointmentAsync(orgId, ctx, requireName: true);
-        if (appt is null) return Speak(new { result = message });
+        if (appt is null) return Speak(new { result = message }, ctx);
 
         await _appointments.UpdateStatusAsync(orgId, appt.Id, AppointmentStatus.Cancelled);
         await _customers.AddTimelineEventAsync(new TimelineEvent
@@ -350,7 +391,7 @@ public class AiToolsController : ControllerBase
             EventType = "AppointmentCancelled", Source = "AI",
             Notes = $"{appt.ServiceName} on {SpokenTime(appt.StartAt, ctx.Tz)}",
         });
-        return Speak(new { result = $"Cancelled the {appt.ServiceName} appointment on {SpokenTime(appt.StartAt, ctx.Tz)}." });
+        return Speak(new { result = $"Cancelled the {appt.ServiceName} appointment on {SpokenTime(appt.StartAt, ctx.Tz)}." }, ctx);
     }
 
     [HttpPost("reschedule_appointment")]
@@ -359,22 +400,27 @@ public class AiToolsController : ControllerBase
         var (ctx, error) = await ReadAsync(orgId);
         if (ctx is null) return error!;
 
-        if (!DateTime.TryParse(Str(ctx.Args, "new_time"), out var newLocal))
-            return Speak(new { result = "Ask for the new date and time before rescheduling." });
-        if (newLocal <= TenantTime.NowLocal(ctx.Tz))
-            return Speak(new { result = "The new time is in the past. Ask for a future date and time." });
+        var nowLocal = TenantTime.NowLocal(ctx.Tz);
+        if (ResolveStartLocal(Str(ctx.Args, "new_time"), Str(ctx.Args, "new_date"), nowLocal) is not { } newLocal)
+            return Speak(new { result = "Ask for the new date and time before rescheduling." }, ctx);
+        if (newLocal <= nowLocal)
+            return Speak(new
+            {
+                result = $"{newLocal:dddd d MMMM yyyy} at {newLocal:HH:mm} has already passed — it is now " +
+                         $"{TenantTime.Describe(nowLocal)}. Ask for a day and time still to come.",
+            }, ctx);
 
         var (window, closed) = await ResolveDayAsync(orgId, ctx.Org, newLocal);
-        if (window is null) return Speak(new { result = closed });
+        if (window is null) return Speak(new { result = closed }, ctx);
 
         var (appt, message) = await FindCallerAppointmentAsync(orgId, ctx, requireName: true);
-        if (appt is null) return Speak(new { result = message });
+        if (appt is null) return Speak(new { result = message }, ctx);
 
         var newStartUtc = TenantTime.ToUtc(newLocal, ctx.Tz);
         var newEndUtc = newStartUtc + (appt.EndAt - appt.StartAt);
 
         if (!await _appointments.TryRescheduleAsync(orgId, appt.Id, newStartUtc, newEndUtc))
-            return Speak(new { result = "The new time is not available. Use check_availability to offer alternatives." });
+            return Speak(new { result = "The new time is not available. Use check_availability to offer alternatives." }, ctx);
 
         await _customers.AddTimelineEventAsync(new TimelineEvent
         {
@@ -382,7 +428,7 @@ public class AiToolsController : ControllerBase
             EventType = "AppointmentRescheduled", Source = "AI",
             Notes = $"Moved to {newLocal:yyyy-MM-dd HH:mm}",
         });
-        return Speak(new { result = $"Rescheduled to {SpokenTime(newStartUtc, ctx.Tz)}." });
+        return Speak(new { result = $"Rescheduled to {SpokenTime(newStartUtc, ctx.Tz)}." }, ctx);
     }
 
     [HttpPost("check_appointment")]
@@ -392,13 +438,13 @@ public class AiToolsController : ControllerBase
         if (ctx is null) return error!;
 
         var (appt, message) = await FindCallerAppointmentAsync(orgId, ctx, requireName: false);
-        if (appt is null) return Speak(new { result = message });
+        if (appt is null) return Speak(new { result = message }, ctx);
 
         return Speak(new
         {
             result = $"Next appointment: {appt.ServiceName} on {SpokenTime(appt.StartAt, ctx.Tz)}. " +
                      $"Status: {appt.Status}. Payment: {appt.PaymentStatus}.",
-        });
+        }, ctx);
     }
 
     // There is deliberately no pricing tool here. The service and product catalogues are uploaded to

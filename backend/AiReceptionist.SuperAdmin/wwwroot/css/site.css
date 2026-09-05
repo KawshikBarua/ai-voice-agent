@@ -47,6 +47,7 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height:100vh;
 }
 
 .brand { color: #fff; font-size: 16px; font-weight: 700; letter-spacing: -0.2px; margin-bottom: 2px; }
@@ -73,7 +74,7 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-foot button:hover { background: #2f3d46; }
 
-.main { flex: 1; min-width: 0; padding: 26px 30px 60px; }
+.main { flex: 1; min-width: 0; padding: 26px 30px 60px; max-height:100vh !important; overflow:auto;}
 
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 h1 { font-size: 23px; margin: 0 0 4px; letter-spacing: -0.3px; }
@@ -155,6 +156,38 @@ textarea { resize: vertical; min-height: 62px; }
 .check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--ink-soft); margin-bottom: 12px; }
 .check input { margin-top: 3px; }
 
+/* What is wrong with one field, said next to that field. */
+.field .error { font-size: 11.5px; color: var(--danger); font-weight: 600; margin-top: 4px; }
+.field.bad input, .field.bad select { border-color: var(--danger); }
+
+/* ---------- radio-driven panels ----------
+   Picking one of two paths through a form, with no script: the radios sit ahead of the panels
+   and :checked reveals the matching one. This console runs entirely without JavaScript, and a
+   two-branch form is not the thing to break that for. */
+
+.mode-input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.choices label {
+  display: block; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--card); cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--ink);
+}
+.choices label:hover { background: var(--panel); }
+.choices label small { display: block; font-weight: 400; font-size: 11.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+
+.mode-panel { display: none; }
+
+/* The radio is focusable while visually hidden, so the chosen card carries the focus ring too —
+   otherwise keyboard users get no indication of where they are. */
+#modeExisting:focus ~ .choices label[for=modeExisting],
+#modeNew:focus ~ .choices label[for=modeNew] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+#modeExisting:checked ~ .choices label[for=modeExisting],
+#modeNew:checked ~ .choices label[for=modeNew] { border-color: var(--accent); background: var(--accent-soft); }
+
+#modeExisting:checked ~ .mode-panel.for-existing,
+#modeNew:checked ~ .mode-panel.for-new { display: block; }
+
 .btn {
   display: inline-block; border: 1px solid transparent; border-radius: 999px;
   padding: 8px 16px; font: inherit; font-size: 13px; font-weight: 600;
@@ -210,3 +243,45 @@ form.inline { display: inline; }
   .main { padding: 20px 16px 44px; }
   .row { grid-template-columns: 1fr; }
 }
+
+/* ---------- landing page editor ----------
+   Sliders and colour wells, which appear only on the Landing page screen. The console styles
+   text inputs globally; these two types need their own rules because browsers draw them from
+   their own chrome rather than from the border/padding the text inputs share. */
+
+.slider-row { display: flex; align-items: center; gap: 12px; }
+
+.slider-row input[type=range] {
+  flex: 1;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line);
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* The readout is tabular so the number does not jog sideways while dragging. */
+.slider-row output {
+  min-width: 42px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--accent);
+}
+
+.colour-row { display: flex; align-items: center; gap: 10px; }
+
+.colour-row input[type=color] {
+  width: 46px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.colour-row .mono { font-size: 12.5px; text-transform: uppercase; color: var(--ink-soft); }

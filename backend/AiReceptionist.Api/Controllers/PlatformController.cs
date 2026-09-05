@@ -205,7 +205,10 @@ public class PlatformController : ControllerBase
             ApiBaseUrl = string.IsNullOrWhiteSpace(request.ApiBaseUrl)
                 ? existing?.ApiBaseUrl ?? "https://api.retellai.com" : request.ApiBaseUrl.Trim(),
             WebhookBaseUrl = request.WebhookBaseUrl ?? existing?.WebhookBaseUrl,
-            DefaultVoiceId = request.DefaultVoiceId ?? existing?.DefaultVoiceId,
+            // Only the platform voices are accepted: expressive mode is on for every tenant and
+            // Retell honours it for those alone, so a default from elsewhere would turn it off
+            // for every account that had not picked a voice of its own.
+            DefaultVoiceId = RetellVoices.Resolve(request.DefaultVoiceId ?? existing?.DefaultVoiceId),
             VerifySignature = request.VerifySignature ?? existing?.VerifySignature ?? true,
         };
 

@@ -10,6 +10,9 @@ dist/
 # Env / secrets
 .env
 .env.*
+# ...but the templates are the point: they document what a deploy needs.
+!.env.example
+!*.env.example
 appsettings.Local.json
 appsettings.*.Local.json
 

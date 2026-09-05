@@ -9,6 +9,7 @@ import { StackedColumns, AreaTrend, GaugeMeter, BarMeter, Sparkline, HourHeat, L
 import {
   MONTHS, compact, money, moneyExact, minutes as fmtMinutes, duration, pctChange, whenLabel,
 } from '../lib/format'
+import { useUsage } from '../api/usage'
 
 /* The three call outcomes, in the order they stack. One validated categorical set —
    see the palette note in index.css. */
@@ -31,63 +32,20 @@ const APPT_RANGES = {
 }
 
 // ---------------------------------------------------------------------------
-// Offline sample data — keeps the dashboard readable (and clearly labelled) when
-// the API cannot be reached, rather than showing a screen of zeroes.
+// What the page renders when it has nothing.
+//
+// Nothing invented. This used to fall back to a generated month of plausible calls,
+// bookings and revenue, labelled "sample figures" — but a dashboard is read at a
+// glance, and a business owner glancing at 486 calls and $42,750 has been told
+// something false about their own company. An account that is genuinely quiet, and
+// an API that cannot be reached, both show real emptiness; the difference between
+// them is said in words, above.
 // ---------------------------------------------------------------------------
-const DEMO_STATS = (() => {
-  const month = new Date().getMonth()
-  const seeded = (i, a, b) => a + ((i * 37 + 11) % (b - a + 1))
-  const days = Array.from({ length: 30 }, (_, i) => {
-    const d = new Date()
-    d.setDate(d.getDate() - (29 - i))
-    const weekend = d.getDay() === 0
-    const handled = weekend ? 0 : seeded(i, 5, 14)
-    return {
-      date: d.toISOString().slice(0, 10),
-      handled,
-      transferred: weekend ? 0 : seeded(i + 3, 0, 4),
-      missed: weekend ? 0 : seeded(i + 7, 0, 2),
-      minutes: handled * seeded(i, 3, 6),
-    }
-  })
-  return {
-    demo: true,
-    currency: 'USD',
-    todaysAppointments: 6, upcomingAppointments: 14, cancelledAppointments: 2,
-    missedCalls: 23, totalCalls: 486, aiHandledCalls: 463, returningCustomers: 38,
-    revenue: 42750, outstandingPayments: 1860, aiBookingRate: 46.2,
-    callsToday: 18, callsYesterday: 14, missedCallsToday: 1, avgCallSeconds: 214,
-    minutesUsedTotal: 3184, minutesUsedThisPeriod: 742, minutesUsedToday: 61,
-    minutesIncluded: 1200, minutesRemaining: 458, minutesOver: 0,
-    planName: 'Growth', billingCycle: 'Monthly',
-    periodStart: new Date(new Date().getFullYear(), month, 1).toISOString(),
-    periodEnd: new Date(new Date().getFullYear(), month + 1, 1).toISOString(),
-    revenueThisMonth: 6420, revenueLastMonth: 5810,
-    callsPerMonth: [], bookingsPerMonth: [],
-    revenuePerMonth: [3100, 3480, 4020, 3860, 4610, 5150, 4880, 5340, 5900, 6100, 5700, 6300]
-      .slice(0, month + 1)
-      // The last two months are pinned to the tiles above, so the card and the chart agree.
-      .map((v, i, all) => ({
-        month: i + 1,
-        value: i === all.length - 1 ? 6420 : i === all.length - 2 ? 5810 : v,
-      })),
-    callOutcomesPerMonth: Array.from({ length: month + 1 }, (_, i) => ({
-      month: i + 1,
-      handled: seeded(i, 120, 190),
-      transferred: seeded(i + 2, 14, 34),
-      missed: seeded(i + 5, 3, 12),
-    })),
-    callsPerDay: days,
-    callsByHour: Array.from({ length: 24 }, (_, h) => ({
-      hour: h,
-      value: h < 8 || h > 19 ? seeded(h, 0, 2) : seeded(h, 8, 34),
-    })),
-    upcomingHolidays: [
-      { date: new Date(Date.now() + 9 * 864e5).toISOString().slice(0, 10), name: 'Staff training day', daysAway: 9, appointmentsBooked: 2 },
-      { date: new Date(Date.now() + 34 * 864e5).toISOString().slice(0, 10), name: 'Public holiday — closed', daysAway: 34, appointmentsBooked: 0 },
-    ],
-  }
-})()
+const NO_STATS = {
+  currency: 'USD',
+  callsPerMonth: [], bookingsPerMonth: [], revenuePerMonth: [],
+  callOutcomesPerMonth: [], callsPerDay: [], callsByHour: [], upcomingHolidays: [],
+}
 
 // ---------------------------------------------------------------------------
 // Shaping
@@ -136,21 +94,21 @@ function StatTile({ label, value, unit, footnote, delta, featured, to, children 
       featured ? 'bg-ink text-on-ink' : 'bg-card hover:shadow-md'
     }`}>
       <div className="flex items-start justify-between gap-2">
-        <p className={`text-[12px] font-medium ${featured ? 'opacity-70' : 'text-muted'}`}>{label}</p>
+        <p className={`text-xs font-medium ${featured ? 'opacity-70' : 'text-muted'}`}>{label}</p>
         {to && (
-          <span aria-hidden="true" className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] ${
+          <span aria-hidden="true" className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs ${
             featured ? 'bg-on-ink/15' : 'bg-panel text-ink-soft'
           }`}>↗</span>
         )}
       </div>
       <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5">
-        <span className="text-[27px] font-bold leading-none sm:text-[30px]">{value}</span>
-        {unit && <span className={`text-[12.5px] font-medium ${featured ? 'opacity-70' : 'text-muted'}`}>{unit}</span>}
+        <span className="text-2xl font-bold leading-none sm:text-3xl">{value}</span>
+        {unit && <span className={`text-sm font-medium ${featured ? 'opacity-70' : 'text-muted'}`}>{unit}</span>}
       </p>
       <div className="mt-3 flex-1">{children}</div>
       <div className="mt-3 min-h-[18px]">
         {delta !== undefined ? delta : (
-          <p className={`text-[11.5px] ${featured ? 'opacity-70' : 'text-muted'}`}>{footnote}</p>
+          <p className={`text-xs ${featured ? 'opacity-70' : 'text-muted'}`}>{footnote}</p>
         )}
       </div>
     </div>
@@ -162,9 +120,9 @@ function StatTile({ label, value, unit, footnote, delta, featured, to, children 
 function MiniStat({ label, value, hint }) {
   return (
     <div className="rounded-2xl bg-panel px-3.5 py-3">
-      <p className="text-[11px] font-medium text-muted">{label}</p>
-      <p className="mt-1 text-[17px] font-bold leading-none">{value}</p>
-      {hint && <p className="mt-1 text-[10.5px] text-muted">{hint}</p>}
+      <p className="text-xs font-medium text-muted">{label}</p>
+      <p className="mt-1 text-lg font-bold leading-none">{value}</p>
+      {hint && <p className="mt-1 text-2xs text-muted">{hint}</p>}
     </div>
   )
 }
@@ -182,7 +140,7 @@ export default function Dashboard() {
   const [callView, setCallView] = useState('chart')
   const [apptRange, setApptRange] = useState('today')
 
-  const { data: stats, isError } = useQuery({
+  const { data: stats, isError, isLoading, isPaused, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.get('/dashboard/stats').then(unwrap),
   })
@@ -212,9 +170,27 @@ export default function Dashboard() {
     queryFn: () => api.get('/retell/status').then(unwrap),
   })
 
-  const s = stats ?? DEMO_STATS
-  const isDemo = !stats
+  // Minutes come from the billing endpoint rather than the stats blob, on a short poll, so the
+  // allowance shown here is the same one the billing page shows and both move as calls land.
+  const { data: usage } = useUsage()
+
+  const s = stats ?? NO_STATS
   const cur = s.currency ?? 'USD'
+
+  /*
+    Why this is not just `isError`.
+
+    React Query does not fail a query when the browser is offline — it *pauses* it. The request is
+    never attempted, so status stays pending: isError is false, isLoading is false, and data is
+    undefined. Keying the warning off isError alone therefore produced the one outcome this page
+    must never have: a full screen of zeroes, with the standard heading above it, and nothing at
+    all to say the figures had not been loaded. A reader would take that as "no calls yet".
+
+    So the question asked is "is there anything to show", and the reason is reported separately.
+  */
+  const nothingToShow = !stats
+  const offline = nothingToShow && isPaused
+  const unreachable = nothingToShow && isError
 
   const days30 = useMemo(() => lastDays(s.callsPerDay, 30), [s.callsPerDay])
   const monthlyOutcomes = useMemo(() => monthsElapsed(s.callOutcomesPerMonth, 'handled'), [s.callOutcomesPerMonth])
@@ -241,12 +217,17 @@ export default function Dashboard() {
   )
   const callGrand = callTotals.reduce((a, b) => a + b, 0)
 
-  // Plan / talk time
-  const included = s.minutesIncluded ?? 0
-  const usedPeriod = s.minutesUsedThisPeriod ?? 0
+  // Plan / talk time. The polled figures lead; the stats blob is the fallback for the first paint
+  // and for a deployment where billing is not reachable.
+  const included = usage?.includedMinutes ?? s.minutesIncluded ?? 0
+  const usedPeriod = usage?.minutesUsed ?? s.minutesUsedThisPeriod ?? 0
   const remaining = Math.max(0, included - usedPeriod)
   const overBy = Math.max(0, usedPeriod - included)
-  const periodEnd = s.periodEnd ? new Date(s.periodEnd) : null
+  const periodEndRaw = usage?.periodEnd ?? s.periodEnd
+  const periodEnd = periodEndRaw ? new Date(periodEndRaw) : null
+  // The plan's name has to come from the same read as its minutes, or the card can end up saying
+  // "No plan on file" directly above an allowance it is showing.
+  const planName = (usage?.hasSubscription ? usage.planName : null) ?? s.planName
   const daysToRenew = periodEnd ? Math.max(0, Math.ceil((periodEnd - Date.now()) / 864e5)) : null
 
   const revenueTotal = revenueMonths.reduce((a, m) => a + m.value, 0)
@@ -266,15 +247,21 @@ export default function Dashboard() {
       {/* ---------------- header ---------------- */}
       <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3 sm:mb-6">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-bold leading-tight sm:text-[26px]">Dashboard</h1>
-          <p className="mt-1 text-[12.5px] text-muted sm:text-[13px]">
-            How your AI receptionist performed{isDemo ? ' — sample figures' : ''}.
+          <h1 className="font-display text-xl font-semibold leading-tight tracking-[-0.01em] sm:text-2xl">Dashboard</h1>
+          <p className="mt-1 text-sm text-muted sm:text-sm">
+            {offline
+              ? 'You appear to be offline, so these figures could not be loaded.'
+              : unreachable
+                ? 'These figures could not be loaded.'
+                : isLoading
+                  ? 'Loading your figures…'
+                  : 'How your AI receptionist performed.'}
           </p>
         </div>
         {/* Below sm the actions take the full row and share it evenly, rather than
             crowding into whatever space the title leaves. */}
         <div className="flex w-full flex-wrap items-center gap-2.5 sm:w-auto">
-          {isError && <Chip tone="red">Offline · sample data</Chip>}
+          {(offline || unreachable) && <Chip tone="red">{offline ? 'Offline' : 'Unavailable'}</Chip>}
           <form onSubmit={submitSearch}
             className="hidden items-center gap-2 rounded-pill bg-card px-4 py-2.5 shadow-sm lg:flex">
             <button type="submit" aria-label="Search customers" className="grid place-items-center">
@@ -283,7 +270,7 @@ export default function Dashboard() {
               </svg>
             </button>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search customers…"
-              className="w-32 bg-transparent text-[13px] outline-none placeholder:text-muted xl:w-36" />
+              className="w-32 bg-transparent text-sm outline-none placeholder:text-muted xl:w-36" />
           </form>
           <Link to="/calls" className="flex-1 sm:flex-none">
             <PillButton variant="outline" className="w-full sm:w-auto">View calls</PillButton>
@@ -296,6 +283,23 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/*
+        Said plainly, and only when it is true. The tiles below are showing nothing because there
+        is nothing to show them — never because something has been invented to fill them.
+      */}
+      {(offline || unreachable) && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-card bg-danger-soft px-4 py-3">
+          <p className="text-sm font-medium text-danger">
+            {offline
+              ? 'You are offline, so nothing below is filled in.'
+              : 'Your figures could not be loaded, so nothing below is filled in.'}{' '}
+            No data has been lost — the zeroes are this page having nothing to show, not your
+            account having nothing in it.
+          </p>
+          <PillButton variant="outline" onClick={() => refetch()}>Retry</PillButton>
+        </div>
+      )}
 
       {/* ---------------- KPI row ---------------- */}
       <div className="@2xl:grid-cols-2 @4xl:grid-cols-4 mb-4 grid grid-cols-1 gap-3.5 sm:mb-5 sm:gap-4">
@@ -351,7 +355,7 @@ export default function Dashboard() {
           to="/appointments?status=Completed"
           delta={<Delta value={pctChange(s.revenueThisMonth, s.revenueLastMonth)} since="vs last month" />}
         >
-          <p className="text-[11.5px] text-muted">
+          <p className="text-xs text-muted">
             {moneyExact(s.outstandingPayments ?? 0, cur)} still outstanding
           </p>
         </StatTile>
@@ -397,7 +401,7 @@ export default function Dashboard() {
             />
           ) : (
             <div className="max-h-[248px] overflow-auto rounded-2xl bg-panel">
-              <table className="w-full min-w-[24rem] text-[12px]">
+              <table className="w-full min-w-[24rem] text-xs">
                 <thead className="sticky top-0 bg-panel text-muted">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">{callRange === '12m' ? 'Month' : 'Day'}</th>
@@ -436,14 +440,14 @@ export default function Dashboard() {
         <Card className="flex flex-col">
           <CardTitle
             title="Talk-time balance"
-            subtitle={s.planName ? `${s.planName} plan · ${(s.billingCycle ?? 'Monthly').toLowerCase()}` : 'No plan on file'}
+            subtitle={planName ? `${planName} plan · ${(s.billingCycle ?? 'Monthly').toLowerCase()}` : 'No plan on file'}
           />
           {included > 0 ? (
             <>
               <GaugeMeter used={usedPeriod} allowance={included}
                 caption={`${fmtMinutes(usedPeriod)} of ${included.toLocaleString()} used`} />
               {overBy > 0 && (
-                <p className="mt-2 rounded-2xl bg-danger-soft px-3.5 py-2.5 text-[12px] font-medium text-danger">
+                <p className="mt-2 rounded-2xl bg-danger-soft px-3.5 py-2.5 text-xs font-medium text-danger">
                   ⚠ {fmtMinutes(overBy)} over the allowance this period.
                 </p>
               )}
@@ -453,13 +457,13 @@ export default function Dashboard() {
               caption="This plan is not metered on minutes" />
           )}
 
-          <dl className="mt-4 space-y-2.5 text-[12.5px]">
+          <dl className="mt-4 space-y-2.5 text-sm">
             <div className="flex items-center justify-between gap-3">
               <dt className="text-muted">Used today</dt>
               <dd className="font-semibold tabular-nums">{fmtMinutes(s.minutesUsedToday ?? 0)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <dt className="text-muted">{s.planName ? 'This period' : 'This month'}</dt>
+              <dt className="text-muted">{planName ? 'This period' : 'This month'}</dt>
               <dd className="font-semibold tabular-nums">{fmtMinutes(usedPeriod)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
@@ -468,7 +472,7 @@ export default function Dashboard() {
             </div>
             {/* Only meaningful with a plan behind it — without one the period is just
                 the calendar month the usage above is counted over. */}
-            {periodEnd && s.planName && (
+            {periodEnd && planName && (
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-muted">Period renews</dt>
                 <dd className="font-semibold">
@@ -500,18 +504,18 @@ export default function Dashboard() {
                   <div key={`${h.date}-${h.name}`}
                     className={`flex items-start gap-3.5 rounded-2xl p-3.5 ${next ? 'bg-cream' : 'bg-panel'}`}>
                     <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-card text-center leading-none shadow-sm">
-                      <span className="block text-[9.5px] font-semibold uppercase tracking-wide text-muted">
+                      <span className="block text-2xs font-semibold uppercase tracking-wide text-muted">
                         {MONTHS[date.getMonth()]}
                       </span>
-                      <span className="block text-[16px] font-bold">{date.getDate()}</span>
+                      <span className="block text-md font-bold">{date.getDate()}</span>
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-[13.5px] font-bold leading-snug">{h.name}</p>
-                      <p className="mt-0.5 text-[11.5px] text-ink-soft">
+                      <p className="text-base font-bold leading-snug">{h.name}</p>
+                      <p className="mt-0.5 text-xs text-ink-soft">
                         {date.toLocaleDateString(undefined, { weekday: 'long' })} · {whenLabel(h.daysAway)}
                       </p>
                       {h.appointmentsBooked > 0 && (
-                        <p className="mt-0.5 text-[11.5px] font-semibold text-danger">
+                        <p className="mt-0.5 text-xs font-semibold text-danger">
                           {h.appointmentsBooked} appointment{h.appointmentsBooked === 1 ? '' : 's'} still booked
                         </p>
                       )}
@@ -537,12 +541,12 @@ export default function Dashboard() {
             action={
               <div className="flex gap-5 sm:gap-6">
                 <div className="text-right">
-                  <p className="text-[11px] text-muted">Year to date</p>
-                  <p className="text-[15px] font-bold leading-tight sm:text-[17px]">{moneyExact(revenueTotal, cur)}</p>
+                  <p className="text-xs text-muted">Year to date</p>
+                  <p className="text-md font-bold leading-tight sm:text-lg">{moneyExact(revenueTotal, cur)}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-[11px] text-muted">Best month</p>
-                  <p className="text-[15px] font-bold leading-tight sm:text-[17px]">
+                  <p className="text-xs text-muted">Best month</p>
+                  <p className="text-md font-bold leading-tight sm:text-lg">
                     {bestMonth && bestMonth.value > 0 ? MONTHS[bestMonth.month - 1] : '—'}
                   </p>
                 </div>
@@ -584,10 +588,10 @@ export default function Dashboard() {
                 className="flex items-center gap-4 rounded-2xl bg-panel p-3.5 transition hover:bg-lavender">
                 <Avatar name={a.customerName ?? '?'} tone={i % 2 ? 'mint' : 'cream'} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[14px] font-bold">{a.serviceName ?? 'Appointment'}</p>
-                  <p className="text-[12px] font-medium text-ink-soft">{fmtTime(a.startAt)} – {fmtTime(a.endAt)}</p>
-                  <p className="truncate text-[11.5px] text-muted">{a.customerName} · {a.customerPhone}</p>
-                  {a.serviceAddress && <p className="truncate text-[11.5px] text-muted">📍 {a.serviceAddress}</p>}
+                  <p className="truncate text-base font-bold">{a.serviceName ?? 'Appointment'}</p>
+                  <p className="text-xs font-medium text-ink-soft">{fmtTime(a.startAt)} – {fmtTime(a.endAt)}</p>
+                  <p className="truncate text-xs text-muted">{a.customerName} · {a.customerPhone}</p>
+                  {a.serviceAddress && <p className="truncate text-xs text-muted">📍 {a.serviceAddress}</p>}
                 </div>
                 <Chip tone={statusTone(a.status)}>{a.status}</Chip>
               </Link>
@@ -617,8 +621,8 @@ export default function Dashboard() {
               <Link to="/settings" className="flex items-center gap-3 rounded-2xl bg-lavender p-3.5 transition hover:brightness-95">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-sm text-on-ink">☎</span>
                 <div className="min-w-0">
-                  <p className="text-[13.5px] font-bold">Retell AI</p>
-                  <p className="truncate text-[11.5px] text-ink-soft">
+                  <p className="text-base font-bold">Retell AI</p>
+                  <p className="truncate text-xs text-ink-soft">
                     {retell?.connected
                       ? `Connected · ${retell.retellPhoneNumber ?? 'answering calls'}`
                       : retell?.apiKeyConfigured
@@ -630,15 +634,15 @@ export default function Dashboard() {
               <Link to="/knowledge-base" className="flex items-center gap-3 rounded-2xl bg-mint p-3.5 transition hover:brightness-95">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-sm text-on-ink">📚</span>
                 <div>
-                  <p className="text-[13.5px] font-bold">Knowledge base</p>
-                  <p className="text-[11.5px] text-ink-soft">{kb?.length ?? 0} entries feeding the AI</p>
+                  <p className="text-base font-bold">Knowledge base</p>
+                  <p className="text-xs text-ink-soft">{kb?.length ?? 0} entries feeding the AI</p>
                 </div>
               </Link>
               <Link to="/customers" className="flex items-center gap-3 rounded-2xl bg-cream p-3.5 transition hover:brightness-95">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-sm text-on-ink">★</span>
                 <div>
-                  <p className="text-[13.5px] font-bold">Returning customers</p>
-                  <p className="text-[11.5px] text-ink-soft">{s.returningCustomers ?? 0} have called more than once</p>
+                  <p className="text-base font-bold">Returning customers</p>
+                  <p className="text-xs text-ink-soft">{s.returningCustomers ?? 0} have called more than once</p>
                 </div>
               </Link>
             </div>

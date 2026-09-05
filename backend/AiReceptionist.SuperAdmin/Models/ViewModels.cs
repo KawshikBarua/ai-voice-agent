@@ -178,12 +178,121 @@ public class OrganizationDetailViewModel
         Enumerable.Range(1, 12).Select(m => CallsPerMonth.FirstOrDefault(p => p.Month == m)?.Value ?? 0);
 }
 
+/// <summary>One tenant sign-in account, as listed in the console.</summary>
+public class UserAccountRow
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    public string OrganizationName { get; set; } = "";
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Role { get; set; } = "";
+    public bool EmailVerified { get; set; }
+    public DateTime CreatedAt { get; set; }
+
+    /// <summary>A disabled organization refuses sign-in for every account on it, so an account can
+    /// be perfectly valid and still unable to get in. The list says so rather than leaving an
+    /// operator to wonder why the credentials they just issued do not work.</summary>
+    public bool OrganizationActive { get; set; }
+}
+
+/// <summary>An organization as offered in the "attach to" picker.</summary>
+public class OrganizationOption
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public bool IsActive { get; set; }
+    public int UserCount { get; set; }
+}
+
+/// <summary>
+/// The roles the console may assign.
+///
+/// These strings must match <c>AiReceptionist.Api.Domain.Roles</c>, which is what the tenant API
+/// authorizes against — a value not in that set would produce an account that signs in and can do
+/// nothing. SuperAdmin is deliberately absent: this screen creates a customer's login against
+/// their organization, and minting a platform operator is a different act that should not be one
+/// wrong entry in a dropdown away.
+/// </summary>
+public static class AccountRoles
+{
+    public const string OrgAdmin = "OrgAdmin";
+
+    public static readonly (string Value, string Label, string Detail)[] Assignable =
+    [
+        (OrgAdmin, "Owner / admin", "Full access, including billing, settings and the AI agent."),
+        ("Manager", "Manager", "Everything day-to-day, plus the catalogue, knowledge base and billing."),
+        ("Receptionist", "Receptionist", "Appointments, customers and calls. No settings or billing."),
+        ("ReadOnly", "Read only", "Can look at everything and change nothing."),
+    ];
+
+    public static bool IsAssignable(string? role) =>
+        Assignable.Any(r => string.Equals(r.Value, role, StringComparison.Ordinal));
+
+    public static string Label(string? role) =>
+        Assignable.FirstOrDefault(r => string.Equals(r.Value, role, StringComparison.Ordinal)).Label
+        ?? role ?? "";
+}
+
+public class UserAccountListViewModel
+{
+    public IReadOnlyList<UserAccountRow> Accounts { get; set; } = [];
+    public string? Search { get; set; }
+    /// <summary>Set when the list has been narrowed to one organization.</summary>
+    public OrganizationOption? Organization { get; set; }
+}
+
+public class NewAccountViewModel
+{
+    public NewAccountInput Input { get; set; } = new();
+    public IReadOnlyList<OrganizationOption> Organizations { get; set; } = [];
+
+    /// <summary>Field-level complaints, keyed by input name, so the form can redraw with the
+    /// operator's typing intact rather than throwing it away over one bad field.</summary>
+    public IReadOnlyDictionary<string, string> Errors { get; set; } =
+        new Dictionary<string, string>();
+
+    public string? Error(string field) => Errors.TryGetValue(field, out var m) ? m : null;
+
+    /// <summary>No organizations at all means the picker has nothing to offer, so the form opens
+    /// on "create one" and does not pretend otherwise.</summary>
+    public bool CanUseExisting => Organizations.Count > 0;
+}
+
 // ---------- form inputs ----------
 
 public class LoginInput
 {
     public string Email { get; set; } = "";
     public string Password { get; set; } = "";
+}
+
+/// <summary>A sign-in credential being issued against an organization — one that already exists,
+/// or one being created in the same step.</summary>
+public class NewAccountInput
+{
+    /// <summary>existing | new</summary>
+    public string OrganizationMode { get; set; } = ModeExisting;
+
+    public const string ModeExisting = "existing";
+    public const string ModeNew = "new";
+
+    public bool IsNewOrganization =>
+        string.Equals(OrganizationMode, ModeNew, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Which organization to attach to, when one is being picked.</summary>
+    public int? OrganizationId { get; set; }
+
+    public string? OrganizationName { get; set; }
+    public string? OrganizationIndustry { get; set; }
+    public string? OrganizationPhone { get; set; }
+    public string? OrganizationEmail { get; set; }
+
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Password { get; set; } = "";
+    public string ConfirmPassword { get; set; } = "";
+    public string Role { get; set; } = AccountRoles.OrgAdmin;
 }
 
 public class RetellConnectionInput

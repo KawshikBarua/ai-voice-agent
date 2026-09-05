@@ -48,6 +48,13 @@ public class SettingsController : ControllerBase
         if (!string.IsNullOrWhiteSpace(org.BusinessHoursJson) && !IsJsonObject(org.BusinessHoursJson))
             return BadRequest(ApiResponse<object>.Fail("Business hours are not in a valid format."));
 
+        // An id nothing can resolve is stored happily and then read back as UTC everywhere, so the
+        // agent quotes shifted times and dates with no sign anything is wrong. Refuse it here.
+        if (!TenantTime.IsKnown(org.Timezone))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"'{org.Timezone}' is not a timezone this server knows. Use an IANA id such as " +
+                "America/New_York or Asia/Dhaka."));
+
         await _settings.UpdateOrganizationAsync(org);
         await _audit.LogAsync(_tenant.OrganizationId, _tenant.UserId, "OrganizationSettingsUpdated");
         _retellSync.Enqueue(_tenant.OrganizationId);
@@ -111,6 +118,11 @@ public class SettingsController : ControllerBase
     public async Task<IActionResult> UpdateAgent(AgentConfig config)
     {
         config.OrganizationId = _tenant.OrganizationId;
+
+        // Settled here, not only on sync, so what the tenant sees back is what their callers will
+        // actually hear. A voice outside the platform set would lose expressive mode, so the
+        // nearest one by name is stored instead.
+        config.Voice = RetellVoices.Resolve(config.Voice);
 
         var existing = await _settings.GetAgentConfigAsync(_tenant.OrganizationId);
 

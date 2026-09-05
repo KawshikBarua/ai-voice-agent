@@ -241,7 +241,7 @@ public class AgentConfig
 {
     public int Id { get; set; }
     public int OrganizationId { get; set; }
-    public string Voice { get; set; } = "nova";
+    public string Voice { get; set; } = RetellVoices.Default.Id;
     public string Language { get; set; } = "en-US";
     public string Greeting { get; set; } = "";
     public string? TransferNumber { get; set; }

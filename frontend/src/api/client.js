@@ -107,5 +107,26 @@ api.interceptors.response.use(
   },
 )
 
+/**
+ * Signs out for real: revokes the refresh token server-side and clears its cookie, then drops
+ * every trace of the account from this tab.
+ *
+ * Clearing local state alone is not a sign-out — the refresh cookie survives it, so the next
+ * reload trades it for a fresh token and silently signs the same user back in.
+ *
+ * The local half runs even when the call fails (offline, expired token). Leaving someone
+ * apparently signed in because the network was down is the worse outcome; the token they keep
+ * is one the server will still honour, which is why the request is attempted first.
+ */
+export const signOut = async () => {
+  try {
+    await api.post('/auth/logout', {})
+  } catch {
+    /* already expired, or offline — the local clear below still has to happen */
+  } finally {
+    useAuthStore.getState().logout()
+  }
+}
+
 /** Unwraps the standardized ApiResponse envelope. */
 export const unwrap = (res) => res.data.data

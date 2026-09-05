@@ -211,12 +211,15 @@ function FloatingProps() {
 function Field({ label, hint, ...rest }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex items-center justify-between text-[12.5px] font-semibold text-ink">
+      <span className="mb-1.5 flex items-center justify-between text-sm font-semibold text-ink">
         {label}
         {hint}
       </span>
       <input
-        className="w-full rounded-2xl border border-white/70 bg-white/60 px-4 py-3.5 text-[14px] text-ink shadow-[0_1px_2px_rgba(16,24,40,0.04)] outline-none backdrop-blur transition placeholder:text-muted focus:border-ink/30 focus:bg-white focus:ring-4 focus:ring-ink/5"
+        /* No `outline-none` here: that removed the only keyboard-focus cue the field had.
+           The hover/focus border shift below is the pointer affordance, and the global
+           :focus-visible ring in index.css handles keyboard focus on top of it. */
+        className="w-full rounded-2xl border border-line bg-card/60 px-4 py-3.5 text-base text-ink shadow-[0_1px_2px_rgba(16,24,40,0.04)] backdrop-blur transition placeholder:text-muted focus:border-brand/50 focus:bg-card"
         {...rest}
       />
     </label>
@@ -261,7 +264,7 @@ export default function Login() {
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: 'easeOut' }}
-        className="relative flex w-full max-w-[1440px] flex-col overflow-hidden rounded-[24px] border border-white/60 bg-white/55 p-3 shadow-[0_30px_80px_-20px_rgba(16,24,40,0.25)] backdrop-blur-2xl lg:h-[85vh] lg:min-h-[600px] lg:w-[90vw] lg:flex-row lg:p-4"
+        className="relative flex w-full max-w-[1440px] flex-col overflow-hidden rounded-[24px] border border-line/60 bg-card/55 p-3 shadow-[0_30px_80px_-20px_rgba(16,24,40,0.25)] backdrop-blur-2xl lg:h-[85vh] lg:min-h-[600px] lg:w-[90vw] lg:flex-row lg:p-4"
       >
         {/* ── Left: login form ─────────────────────────────────────── */}
         <div className="flex w-full flex-col overflow-y-auto px-4 pb-4 pt-[30px] sm:px-8 lg:w-[45%] lg:px-12">
@@ -270,8 +273,8 @@ export default function Login() {
           </div>
 
           <div className="my-auto w-full max-w-[400px] py-10">
-            <h1 className="font-display text-[36px] font-bold leading-[1.15] text-[#111111]">Login to Frontly!</h1>
-            <p className="mt-2 text-[14px] text-[#777]">Please enter log in details below</p>
+            <h1 className="font-display text-4xl font-bold leading-[1.15] text-ink">Login to Frontly!</h1>
+            <p className="mt-2 text-base text-muted">Please enter log in details below</p>
 
             <form onSubmit={submit} className="mt-8 space-y-4">
               <Field
@@ -298,41 +301,41 @@ export default function Login() {
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-4 top-[38px] text-[12px] font-semibold text-muted transition hover:text-ink"
+                  className="absolute right-4 top-[38px] text-xs font-semibold text-muted transition hover:text-ink"
                 >
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
 
               <div className="flex items-center justify-between pt-1">
-                <label className="flex items-center gap-2 text-[12.5px] text-ink-soft">
-                  <input type="checkbox" className="h-4 w-4 rounded border-line accent-[#111111]" defaultChecked />
+                <label className="flex items-center gap-2 text-sm text-ink-soft">
+                  <input type="checkbox" className="h-4 w-4 rounded border-line accent-[var(--color-brand-strong)]" defaultChecked />
                   Keep me signed in
                 </label>
                
               </div>
 
               {error && (
-                <p className="rounded-2xl bg-red-100/80 px-4 py-2.5 text-[12.5px] font-medium text-red-700">{error}</p>
+                <p className="rounded-2xl bg-red-100/80 px-4 py-2.5 text-sm font-medium text-red-700">{error}</p>
               )}
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full rounded-2xl bg-[#111111] py-3.5 text-[14px] font-semibold text-white shadow-[0_10px_24px_-10px_rgba(17,17,17,0.9)] transition hover:opacity-90 disabled:opacity-60"
+                className="w-full rounded-2xl bg-brand-strong py-3.5 text-base font-semibold text-on-brand shadow-[0_10px_24px_-12px_var(--color-brand-strong)] transition hover:opacity-90 disabled:opacity-60"
               >
                 {loading ? 'Signing in…' : 'Sign in'}
               </button>
 
-              <p className="pt-1 text-center text-[11.5px] text-muted">
-                Demo credentials are pre-filled (seeded by the backend).
-              </p>
             </form>
           </div>
         </div>
 
         {/* ── Right: promotional hero ──────────────────────────────── */}
-        <div className="relative hidden w-[55%] overflow-hidden rounded-[28px] bg-[#161616] lg:block">
+        {/* Deliberately dark in both themes — it is a promo panel, not a surface. The
+            charcoal carries a little of the brand teal so it sits with the logo above it
+            rather than reading as a neutral black rectangle. */}
+        <div className="relative hidden w-[55%] overflow-hidden rounded-[28px] bg-[#0e2229] lg:block">
           <HeroPattern />
           <FloatingProps />
 
@@ -341,10 +344,10 @@ export default function Login() {
               <HeroCharacter />
             </div>
             <div className="px-12 pb-10 text-center">
-              <h2 className="font-display text-[28px] font-bold leading-tight text-white">
+              <h2 className="font-display text-3xl font-bold leading-tight text-white">
                 Never miss another call.
               </h2>
-              <p className="mx-auto mt-2.5 max-w-[420px] text-[13.5px] leading-relaxed text-white/55">
+              <p className="mx-auto mt-2.5 max-w-[420px] text-base leading-relaxed text-white/55">
                 Your AI receptionist answers, books and follows up — around the clock, in your brand's voice.
               </p>
               <div className="mt-6 flex items-center justify-center gap-2">

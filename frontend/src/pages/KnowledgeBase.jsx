@@ -41,12 +41,12 @@ export default function KnowledgeBase() {
     },
   })
 
-  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-[13.5px] outline-none focus:border-ink'
+  const input = 'w-full rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[26px] font-bold">Knowledge Base</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Knowledge Base</h1>
         <div className="flex gap-2">
           <PillButton variant="outline" onClick={() => setShowPrompt((v) => !v)}>
             {showPrompt ? 'Hide final prompt' : 'Preview final AI prompt'}
@@ -55,7 +55,7 @@ export default function KnowledgeBase() {
         </div>
       </div>
 
-      <p className="mb-5 max-w-2xl text-[13px] text-ink-soft">
+      <p className="mb-5 max-w-2xl text-sm text-ink-soft">
         Frontly answers using this knowledge. The core AI instructions are managed by the
         platform and cannot be edited — only your business-specific entries below are used to build the final prompt.
       </p>
@@ -74,27 +74,27 @@ export default function KnowledgeBase() {
               )
             }
           />
-          <p className="mb-3 text-[12px] text-muted">
+          <p className="mb-3 text-xs text-muted">
             Rules, conversation flow and business details stay in the <strong>system prompt</strong> (sent on
             every turn). Catalogues, FAQs and policies go to Retell's <strong>knowledge base</strong>, which the
             AI searches only when it needs them — keeping calls fast and cheap.
           </p>
 
-          <p className="mb-1.5 text-[12px] font-semibold text-ink-soft">System prompt</p>
-          <pre className="mb-4 max-h-80 overflow-auto whitespace-pre-wrap rounded-2xl bg-panel p-4 text-[12px] leading-relaxed text-ink-soft">
+          <p className="mb-1.5 text-xs font-semibold text-ink-soft">System prompt</p>
+          <pre className="mb-4 max-h-80 overflow-auto whitespace-pre-wrap rounded-2xl bg-panel p-4 text-xs leading-relaxed text-ink-soft">
             {finalPrompt?.prompt ?? 'Loading…'}
           </pre>
 
-          <p className="mb-1.5 text-[12px] font-semibold text-ink-soft">
+          <p className="mb-1.5 text-xs font-semibold text-ink-soft">
             Knowledge base documents ({finalPrompt?.knowledgeDocuments?.length ?? 0})
           </p>
           <div className="space-y-2">
             {finalPrompt?.knowledgeDocuments?.map((d) => (
               <details key={d.title} className="rounded-2xl bg-panel p-3.5">
-                <summary className="cursor-pointer text-[13px] font-semibold">
+                <summary className="cursor-pointer text-sm font-semibold">
                   {d.title} <span className="font-normal text-muted">· {d.characters.toLocaleString()} chars</span>
                 </summary>
-                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-[12px] leading-relaxed text-ink-soft">
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-ink-soft">
                   {d.text}
                 </pre>
               </details>
@@ -135,13 +135,13 @@ export default function KnowledgeBase() {
               <div className="min-w-0 flex-1">
                 <div className="mb-1 flex items-center gap-2">
                   <Chip tone={CATEGORY_TONES[e.category] ?? 'lavender'}>{e.category}</Chip>
-                  <p className="text-[14px] font-bold">{e.title}</p>
+                  <p className="text-base font-bold">{e.title}</p>
                 </div>
-                <p className="text-[12.5px] text-ink-soft">{e.content}</p>
+                <p className="text-sm text-ink-soft">{e.content}</p>
               </div>
               <button
                 onClick={() => remove.mutate(e.id)}
-                className="rounded-pill px-3 py-1 text-[11.5px] font-semibold text-danger hover:bg-danger-soft"
+                className="rounded-pill px-3 py-1 text-xs font-semibold text-danger hover:bg-danger-soft"
               >
                 Delete
               </button>

@@ -132,7 +132,7 @@ public static class DbInitializer
             (@orgId, 'EmergencyRule', 'Emergencies', 'For medical emergencies, always advise the caller to hang up and dial 911.', 4);
 
             INSERT INTO AgentConfig (OrganizationId, Voice, Language, Greeting, TransferNumber, Enabled, EnabledToolsJson) VALUES
-            (@orgId, 'nova', 'en-US',
+            (@orgId, 'retell-Grace', 'en-US',
              N'Hi, thanks for calling Demo Clinic — you''re through to our AI assistant. How can I help?',
              '+1 555 010 0199', 1, '[""book_appointment"",""cancel_appointment"",""reschedule_appointment"",""quote_price"",""transfer_call""]');",
             new { orgId });
@@ -413,7 +413,7 @@ IF OBJECT_ID('AgentConfig') IS NULL
 CREATE TABLE AgentConfig (
     Id INT IDENTITY PRIMARY KEY,
     OrganizationId INT NOT NULL UNIQUE REFERENCES Organizations(Id),
-    Voice NVARCHAR(100) NOT NULL DEFAULT 'nova',
+    Voice NVARCHAR(100) NOT NULL DEFAULT 'retell-Grace',
     Language NVARCHAR(20) NOT NULL DEFAULT 'en-US',
     Greeting NVARCHAR(1000) NOT NULL DEFAULT '',
     TransferNumber NVARCHAR(50) NULL,

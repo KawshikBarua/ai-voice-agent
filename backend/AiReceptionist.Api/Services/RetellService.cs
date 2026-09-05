@@ -60,6 +60,11 @@ public class RetellService : IRetellService
     private readonly ICustomerRepository _customers;
     private readonly ILogger<RetellService> _logger;
 
+    /// <summary>The model behind every tenant's agent. Sent on every sync rather than left to
+    /// Retell's account default, so the model a tenant is answered by is decided here and moves
+    /// for everyone at once — and so a change to the Retell account cannot quietly alter it.</summary>
+    private const string LlmModel = "gemini-3.0-flash";
+
     // Loaded per operation from the centralized platform connection (DB, config fallback).
     private string? _apiKey;
     private string _apiBaseUrl = "https://api.retellai.com";
@@ -165,6 +170,7 @@ public class RetellService : IRetellService
             // 2) Create or update the Retell LLM (prompt + tools + knowledge base)
             var llmPayload = new
             {
+                model = LlmModel,
                 general_prompt = prompt,
                 begin_message = string.IsNullOrWhiteSpace(agent.Greeting) ? null : agent.Greeting,
                 general_tools = BuildTools(orgId, agent.TransferNumber, IndustryTemplates.Resolve(org.Industry)),
@@ -191,6 +197,12 @@ public class RetellService : IRetellService
                 language = string.IsNullOrWhiteSpace(agent.Language) ? "en-US" : agent.Language,
                 response_engine = new { type = "retell-llm", llm_id = agent.RetellLlmId },
                 webhook_url = $"{PublicBaseUrl}/api/v1/webhooks/retell",
+
+                // On for every tenant, not a per-account option: it lets the agent colour what it
+                // says — a sigh, a beat before bad news, warmth on a greeting — which is most of
+                // what separates a receptionist from a recording. Retell only honours it for its
+                // own platform voices, which is why MapVoice never returns anything else.
+                enable_expressive_mode = true,
             };
 
             agent.RetellAgentId = await UpsertRemoteAsync(agent.RetellAgentId, "/update-agent",
@@ -436,11 +448,10 @@ public class RetellService : IRetellService
             return $"{wanted} is not on the connected Retell account. Buy or import it in the Retell " +
                    "dashboard first, then sync again.";
 
-        if (target.InboundAgentId == agent.RetellAgentId) return null;
-
         // The Retell account is shared by every tenant, so a number could already be answering for
         // someone else. Never take it: that would silently reroute another organization's calls.
-        if (!string.IsNullOrWhiteSpace(target.InboundAgentId))
+        var alreadyOurs = target.InboundAgentId == agent.RetellAgentId;
+        if (!alreadyOurs && !string.IsNullOrWhiteSpace(target.InboundAgentId))
         {
             var owner = await _settings.GetAgentConfigByRetellAgentIdAsync(target.InboundAgentId);
             if (owner is not null && owner.OrganizationId != agent.OrganizationId)
@@ -448,8 +459,12 @@ public class RetellService : IRetellService
                        "and was left untouched.";
         }
 
+        // Sent even when the number already points at this agent: the same call registers the
+        // inbound-call webhook, and numbers bound before that existed would otherwise never get it.
         await UpdateInboundAgentAsync(wanted, agent.RetellAgentId, ct);
-        _logger.LogInformation("Retell number {Phone} now routes to org {OrgId}'s agent {AgentId}",
+        _logger.LogInformation(alreadyOurs
+                ? "Retell number {Phone} still routes to org {OrgId}'s agent {AgentId}; inbound webhook refreshed"
+                : "Retell number {Phone} now routes to org {OrgId}'s agent {AgentId}",
             wanted, agent.OrganizationId, agent.RetellAgentId);
         return null;
     }
@@ -480,7 +495,10 @@ public class RetellService : IRetellService
         return numbers;
     }
 
-    /// <summary>Sets (or clears, with a null agent id) which agent answers calls to a number.</summary>
+    /// <summary>Sets (or clears, with a null agent id) which agent answers calls to a number, and
+    /// points the number at our inbound-call webhook. That webhook is what tells the agent the
+    /// current date and time in this tenant's timezone at the moment the call is answered, so it is
+    /// registered on the number itself rather than left to the operator to set in the dashboard.</summary>
     private async Task UpdateInboundAgentAsync(string e164, string? inboundAgentId, CancellationToken ct)
     {
         // Every caller reaches this through PhoneUtil.ToE164, so e164 is '+' plus digits only and
@@ -488,8 +506,12 @@ public class RetellService : IRetellService
         // The body is written by hand because the shared JsonOpts omits nulls, while clearing the
         // agent depends on sending an explicit null.
         var json = inboundAgentId is null
-            ? """{"inbound_agent_id":null}"""
-            : JsonSerializer.Serialize(new { inbound_agent_id = inboundAgentId });
+            ? """{"inbound_agent_id":null,"inbound_webhook_url":null}"""
+            : JsonSerializer.Serialize(new
+            {
+                inbound_agent_id = inboundAgentId,
+                inbound_webhook_url = $"{PublicBaseUrl}/api/v1/webhooks/retell/inbound",
+            });
 
         var request = new HttpRequestMessage(HttpMethod.Patch, $"/update-phone-number/{e164}")
         {
@@ -598,20 +620,11 @@ public class RetellService : IRetellService
             : throw new InvalidOperationException($"Retell API response missing {idField}: {body}");
     }
 
-    /// <summary>Maps friendly voice names (stored before the integration) to Retell voice ids.
-    /// Values already in Retell's provider-prefixed format pass through unchanged.</summary>
-    private string MapVoice(string? voice)
-    {
-        if (!string.IsNullOrWhiteSpace(voice) && voice.Contains('-')) return voice;
-        return voice?.ToLowerInvariant() switch
-        {
-            "nova" => "openai-Nova",
-            "alloy" => "openai-Alloy",
-            "shimmer" => "openai-Shimmer",
-            "echo" => "openai-Echo",
-            _ => string.IsNullOrWhiteSpace(_defaultVoiceId) ? "11labs-Adrian" : _defaultVoiceId,
-        };
-    }
+    /// <summary>Settles a tenant's stored voice onto one of the platform voices this product
+    /// offers, falling back to the operator's default. Everything the agent is given has to come
+    /// from that set: expressive mode is only honoured for platform voices, so a voice from any
+    /// other provider would take it away without saying so.</summary>
+    private string MapVoice(string? voice) => RetellVoices.Resolve(voice, _defaultVoiceId);
 
     private List<object> BuildTools(int orgId, string? transferNumber, IndustryProfile profile)
     {
@@ -674,7 +687,11 @@ public class RetellService : IRetellService
                     name = str("Caller full name"),
                     phone = str("Caller phone number"),
                     service = str("Requested service name"),
-                    start_time = str("Confirmed start date-time in ISO 8601 format, e.g. 2026-07-20T14:00:00"),
+                    date = str("The day being booked, exactly as the caller put it ('tomorrow', 'next Friday') " +
+                               "or the date check_availability returned. Always send this — it decides the day, " +
+                               "so you never have to work one out yourself."),
+                    start_time = str("Confirmed start date-time in ISO 8601 format, e.g. 2026-07-20T14:00:00. " +
+                                     "Only the time of day is taken from this when 'date' is given."),
                     service_address = str("Full address where the work will be carried out, including city and any access details (apartment, gate code). Required for on-site trades."),
                     is_emergency = str("'true' if the caller describes an urgent or emergency situation, otherwise 'false'"),
                     notes = str("Description of the problem or any other relevant detail"),
@@ -699,8 +716,12 @@ public class RetellService : IRetellService
                 {
                     phone = str("Caller phone number"),
                     name = str("Caller full name, used to verify identity"),
-                    new_time = str("New start date-time in ISO 8601 format"),
-                    date = str("Optional current appointment date YYYY-MM-DD if the caller has several"),
+                    new_date = str("The day they are moving to, exactly as the caller put it ('tomorrow', " +
+                                   "'next Friday') or the date check_availability returned. Always send this — " +
+                                   "it decides the day, so you never have to work one out yourself."),
+                    new_time = str("New start date-time in ISO 8601 format. Only the time of day is taken " +
+                                   "from this when 'new_date' is given."),
+                    date = str("Optional CURRENT appointment date YYYY-MM-DD, only to tell apart several bookings"),
                     service = str("Optional service name if the caller has several appointments"),
                 },
                 ["phone", "name", "new_time"]),

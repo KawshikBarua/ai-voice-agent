@@ -11,6 +11,10 @@ public record CheckoutRequest(int? PlanId);
 
 public record ChangePlanRequest(int PlanId);
 
+/// <summary>The Checkout session the customer has just come back from, named by the id Stripe put
+/// on the return URL.</summary>
+public record ConfirmCheckoutRequest(string SessionId);
+
 /// <summary>
 /// What a customer can see and do about their own bill: what they are on, what they have used,
 /// what the next invoice is shaping up to be and why, and what they were charged before.
@@ -48,6 +52,53 @@ public class BillingController : ControllerBase
     [HttpGet("summary")]
     public async Task<IActionResult> Summary(CancellationToken ct) =>
         Ok(ApiResponse<BillingSummary>.Ok(await _billing.GetSummaryAsync(_tenant.OrganizationId, ct)));
+
+    /// <summary>
+    /// Minutes as they stand right now — the one endpoint the pages poll.
+    ///
+    /// Separate from <see cref="Summary"/> because that closes elapsed periods and reads invoice
+    /// history, which is far too much to run every few seconds. Both are measured over the same
+    /// usage window, so the live number and the billed one can never drift apart.
+    /// </summary>
+    [HttpGet("usage")]
+    public async Task<IActionResult> Usage(CancellationToken ct) =>
+        Ok(ApiResponse<UsageSnapshot>.Ok(await _billing.GetUsageAsync(_tenant.OrganizationId, ct)));
+
+    /// <summary>
+    /// Applies the purchase the customer has just made, from the session id Stripe hands back.
+    ///
+    /// The webhook does this too, and whichever lands first wins — but the webhook cannot be relied
+    /// on to be the one the *customer* is waiting for. It needs a publicly reachable endpoint and a
+    /// matching signing secret, and where either is missing the payment goes through while the
+    /// billing page keeps saying no plan is set up. This closes that gap for the person actually
+    /// standing there: Stripe is asked directly, on their return, before the page redraws.
+    /// </summary>
+    [HttpPost("confirm-checkout")]
+    [Authorize(Roles = $"{Roles.OrgAdmin},{Roles.Manager}")]
+    public async Task<IActionResult> ConfirmCheckout(ConfirmCheckoutRequest request, CancellationToken ct)
+    {
+        if (!_stripe.IsConfigured)
+            return BadRequest(ApiResponse<object>.Fail("Online payment is not set up on this platform."));
+
+        if (string.IsNullOrWhiteSpace(request.SessionId))
+            return BadRequest(ApiResponse<object>.Fail("No payment was named to confirm."));
+
+        var session = await _stripe.GetCheckoutSessionAsync(request.SessionId.Trim(), ct);
+        if (session is null)
+            return BadRequest(ApiResponse<object>.Fail(
+                "That payment could not be found. If you were charged, it will appear here shortly."));
+
+        // The tenant is passed in, so a session id lifted from someone else's URL cannot be used to
+        // apply their purchase to this account.
+        var outcome = await _billing.ApplyCheckoutSessionAsync(session, _tenant.OrganizationId, ct);
+
+        if (!outcome.Applied)
+            return BadRequest(ApiResponse<object>.Fail(
+                outcome.Problem ?? "That payment could not be confirmed."));
+
+        return Ok(ApiResponse<object>.Ok(new { confirmed = true },
+            "Your plan is active. Your included minutes are available now."));
+    }
 
     /// <summary>The periods that have closed, oldest charge explained the same way as the newest.</summary>
     [HttpGet("periods")]
@@ -124,7 +175,14 @@ public class BillingController : ControllerBase
 
         // Stored before Checkout, not after: if the customer completes payment and the webhook
         // arrives before anything else, the linkage has to already exist to be found.
-        if (sub is not null && !string.Equals(sub.StripeCustomerId, customerId, StringComparison.Ordinal))
+        //
+        // Unconditionally, including for an organization that has never been on a plan. This used
+        // to be skipped when there was no subscription row — precisely the first-time customer
+        // this endpoint exists for — which left them with no stored Stripe customer at all: every
+        // retry of Checkout minted another Stripe customer, and an invoice.paid arriving before
+        // checkout.session.completed could not be matched back to them. The write now creates the
+        // row if it has to (see SetStripeCustomerAsync).
+        if (!string.Equals(sub?.StripeCustomerId, customerId, StringComparison.Ordinal))
             await _repo.SetStripeCustomerAsync(orgId, customerId);
 
         var url = await _stripe.CreateCheckoutSessionAsync(orgId, plan.Id, customerId, plan.StripePriceId!, ct);

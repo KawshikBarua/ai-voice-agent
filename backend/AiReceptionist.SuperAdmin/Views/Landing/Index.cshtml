@@ -1,0 +1,224 @@
+@model LandingContentInput
+@{
+    ViewData["Title"] = "Landing page";
+}
+
+@functions {
+    // A slider plus a live readout. The range input carries the value on its own, so the form
+    // still posts correctly with scripting off; the <output> is decoration that fills in when
+    // the enhancement script runs.
+    static string Step(double value) => value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+}
+
+<div class="page-head">
+    <div>
+        <h1>Landing page</h1>
+        <p>
+            The public marketing site — its opening words, the 3D sculpture behind them and the
+            heading above the demo form. The site reads these values directly and re-checks every
+            few seconds, so a save reaches anyone with the page open without a deploy or a restart.
+        </p>
+    </div>
+</div>
+
+<form method="post" asp-action="Save">
+    @Html.AntiForgeryToken()
+
+    <div class="grid two">
+        <div class="card">
+            <h2>Hero</h2>
+            <p class="sub">The first screen a visitor sees.</p>
+
+            <div class="field">
+                <label for="HeroEyebrow">Eyebrow</label>
+                <input type="text" id="HeroEyebrow" name="HeroEyebrow" maxlength="80"
+                       value="@Model.HeroEyebrow" />
+                <div class="help">The small tag above the headline.</div>
+            </div>
+
+            <div class="field">
+                <label for="HeroHeadline">Headline</label>
+                <textarea id="HeroHeadline" name="HeroHeadline" rows="2" maxlength="200">@Model.HeroHeadline</textarea>
+                <div class="help">
+                    Each line break here is a line break on the site — use it to control where the
+                    headline wraps rather than leaving it to the browser.
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="HeroSubheadline">Subheadline</label>
+                <textarea id="HeroSubheadline" name="HeroSubheadline" rows="3" maxlength="500">@Model.HeroSubheadline</textarea>
+            </div>
+
+            <div class="row">
+                <div class="field">
+                    <label for="HeroCtaText">Primary button</label>
+                    <input type="text" id="HeroCtaText" name="HeroCtaText" maxlength="60"
+                           value="@Model.HeroCtaText" />
+                </div>
+                <div class="field">
+                    <label for="HeroCtaSecondaryText">Secondary button</label>
+                    <input type="text" id="HeroCtaSecondaryText" name="HeroCtaSecondaryText" maxlength="60"
+                           value="@Model.HeroCtaSecondaryText" />
+                </div>
+            </div>
+
+            <p class="note">
+                Leaving a box empty restores the shipped wording for that field rather than
+                publishing a blank one.
+            </p>
+        </div>
+
+        <div class="card">
+            <h2>Demo section</h2>
+            <p class="sub">The heading above the request form at the foot of the page.</p>
+
+            <div class="field">
+                <label for="ContactTitle">Title</label>
+                <textarea id="ContactTitle" name="ContactTitle" rows="2" maxlength="200">@Model.ContactTitle</textarea>
+            </div>
+
+            <div class="field">
+                <label for="ContactSubtitle">Subtitle</label>
+                <textarea id="ContactSubtitle" name="ContactSubtitle" rows="3" maxlength="500">@Model.ContactSubtitle</textarea>
+            </div>
+
+            <p class="note">
+                Demo requests are not collected here. The form on the site hands the details to
+                whoever is wired up to receive them.
+            </p>
+        </div>
+    </div>
+
+    <div class="grid two" style="margin-top:16px;">
+        <div class="card">
+            <h2>3D sculpture</h2>
+            <p class="sub">The shape turning behind the hero text.</p>
+
+            <div class="field slider">
+                <label for="ModelScale">Model scale</label>
+                <div class="slider-row">
+                    <input type="range" id="ModelScale" name="ModelScale"
+                           min="0.4" max="2" step="0.01" value="@Step(Model.ModelScale)" />
+                    <output for="ModelScale">@Step(Model.ModelScale)</output>
+                </div>
+                <div class="help">0.40 to 2.00. How much of the screen the object fills.</div>
+            </div>
+
+            <div class="field slider">
+                <label for="AutoRotateSpeed">Auto-rotation speed</label>
+                <div class="slider-row">
+                    <input type="range" id="AutoRotateSpeed" name="AutoRotateSpeed"
+                           min="0" max="2" step="0.01" value="@Step(Model.AutoRotateSpeed)" />
+                    <output for="AutoRotateSpeed">@Step(Model.AutoRotateSpeed)</output>
+                </div>
+                <div class="help">0 stops the spin entirely.</div>
+            </div>
+
+            <div class="field slider">
+                <label for="Roughness">Roughness</label>
+                <div class="slider-row">
+                    <input type="range" id="Roughness" name="Roughness"
+                           min="0" max="1" step="0.01" value="@Step(Model.Roughness)" />
+                    <output for="Roughness">@Step(Model.Roughness)</output>
+                </div>
+                <div class="help">0 is a mirror finish, 1 is fully matte.</div>
+            </div>
+
+            <div class="field slider">
+                <label for="Metalness">Metalness</label>
+                <div class="slider-row">
+                    <input type="range" id="Metalness" name="Metalness"
+                           min="0" max="1" step="0.01" value="@Step(Model.Metalness)" />
+                    <output for="Metalness">@Step(Model.Metalness)</output>
+                </div>
+                <div class="help">How much the surface behaves like metal rather than plastic.</div>
+            </div>
+
+            <div class="field">
+                <label for="Accent">Material colour</label>
+                <div class="colour-row">
+                    <input type="color" id="Accent" name="Accent" value="@Model.Accent" />
+                    <span class="mono">@Model.Accent</span>
+                </div>
+                <div class="help">Defaults to the brand teal, #0097b2.</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Lighting</h2>
+            <p class="sub">The tints reflected across the sculpture's surface.</p>
+
+            <div class="field">
+                <label for="AmbientTint">Ambient tint</label>
+                <div class="colour-row">
+                    <input type="color" id="AmbientTint" name="AmbientTint" value="@Model.AmbientTint" />
+                    <span class="mono">@Model.AmbientTint</span>
+                </div>
+                <div class="help">Also colours the rim light wrapping the silhouette.</div>
+            </div>
+
+            <div class="field slider">
+                <label for="AmbientIntensity">Ambient intensity</label>
+                <div class="slider-row">
+                    <input type="range" id="AmbientIntensity" name="AmbientIntensity"
+                           min="0" max="2" step="0.01" value="@Step(Model.AmbientIntensity)" />
+                    <output for="AmbientIntensity">@Step(Model.AmbientIntensity)</output>
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="DirectionalTint">Directional tint</label>
+                <div class="colour-row">
+                    <input type="color" id="DirectionalTint" name="DirectionalTint" value="@Model.DirectionalTint" />
+                    <span class="mono">@Model.DirectionalTint</span>
+                </div>
+                <div class="help">The key light. White keeps the material's own colour honest.</div>
+            </div>
+
+            <div class="field slider">
+                <label for="DirectionalIntensity">Directional intensity</label>
+                <div class="slider-row">
+                    <input type="range" id="DirectionalIntensity" name="DirectionalIntensity"
+                           min="0" max="4" step="0.01" value="@Step(Model.DirectionalIntensity)" />
+                    <output for="DirectionalIntensity">@Step(Model.DirectionalIntensity)</output>
+                </div>
+                <div class="help">Past about 2.5 the highlights start to blow out.</div>
+            </div>
+
+            <p class="note">
+                Values outside these ranges are pulled back into them when saved — the site has to
+                stay renderable whatever a form happens to post.
+            </p>
+        </div>
+    </div>
+
+    <div class="actions" style="margin-top:16px;">
+        <button class="btn" type="submit">Save changes</button>
+    </div>
+</form>
+
+<form method="post" asp-action="Reset" style="margin-top:10px;"
+      onsubmit="return confirm('Restore every field on the landing page to the shipped wording and settings?');">
+    @Html.AntiForgeryToken()
+    <button class="btn small danger" type="submit">Restore defaults</button>
+</form>
+
+<script>
+        // Progressive enhancement only: mirror each slider's value into its <output>, and each
+        // colour well into the hex label beside it. With scripting off the form still submits
+        // exactly the same values — the readouts simply stay at whatever was last saved.
+        document.querySelectorAll('.slider-row input[type=range]').forEach(function (range) {
+            var output = range.parentElement.querySelector('output');
+            if (!output) return;
+            var show = function () { output.textContent = Number(range.value).toFixed(2); };
+            range.addEventListener('input', show);
+            show();
+        });
+
+        document.querySelectorAll('.colour-row input[type=color]').forEach(function (picker) {
+            var label = picker.parentElement.querySelector('.mono');
+            if (!label) return;
+            picker.addEventListener('input', function () { label.textContent = picker.value; });
+        });
+</script>

@@ -35,7 +35,7 @@ export default function Calls() {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-[26px] font-bold">Calls</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.01em]">Calls</h1>
         <PillButton variant="outline" onClick={() => sync.mutate()} disabled={sync.isPending}>
           {sync.isPending ? 'Syncing…' : 'Sync calls'}
         </PillButton>
@@ -43,10 +43,10 @@ export default function Calls() {
 
       <Card>
         {sync.isSuccess && (
-          <p className="mb-3 rounded-2xl bg-mint px-4 py-2.5 text-[12.5px] font-medium">{sync.data?.message}</p>
+          <p className="mb-3 rounded-2xl bg-mint px-4 py-2.5 text-sm font-medium">{sync.data?.message}</p>
         )}
         {sync.isError && (
-          <p className="mb-3 rounded-2xl bg-danger-soft px-4 py-2.5 text-[12.5px] font-medium text-danger">
+          <p className="mb-3 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
             {sync.error?.response?.data?.message ?? 'Could not reach Retell.'}
           </p>
         )}
@@ -64,8 +64,8 @@ export default function Calls() {
                   onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
                   <Avatar name={c.customerName ?? '??'} tone={['lavender', 'mint', 'cream'][i % 3]} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-[14px] font-bold">{c.customerName ?? c.fromNumber}</p>
-                    <p className="text-[12px] text-ink-soft">
+                    <p className="text-base font-bold">{c.customerName ?? c.fromNumber}</p>
+                    <p className="text-xs text-ink-soft">
                       {new Date(c.startedAt).toLocaleString()} · {dur(c.durationSeconds)}
                     </p>
                   </div>
@@ -77,17 +77,17 @@ export default function Calls() {
                     {suggestion && <SuggestionCard suggestion={suggestion} />}
                     {c.summary && (
                       <div className="rounded-2xl bg-card p-3.5">
-                        <p className="mb-1 text-[11.5px] font-semibold text-muted">AI Summary</p>
-                        <p className="text-[13px]">{c.summary}</p>
+                        <p className="mb-1 text-xs font-semibold text-muted">AI Summary</p>
+                        <p className="text-sm">{c.summary}</p>
                       </div>
                     )}
                     {c.transcript ? (
                       <div className="rounded-2xl bg-card p-3.5">
-                        <p className="mb-1 text-[11.5px] font-semibold text-muted">Transcript</p>
-                        <p className="whitespace-pre-wrap text-[12.5px] text-ink-soft">{c.transcript}</p>
+                        <p className="mb-1 text-xs font-semibold text-muted">Transcript</p>
+                        <p className="whitespace-pre-wrap text-sm text-ink-soft">{c.transcript}</p>
                       </div>
                     ) : (
-                      <p className="text-[12px] text-muted">No transcript available for this call.</p>
+                      <p className="text-xs text-muted">No transcript available for this call.</p>
                     )}
                     {c.recordingUrl && (
                       <audio controls src={c.recordingUrl} className="w-full" />
@@ -141,19 +141,19 @@ function SuggestionCard({ suggestion }) {
   const busy = confirm.isPending || dismiss.isPending
   const needsTime = form.action === 'Book' || form.action === 'Reschedule'
 
-  const field = 'w-full rounded-xl border border-line bg-card px-3 py-2 text-[12.5px]'
-  const label = 'mb-1 block text-[11px] font-semibold text-muted'
+  const field = 'w-full rounded-xl border border-line bg-card px-3 py-2 text-sm'
+  const label = 'mb-1 block text-xs font-semibold text-muted'
 
   return (
     <div className="rounded-2xl border border-lavender bg-card p-3.5">
       <div className="mb-2 flex items-center gap-2">
         <Chip tone="lavender">Suggested action</Chip>
         <Chip tone={confTone}>{suggestion.confidence} confidence</Chip>
-        <span className="text-[11px] text-muted">This call was transferred — confirm before it takes effect.</span>
+        <span className="text-xs text-muted">This call was transferred — confirm before it takes effect.</span>
       </div>
 
       {suggestion.reasoning && (
-        <p className="mb-3 text-[12px] text-ink-soft">{suggestion.reasoning}</p>
+        <p className="mb-3 text-xs text-ink-soft">{suggestion.reasoning}</p>
       )}
 
       <div className="grid grid-cols-2 gap-2.5">
@@ -186,12 +186,12 @@ function SuggestionCard({ suggestion }) {
       </div>
 
       {(confirm.isError || dismiss.isError) && (
-        <p className="mt-2.5 rounded-xl bg-danger-soft px-3 py-2 text-[12px] font-medium text-danger">
+        <p className="mt-2.5 rounded-xl bg-danger-soft px-3 py-2 text-xs font-medium text-danger">
           {(confirm.error ?? dismiss.error)?.response?.data?.message ?? 'Could not complete the action.'}
         </p>
       )}
       {confirm.isSuccess && (
-        <p className="mt-2.5 rounded-xl bg-mint px-3 py-2 text-[12px] font-medium">{confirm.data?.message}</p>
+        <p className="mt-2.5 rounded-xl bg-mint px-3 py-2 text-xs font-medium">{confirm.data?.message}</p>
       )}
 
       <div className="mt-3 flex gap-2">

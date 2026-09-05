@@ -36,9 +36,21 @@
         </div>
     </div>
     <div class="actions">
+        <a class="btn outline" asp-controller="Users" asp-action="Index" asp-route-orgId="@org.Id">
+            Accounts (@org.UserCount)
+        </a>
+        <a class="btn outline" asp-controller="Users" asp-action="Create" asp-route-orgId="@org.Id">Add login</a>
         <a class="btn outline" asp-action="Index">Back</a>
     </div>
 </div>
+
+@if (org.UserCount == 0)
+{
+    <div class="banner problem">
+        Nobody can sign in to @org.Name — it has no accounts. Add a login so the customer can reach
+        their dashboard.
+    </div>
+}
 
 @if (!org.IsActive)
 {

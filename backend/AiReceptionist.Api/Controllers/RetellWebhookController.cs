@@ -92,6 +92,73 @@ public class RetellWebhookController : ControllerBase
         return Ok();
     }
 
+    /// <summary>
+    /// Answers Retell's inbound-call webhook, fired once per incoming call before the agent speaks.
+    /// Its whole job here is the clock: it returns the tenant's current local date and time as the
+    /// dynamic variable the system prompt reads, so the value is computed by this server, in this
+    /// organization's timezone, at the moment the call starts.
+    ///
+    /// The keys deliberately shadow Retell's own {{current_time}} / {{current_time_&lt;iana&gt;}}:
+    /// those default to America/Los_Angeles and have a history of resolving late or blank, and a
+    /// blank clock is precisely what sends the agent back to guessing the date from its training
+    /// data. Shadowing them means the prompt reads the same placeholder either way — ours when this
+    /// webhook answers, Retell's if it ever does not.
+    ///
+    /// Payload: { "event": "call_inbound", "call_inbound": { agent_id, from_number, to_number, ... } }.
+    /// </summary>
+    [HttpPost("inbound")]
+    public async Task<IActionResult> Inbound()
+    {
+        using var reader = new StreamReader(Request.Body);
+        var raw = await reader.ReadToEndAsync();
+
+        // Verified when Retell signs it, but never refused: the reply contains nothing but today's
+        // date, and failing shut would silently put the agent back to inventing one. A bad signature
+        // is worth knowing about, so it is logged.
+        var connection = await _connection.GetEffectiveAsync();
+        if (!RetellSignature.Accept(connection.ApiKey, connection.VerifySignature, raw,
+                Request.Headers["X-Retell-Signature"], allowUnverified: true))
+            _logger.LogWarning("Retell inbound-call webhook failed signature verification; answering anyway.");
+
+        string? agentId = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw);
+            if (doc.RootElement.TryGetProperty("call_inbound", out var inbound))
+                agentId = GetString(inbound, "agent_id");
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Malformed Retell inbound-call webhook payload.");
+        }
+
+        var config = agentId is null ? null : await _settings.GetAgentConfigByRetellAgentIdAsync(agentId);
+        var org = config is null ? null : await _settings.GetOrganizationAsync(config.OrganizationId);
+        if (org is null)
+        {
+            // Answer anyway with an empty override so Retell starts the call on its own defaults.
+            _logger.LogWarning("Retell inbound-call webhook for unknown agent {AgentId}", agentId);
+            return Ok(new { call_inbound = new { dynamic_variables = new Dictionary<string, string>() } });
+        }
+
+        var tz = TenantTime.Resolve(org.Timezone);
+        var spoken = $"{TenantTime.Describe(TenantTime.NowLocal(tz))} ({org.Timezone})";
+
+        _logger.LogInformation("Retell inbound call for org {OrgId}: clock set to {Now}", org.Id, spoken);
+
+        return Ok(new
+        {
+            call_inbound = new
+            {
+                dynamic_variables = new Dictionary<string, string>
+                {
+                    [$"current_time_{TenantTime.IanaId(org.Timezone)}"] = spoken,
+                    ["current_time"] = spoken,
+                },
+            },
+        });
+    }
+
     private async Task StoreCallAsync(int orgId, JsonElement call, string? retellCallId, string? summary = null)
     {
         // Retell retries webhooks — don't store the same call twice.

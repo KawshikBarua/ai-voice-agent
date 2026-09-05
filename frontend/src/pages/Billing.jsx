@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { api, unwrap } from '../api/client'
+import { useUsage } from '../api/usage'
 import { useAuthStore } from '../store/auth'
 import { Card, CardTitle, PillButton, Chip, EmptyState } from '../components/ui'
 import { GaugeMeter, BarMeter } from '../components/charts'
@@ -44,6 +45,7 @@ function useBilling() {
   })
 }
 
+
 /** Every tier on offer. Each carries `canPayOnline`, which is false when the platform has no
  *  Stripe connection or the tier has no Stripe price — the tier is still shown either way. */
 function usePlans() {
@@ -61,17 +63,17 @@ function PlanFacts({ plan, isCurrent }) {
   return (
     <>
       <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-[14px] font-bold">{plan.name}</span>
+        <span className="text-base font-bold">{plan.name}</span>
         {isCurrent && <Chip tone="mint">Your plan</Chip>}
       </span>
-      <span className="mt-1 block text-[18px] font-bold tabular-nums">
+      <span className="mt-1 block text-lg font-bold tabular-nums">
         {exact(plan.amount, plan.currency)}
-        <span className="ml-1 text-[12px] font-medium text-muted">per {cyclePer(plan.billingCycle)}</span>
+        <span className="ml-1 text-xs font-medium text-muted">per {cyclePer(plan.billingCycle)}</span>
       </span>
       {plan.description && (
-        <span className="mt-1 block text-[12.5px] leading-snug text-ink-soft">{plan.description}</span>
+        <span className="mt-1 block text-sm leading-snug text-ink-soft">{plan.description}</span>
       )}
-      <span className="mt-1.5 block text-[12px] leading-relaxed text-muted">
+      <span className="mt-1.5 block text-xs leading-relaxed text-muted">
         {plan.includedMinutes > 0
           ? `${fmtMinutes(plan.includedMinutes)} of talk time included`
           : 'Talk time is not metered'}
@@ -111,7 +113,7 @@ function PlanCard({ plan, isCurrent, note }) {
   return (
     <div className="rounded-2xl border border-line bg-card p-4">
       <PlanFacts plan={plan} isCurrent={isCurrent} />
-      {note && <span className="mt-2 block text-[11.5px] font-medium text-muted">{note}</span>}
+      {note && <span className="mt-2 block text-xs font-medium text-muted">{note}</span>}
     </div>
   )
 }
@@ -191,7 +193,7 @@ function PlanChooser({
 
       {/* A move already agreed. Said before the list, so the tiers below are read in its light. */}
       {pendingPlanName && (
-        <div className="mb-3 rounded-2xl bg-mint px-3 py-2 text-[12.5px] leading-snug">
+        <div className="mb-3 rounded-2xl bg-mint px-3 py-2 text-sm leading-snug">
           You are moving to <strong>{pendingPlanName}</strong>
           {periodEnd ? ` on ${day(periodEnd)}` : ' at your next billing cycle'}. Until then you keep
           your current plan and its included minutes.
@@ -242,17 +244,17 @@ function ChargeRow({ line, currency }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b border-line/60 py-3 last:border-0">
       <div className="min-w-0">
-        <p className="text-[13.5px] font-semibold">
+        <p className="text-base font-semibold">
           {line.label}
           {!line.isFinal && (
-            <span className="ml-2 align-middle text-[10.5px] font-medium uppercase tracking-wide text-muted">
+            <span className="ml-2 align-middle text-2xs font-medium uppercase tracking-wide text-muted">
               so far
             </span>
           )}
         </p>
-        {line.detail && <p className="mt-0.5 text-[12px] leading-snug text-muted">{line.detail}</p>}
+        {line.detail && <p className="mt-0.5 text-xs leading-snug text-muted">{line.detail}</p>}
       </div>
-      <p className="shrink-0 text-[14px] font-bold tabular-nums">{exact(line.amount, currency)}</p>
+      <p className="shrink-0 text-base font-bold tabular-nums">{exact(line.amount, currency)}</p>
     </div>
   )
 }
@@ -263,12 +265,12 @@ function PeriodRow({ p }) {
   return (
     <div className="border-b border-line/60 py-3 last:border-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <p className="text-[13.5px] font-semibold">
+        <p className="text-base font-semibold">
           {dayShort(p.periodStart)} – {day(p.periodEnd)}
         </p>
-        <p className="text-[14px] font-bold tabular-nums">{exact(p.total, p.currency)}</p>
+        <p className="text-base font-bold tabular-nums">{exact(p.total, p.currency)}</p>
       </div>
-      <p className="mt-1 text-[12px] leading-relaxed text-muted">
+      <p className="mt-1 text-xs leading-relaxed text-muted">
         {p.planName} plan {exact(p.baseAmount, p.currency)}
         {p.includedMinutes > 0 ? (
           <>
@@ -305,21 +307,21 @@ function InvoiceRow({ inv }) {
     <div className="border-b border-line/60 py-3 last:border-0">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="min-w-0">
-          <p className="flex items-center gap-2 text-[13.5px] font-semibold">
+          <p className="flex items-center gap-2 text-base font-semibold">
             {inv.number ?? 'Invoice'}
             <Chip tone={tone}>{inv.status}</Chip>
           </p>
-          <p className="mt-0.5 text-[12px] text-muted">
+          <p className="mt-0.5 text-xs text-muted">
             {inv.paidAt ? `Paid ${day(inv.paidAt)}` : `Issued ${day(inv.issuedAt)}`}
             {inv.amountOutstanding > 0 && ` · ${exact(inv.amountOutstanding, inv.currency)} outstanding`}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <p className="text-[14px] font-bold tabular-nums">{exact(inv.total, inv.currency)}</p>
+          <p className="text-base font-bold tabular-nums">{exact(inv.total, inv.currency)}</p>
           {inv.lines?.length > 0 && (
             <button
               onClick={() => setOpen((v) => !v)}
-              className="rounded-pill px-2 py-1 text-[11.5px] font-semibold text-ink-soft transition hover:bg-panel"
+              className="rounded-pill px-2 py-1 text-xs font-semibold text-ink-soft transition hover:bg-panel"
               aria-expanded={open}
             >
               {open ? 'Hide' : 'Why?'}
@@ -327,7 +329,7 @@ function InvoiceRow({ inv }) {
           )}
           {inv.invoicePdfUrl && (
             <a href={inv.invoicePdfUrl} target="_blank" rel="noreferrer"
-              className="rounded-pill px-2 py-1 text-[11.5px] font-semibold text-ink-soft transition hover:bg-panel">
+              className="rounded-pill px-2 py-1 text-xs font-semibold text-ink-soft transition hover:bg-panel">
               PDF
             </a>
           )}
@@ -338,8 +340,8 @@ function InvoiceRow({ inv }) {
         <div className="mt-2 rounded-2xl bg-panel px-3 py-2">
           {inv.lines.map((l, i) => (
             <div key={i} className="flex items-start justify-between gap-3 py-1">
-              <p className="text-[12px] leading-snug text-ink-soft">{l.label}</p>
-              <p className="shrink-0 text-[12px] font-semibold tabular-nums">{exact(l.amount, inv.currency)}</p>
+              <p className="text-xs leading-snug text-ink-soft">{l.label}</p>
+              <p className="shrink-0 text-xs font-semibold tabular-nums">{exact(l.amount, inv.currency)}</p>
             </div>
           ))}
         </div>
@@ -349,13 +351,65 @@ function InvoiceRow({ inv }) {
 }
 
 export default function Billing() {
-  const { data, isLoading, isError, refetch } = useBilling()
-  const [params] = useSearchParams()
+  const { data, isLoading, isError, isPaused, refetch } = useBilling()
+  const { data: usage } = useUsage()
+  const queryClient = useQueryClient()
+  const [params, setParams] = useSearchParams()
   const [busy, setBusy] = useState(null)
   const [problem, setProblem] = useState(null)
   const [notice, setNotice] = useState(null)
+  const [confirming, setConfirming] = useState(false)
 
   const checkout = params.get('checkout')
+  const sessionId = params.get('session_id')
+  const confirmed = useRef(null)
+
+  /**
+   * Coming back from Stripe, having paid.
+   *
+   * The webhook applies the purchase too, but it cannot be what the customer waits on: it needs a
+   * publicly reachable endpoint and a matching signing secret, and where either is missing the
+   * money leaves their account while this page keeps saying no plan is set up. So the page confirms
+   * for itself — the server reads the session straight from Stripe — and the plan and its minutes
+   * are there by the time this redraws.
+   *
+   * The ref is what stops a redraw firing a second request. There is deliberately no cleanup flag
+   * cancelling the handlers below: an effect that re-runs — which StrictMode does on every mount in
+   * development, and a remount does in production — would set that flag on the only request in
+   * flight, while the ref sent the second run home. Nothing then cleared `confirming`, so the page
+   * sat on "confirming your payment" forever with the plan chooser hidden behind it: a customer who
+   * had just paid, and one who had not yet, both left with no way forward. Settling state after an
+   * unmount is a no-op in React 18, which is a far cheaper price than that.
+   */
+  useEffect(() => {
+    if (!sessionId || confirmed.current === sessionId) return
+    confirmed.current = sessionId
+
+    setConfirming(true)
+    api.post('/billing/confirm-checkout', { sessionId })
+      .then(async (res) => {
+        setNotice(res.data?.message ?? 'Your plan is active.')
+        // Minutes and the plan tile live on other screens too, so those are dropped rather than
+        // left to go stale behind a customer who has just started paying.
+        await Promise.all([refetch(), queryClient.invalidateQueries({ queryKey: ['billing-usage'] })])
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      })
+      .catch((err) => {
+        // The webhook may still land, so this is not stated as a failure of the payment.
+        setProblem(err.response?.data?.message
+          ?? 'We could not confirm your payment just yet. If you were charged it will appear here shortly.')
+      })
+      .finally(() => {
+        setConfirming(false)
+        // Out of the URL once used: a reload should not look like a second purchase.
+        setParams((current) => {
+          const next = new URLSearchParams(current)
+          next.delete('session_id')
+          return next
+        }, { replace: true })
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
 
   /** Both Stripe actions do the same thing: ask the API for a URL and hand the browser over. */
   const goToStripe = async (path, body = {}) => {
@@ -373,16 +427,28 @@ export default function Billing() {
   if (isLoading) {
     return (
       <div className="grid place-items-center py-24">
-        <p className="text-[13px] text-muted">Loading your billing…</p>
+        <p className="text-sm text-muted">Loading your billing…</p>
       </div>
     )
   }
 
-  if (isError) {
+  /*
+    Nothing loaded — which is not the same as nothing to bill.
+
+    An offline browser makes React Query *pause* the query rather than fail it, so isError stays
+    false and the data stays undefined. Falling through on that emptiness reached the "no plan is
+    set up on your account" screen, which tells a customer who is paying every month that they are
+    on nothing, purely because their connection dropped. Anything short of real data has to stop
+    here.
+  */
+  if (isError || isPaused || !data) {
     return (
       <Card>
         <CardTitle title="Billing" />
-        <EmptyState message="Your billing details could not be loaded. Please try again shortly." />
+        <EmptyState message={isPaused
+          ? 'You appear to be offline, so your billing details could not be loaded. Nothing has changed on your account.'
+          : 'Your billing details could not be loaded. Nothing has changed on your account — please try again shortly.'}
+        />
         <div className="mt-3 flex justify-center">
           <PillButton variant="outline" onClick={() => refetch()}>Retry</PillButton>
         </div>
@@ -392,7 +458,16 @@ export default function Billing() {
 
   const s = data ?? {}
   const cur = s.currency ?? 'USD'
-  const usageRatio = s.includedMinutes > 0 ? s.minutesUsed / s.includedMinutes : 0
+
+  // The polled figures win over the summary's, which were true when the page loaded. They are the
+  // same numbers measured the same way — this is only about which read is the most recent one.
+  const live = usage?.hasSubscription ? usage : null
+  const metered = live?.metered ?? s.metered
+  const minutesUsed = live?.minutesUsed ?? s.minutesUsed ?? 0
+  const minutesOver = live?.minutesOver ?? s.minutesOver ?? 0
+  const includedMinutes = live?.includedMinutes ?? s.includedMinutes ?? 0
+  const projectedOverage = live?.projectedOverageAmount ?? s.projectedOverageAmount ?? 0
+  const usageRatio = includedMinutes > 0 ? minutesUsed / includedMinutes : 0
 
   const startCheckout = (planId) => goToStripe('checkout-session', { planId })
 
@@ -417,22 +492,33 @@ export default function Billing() {
     return (
       <div className="mx-auto max-w-5xl space-y-4">
         <header>
-          <h1 className="text-[22px] font-bold">Billing</h1>
-          <p className="mt-0.5 text-[13px] text-muted">What you are charged, and why.</p>
+          <h1 className="font-display text-xl font-semibold tracking-[-0.01em]">Billing</h1>
+          <p className="mt-0.5 text-sm text-muted">What you are charged, and why.</p>
         </header>
         {problem && (
-          <div className="rounded-card bg-danger-soft px-4 py-3 text-[13px] font-medium text-danger">{problem}</div>
+          <div className="rounded-card bg-danger-soft px-4 py-3 text-sm font-medium text-danger">{problem}</div>
+        )}
+        {notice && (
+          <div className="rounded-card bg-mint px-4 py-3 text-sm font-medium">{notice}</div>
         )}
         <Card>
-          <EmptyState message="No plan is set up on your account yet, so nothing is being charged. The plans on offer are below." />
+          {/* Someone who has just paid is not "not set up" — they are mid-setup, and saying the
+              wrong one of those to a customer who has been charged is how support tickets start. */}
+          <EmptyState
+            message={confirming
+              ? 'Setting up your plan — this takes a moment.'
+              : 'No plan is set up on your account yet, so nothing is being charged. The plans on offer are below.'}
+          />
         </Card>
-        <PlanChooser
-          currentPlanId={s.planId}
-          canSubscribe={s.canSubscribe}
-          busy={busy !== null}
-          onCheckout={startCheckout}
-          onSwitch={switchPlan}
-        />
+        {!confirming && (
+          <PlanChooser
+            currentPlanId={s.planId}
+            canSubscribe={s.canSubscribe}
+            busy={busy !== null}
+            onCheckout={startCheckout}
+            onSwitch={switchPlan}
+          />
+        )}
       </div>
     )
   }
@@ -441,8 +527,8 @@ export default function Billing() {
     <div className="mx-auto max-w-5xl space-y-4">
       <header className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div>
-          <h1 className="text-[22px] font-bold">Billing</h1>
-          <p className="mt-0.5 text-[13px] text-muted">What you are charged, and why.</p>
+          <h1 className="font-display text-xl font-semibold tracking-[-0.01em]">Billing</h1>
+          <p className="mt-0.5 text-sm text-muted">What you are charged, and why.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {s.autoCollecting && (
@@ -454,27 +540,35 @@ export default function Billing() {
         </div>
       </header>
 
-      {checkout === 'success' && (
-        <div className="rounded-card bg-mint px-4 py-3 text-[13px] font-medium">
-          Thank you — your payment method is set up. It can take a moment to appear below.
+      {/* Only when the confirmation has nothing more specific to say — otherwise the customer reads
+          two banners about one payment, and if the confirmation failed they read a cheerful one
+          directly above the failure. */}
+      {checkout === 'success' && !notice && !problem && !confirming && (
+        <div className="rounded-card bg-mint px-4 py-3 text-sm font-medium">
+          Thank you — your payment method is set up.
+        </div>
+      )}
+      {confirming && (
+        <div className="rounded-card bg-cream px-4 py-3 text-sm font-medium">
+          Confirming your payment with Stripe…
         </div>
       )}
       {checkout === 'cancelled' && (
-        <div className="rounded-card bg-cream px-4 py-3 text-[13px] font-medium">
+        <div className="rounded-card bg-cream px-4 py-3 text-sm font-medium">
           Checkout was cancelled. Nothing has been charged.
         </div>
       )}
       {notice && (
-        <div className="rounded-card bg-mint px-4 py-3 text-[13px] font-medium">{notice}</div>
+        <div className="rounded-card bg-mint px-4 py-3 text-sm font-medium">{notice}</div>
       )}
       {problem && (
-        <div className="rounded-card bg-danger-soft px-4 py-3 text-[13px] font-medium text-danger">{problem}</div>
+        <div className="rounded-card bg-danger-soft px-4 py-3 text-sm font-medium text-danger">{problem}</div>
       )}
 
       {s.agentRestricted && (
         <div className="rounded-card bg-danger-soft px-4 py-3">
-          <p className="text-[13px] font-semibold text-danger">Your AI receptionist is not taking calls</p>
-          <p className="mt-0.5 text-[12.5px] text-danger">
+          <p className="text-sm font-semibold text-danger">Your AI receptionist is not taking calls</p>
+          <p className="mt-0.5 text-sm text-danger">
             {s.agentRestrictedReason ?? 'Your provider has paused it.'} Settling the balance below, or
             contacting your provider, will restore it.
           </p>
@@ -511,18 +605,18 @@ export default function Billing() {
           </div>
           <div className="mt-3 flex items-baseline justify-between gap-4 border-t-2 border-ink/10 pt-3">
             <div>
-              <p className="text-[13.5px] font-bold">Estimated total</p>
-              <p className="mt-0.5 text-[11.5px] text-muted">
+              <p className="text-base font-bold">Estimated total</p>
+              <p className="mt-0.5 text-xs text-muted">
                 {s.minutesOver > 0
                   ? 'The extra-minutes line keeps moving until the period ends.'
                   : 'Final unless you go past your included minutes.'}
               </p>
             </div>
-            <p className="text-[22px] font-bold tabular-nums">{exact(s.estimatedNextInvoice, cur)}</p>
+            <p className="text-xl font-bold tabular-nums">{exact(s.estimatedNextInvoice, cur)}</p>
           </div>
 
           {s.pendingOverageAmount > 0 && (
-            <p className="mt-3 rounded-2xl bg-cream px-3 py-2 text-[12px] leading-snug">
+            <p className="mt-3 rounded-2xl bg-cream px-3 py-2 text-xs leading-snug">
               You went <strong>{s.pendingOverageMinutes.toLocaleString()} minutes</strong> past your plan
               last period. As agreed, that is not billed separately — it is added to the invoice above.
             </p>
@@ -533,27 +627,27 @@ export default function Billing() {
         <Card>
           <CardTitle
             title="Minutes this period"
-            subtitle={s.metered ? `${fmtMinutes(s.includedMinutes)} included` : 'Not metered on minutes'}
+            subtitle={metered ? `${fmtMinutes(includedMinutes)} included` : 'Not metered on minutes'}
           />
-          {s.metered ? (
+          {metered ? (
             <>
               <GaugeMeter
-                used={s.minutesUsed}
-                allowance={s.includedMinutes}
+                used={minutesUsed}
+                allowance={includedMinutes}
                 caption={
-                  s.minutesOver > 0
-                    ? `${s.minutesOver.toLocaleString()} min over — ${exact(s.projectedOverageAmount, cur)} so far`
+                  minutesOver > 0
+                    ? `${minutesOver.toLocaleString()} min over — ${exact(projectedOverage, cur)} so far`
                     : `Resets ${day(s.currentPeriodEnd)}`
                 }
               />
-              <dl className="mt-3 space-y-2 text-[12.5px]">
+              <dl className="mt-3 space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-muted">Used</dt>
-                  <dd className="font-semibold tabular-nums">{fmtMinutes(s.minutesUsed)}</dd>
+                  <dd className="font-semibold tabular-nums">{fmtMinutes(minutesUsed)}</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-muted">Included in {s.planName}</dt>
-                  <dd className="font-semibold tabular-nums">{fmtMinutes(s.includedMinutes)}</dd>
+                  <dd className="font-semibold tabular-nums">{fmtMinutes(includedMinutes)}</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-muted">Each extra minute</dt>
@@ -565,7 +659,7 @@ export default function Billing() {
               <BarMeter
                 ratio={usageRatio}
                 tone={
-                  s.minutesOver > 0
+                  minutesOver > 0
                     ? 'var(--color-crit)'
                     : usageRatio > 0.8
                       ? 'var(--color-warn)'
@@ -576,8 +670,8 @@ export default function Billing() {
             </>
           ) : (
             <div className="py-4">
-              <p className="text-[30px] font-bold tabular-nums">{fmtMinutes(s.minutesUsed)}</p>
-              <p className="mt-1 text-[12.5px] text-muted">
+              <p className="text-3xl font-bold tabular-nums">{fmtMinutes(minutesUsed)}</p>
+              <p className="mt-1 text-sm text-muted">
                 Your {s.planName} plan is a flat {exact(s.planAmount, cur)} per{' '}
                 {String(s.billingCycle).toLowerCase() === 'yearly' ? 'year' : 'month'}, however much the
                 receptionist talks.
