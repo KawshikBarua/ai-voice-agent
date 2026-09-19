@@ -34,10 +34,11 @@ public class PromptBuilderService : IPromptBuilderService
     private readonly IHolidayRepository _holidays;
     private readonly IPromptTemplateRepository _template;
     private readonly IEmployeeRepository _employees;
+    private readonly IBusinessLocationRepository _locations;
 
     public PromptBuilderService(ISettingsRepository settings, ICatalogRepository catalog,
         IKnowledgeRepository knowledge, IHolidayRepository holidays, IPromptTemplateRepository template,
-        IEmployeeRepository employees)
+        IEmployeeRepository employees, IBusinessLocationRepository locations)
     {
         _settings = settings;
         _catalog = catalog;
@@ -45,6 +46,7 @@ public class PromptBuilderService : IPromptBuilderService
         _holidays = holidays;
         _template = template;
         _employees = employees;
+        _locations = locations;
     }
 
     public async Task<string> BuildSystemPromptAsync(int orgId)
@@ -134,6 +136,30 @@ public class PromptBuilderService : IPromptBuilderService
                           "and a day it says no one is working is a day with nothing to offer.");
             sb.AppendLine("- Do not promise a particular person. When a booking succeeds it tells you who the " +
                           "appointment is with, and that is the only name you may pass on.");
+        }
+
+        // Where the business will travel to. Stated as facts plus the one rule that matters,
+        // because the agent has to know it is not free to agree to any address — but the actual
+        // decision is check_service_area's, which measures the distance rather than guessing at
+        // it from a list of place names.
+        var branches = await _locations.ListActiveAsync(orgId);
+        if (branches.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Where we cover");
+            foreach (var b in branches)
+            {
+                sb.AppendLine(b.CoversEntireCity
+                    ? $"- {b.Name}: anywhere in {b.City}, {b.CountryName}."
+                    : $"- {b.Name}: {b.City}, {b.CountryName}, and about {b.CoverageRadiusMiles:0} " +
+                      $"mile{(Math.Round(b.CoverageRadiusMiles) == 1 ? "" : "s")} around it.");
+            }
+            sb.AppendLine("- The moment a caller gives you an address, call check_service_area with it — before you agree a time and before you book.");
+            sb.AppendLine("- Never judge for yourself whether somewhere is close enough. Distances are not something to estimate from a place name; the tool measures them.");
+            sb.AppendLine("- If it names a landmark beside the address, use it to check you heard the street right — \"just by the old town hall?\" — rather than reading the address back word for word.");
+            sb.AppendLine("- If the address cannot be found, say so plainly and go through it again. Never book an address the map does not know.");
+            sb.AppendLine("- If it is outside the area but in a town covered, take the booking and say honestly that it is outside the usual patch, so someone will ring back to confirm. Do not tell them it is certain.");
+            sb.AppendLine("- If it is somewhere not covered at all, do not book. Apologise, say plainly that it is outside the area served, and suggest they find someone local. Be kind about it and do not leave them hoping.");
         }
 
         var closures = (await _holidays.ListUpcomingAsync(orgId, TodayLocal(org))).ToList();

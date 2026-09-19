@@ -29,16 +29,18 @@ public class AiToolsController : ControllerBase
     private readonly IHolidayRepository _holidays;
     private readonly IRetellConnectionRepository _connection;
     private readonly ICallEntitlementService _entitlement;
+    private readonly IServiceAreaService _serviceArea;
     private readonly IHostEnvironment _env;
     private readonly ILogger<AiToolsController> _logger;
 
     public AiToolsController(IAiToolsRepository ai, ICustomerRepository customers,
         IAppointmentRepository appointments, IEmployeeRepository employees,
         INotificationService notifications, ISettingsRepository settings, IHolidayRepository holidays,
-        IRetellConnectionRepository connection, ICallEntitlementService entitlement,
+        IRetellConnectionRepository connection, ICallEntitlementService entitlement, IServiceAreaService serviceArea,
         IHostEnvironment env, ILogger<AiToolsController> logger)
     {
         _entitlement = entitlement;
+        _serviceArea = serviceArea;
         _ai = ai;
         _customers = customers;
         _appointments = appointments;
@@ -349,6 +351,75 @@ public class AiToolsController : ControllerBase
         return today.AddDays(ahead);
     }
 
+    /// <summary>
+    /// Holds the address a caller has just given up against the branches' coverage areas, before
+    /// anyone spends the rest of the call arranging a visit to it.
+    ///
+    /// The reply is written for the agent to act on, not to read out word for word: it says what
+    /// was found and what to do about it. Where a landmark came back it is included, because
+    /// "just by the Natural History Museum?" catches a wrong street far more reliably than
+    /// reading a postcode back does.
+    ///
+    /// This is a courtesy to the conversation, not the enforcement — book_appointment runs the
+    /// same check itself, so skipping this tool cannot get an out-of-area job booked.
+    /// </summary>
+    [HttpPost("check_service_area")]
+    public async Task<IActionResult> CheckServiceArea(int orgId)
+    {
+        var (ctx, error) = await ReadAsync(orgId);
+        if (ctx is null) return error!;
+
+        var address = Str(ctx.Args, "address");
+        if (string.IsNullOrWhiteSpace(address))
+            return Speak(new { result = "Ask for the full address first — street and number, and the town or city." }, ctx);
+
+        var area = await _serviceArea.EvaluateAsync(orgId, address, HttpContext.RequestAborted);
+        return Speak(AreaReply(area), ctx);
+    }
+
+
+    /// <summary>A distance the agent can read out without tripping over "1 miles".</summary>
+    private static string Miles(double? miles) =>
+        $"{miles:0} mile{(Math.Round(miles ?? 0) == 1 ? "" : "s")}";
+
+    /// <summary>The agent's side of a coverage verdict: what happened, and what to do next. Shared
+    /// by check_service_area and book_appointment so the caller cannot be told one thing when the
+    /// address is checked and something else when it is booked.</summary>
+    private static object AreaReply(ServiceAreaResult area) => new
+    {
+        result = area.Status switch
+        {
+            ServiceAreaStatus.Covered =>
+                $"'{area.Place!.DisplayName}' is inside the area covered from {area.Branch!.Name}" +
+                (area.NearestLandmark is { } near ? $", near {near}" : "") +
+                ". Confirm the address back to the caller in their own words and carry on with the booking.",
+
+            ServiceAreaStatus.OutOfRange =>
+                $"'{area.Place!.DisplayName}' is in {area.Place.City}, where {area.Branch!.Name} works, but about " +
+                $"{Miles(area.DistanceMiles)} out — beyond the {Miles(area.Branch.CoverageRadiusMiles)} it normally " +
+                "travels. Take the booking anyway, and tell them plainly that it is outside the usual area so a " +
+                "colleague will ring back to confirm it. Do not promise it is definitely going ahead.",
+
+            ServiceAreaStatus.Outside =>
+                $"'{area.Place!.DisplayName}' is not in any area this business covers — the nearest branch is " +
+                $"{area.Branch?.Name} in {area.Branch?.City}, about {Miles(area.DistanceMiles)} away. Check you have " +
+                "the right town in case you misheard. If it is right, apologise, say plainly that it is outside " +
+                "the area served, and suggest they find someone local. Do not book anything.",
+
+            ServiceAreaStatus.NotFound =>
+                "That address could not be found on the map. Read back what you heard, ask them to confirm the " +
+                "street name, number and town, and check again. Do not book on an address you cannot find.",
+
+            // Nothing to check against, or nothing to check with. Either way the call carries on
+            // exactly as it did before coverage areas existed.
+            _ => "No coverage check applies. Carry on with the booking.",
+        },
+        covered = area.Bookable,
+        needs_confirmation = area.NeedsConfirmation,
+        resolved_address = area.Place?.DisplayName,
+        landmark = area.NearestLandmark,
+    };
+
     [HttpPost("book_appointment")]
     public async Task<IActionResult> BookAppointment(int orgId)
     {
@@ -379,6 +450,14 @@ public class AiToolsController : ControllerBase
                 result = "A service address is required before booking. Ask for the full street " +
                          "address, city, and any access details such as apartment number or gate code.",
             }, ctx);
+
+
+        // The same check check_service_area does, run again here because this is the point that
+        // actually costs money. The agent is asked to check the address when it is given, but a
+        // model that skips a tool must not be able to book a job nobody can reach — and the
+        // lookup was cached moments ago, so re-running it adds nothing to the call.
+        var area = await _serviceArea.EvaluateAsync(orgId, serviceAddress, HttpContext.RequestAborted);
+        if (!area.Bookable) return Speak(AreaReply(area), ctx);
 
         var (window, closed) = await ResolveDayAsync(orgId, ctx.Org, startLocal);
         if (window is null) return Speak(new { result = closed }, ctx);
@@ -427,6 +506,10 @@ public class AiToolsController : ControllerBase
             PaymentStatus = "Unpaid",
             Amount = service.MinPrice,
             ServiceAddress = string.IsNullOrWhiteSpace(serviceAddress) ? null : serviceAddress,
+            // What the caller said stays in ServiceAddress; what the map made of it is kept
+            // beside it rather than over it, so the words they used are never lost.
+            AreaStatus = area.StoredStatus,
+            ServiceLocationJson = area.ToJson(),
             IsEmergency = service.IsEmergency ||
                           string.Equals(Str(ctx.Args, "is_emergency"), "true", StringComparison.OrdinalIgnoreCase),
             Notes = Str(ctx.Args, "notes") is { } n ? $"[AI] {n}" : "[AI] Booked during phone call",
@@ -456,9 +539,16 @@ public class AiToolsController : ControllerBase
             result = $"Booked: {service.Name} on {SpokenTime(startUtc, ctx.Tz)} for {name}." +
                      (assignedTo is null ? "" : $" {assignedTo} will be looking after them.") +
                      (string.IsNullOrWhiteSpace(serviceAddress) ? "" : $" Technician will attend {serviceAddress}.") +
-                     $" Confirmation number {appointmentId}.",
+                     $" Confirmation number {appointmentId}." +
+                     // Said last so it is the part the caller is left with. The booking is
+                     // real either way; what is not settled is whether anyone can get there.
+                     (area.NeedsConfirmation
+                         ? " That address is outside the area normally covered, so tell them the booking is " +
+                           "down but a colleague will ring back to confirm it — do not say it is guaranteed."
+                         : ""),
             appointmentId,
             staff = assignedTo,
+            needs_confirmation = area.NeedsConfirmation,
         }, ctx);
     }
 

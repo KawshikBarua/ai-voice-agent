@@ -13,7 +13,9 @@ export default defineConfig({
       // The browser calls the tunnel host at /api/*, and Vite forwards it here
       // server-side to the backend — so the API works over the same tunnel with no CORS.
       '/api': {
-        target: 'http://localhost:5200',
+        // Overridable so a second dev server can be pointed at an API running on another port
+        // (a release build, a branch) without editing this file: VITE_API_PROXY=http://localhost:5197
+        target: process.env.VITE_API_PROXY || 'http://localhost:5200',
         changeOrigin: true,
       },
     },

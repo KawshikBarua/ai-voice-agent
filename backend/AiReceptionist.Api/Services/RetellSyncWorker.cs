@@ -42,13 +42,10 @@ public class RetellSyncWorker : BackgroundService
             if (await retell.IsConfiguredAsync())
             {
                 var settings = scope.ServiceProvider.GetRequiredService<Data.Repositories.ISettingsRepository>();
+                // Calls missed while we were down are recovered by CallBackfillWorker, whose first
+                // pass runs at startup too — this loop only re-pushes agent configuration.
                 foreach (var orgId in await settings.GetConnectedOrganizationIdsAsync())
-                {
                     _queue.Enqueue(orgId);
-                    // Recover any calls whose webhook was missed while we were down.
-                    try { await retell.BackfillCallsAsync(orgId, stoppingToken); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "Call backfill failed for org {OrgId}", orgId); }
-                }
             }
         }
         catch (Exception ex)

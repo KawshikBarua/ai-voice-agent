@@ -37,6 +37,29 @@ The platform uses a SQL Server database named **AiDB** (as requested, instead of
 Connection string is in `backend/AiReceptionist.Api/appsettings.json`
 (defaults to `localhost\SQLEXPRESS` with Windows auth).
 
+## Cache — Redis (optional)
+
+A read-through cache sits in front of SQL for the handful of reads that dominate the load:
+
+| What | Why it is cached | Stale for |
+| --- | --- | --- |
+| Tenant settings row | Read by every live-call tool, every prompt build, every dashboard load | 5 min, dropped on write |
+| Retell agent linkage | Read by every webhook and every sync pass | 5 min, dropped on write |
+| Platform Retell connection | Read before every outbound Retell call | 5 min, dropped on write |
+| Dashboard aggregates | The heaviest query in the app, re-run on every page load | 60 s |
+| Sidebar badge counts | Polled once a minute by every open tab | 20 s |
+| Minutes used | Polled every 15 s by every open tab | 10 s |
+
+Anything a write can invalidate is invalidated explicitly (`Common/Cache.cs`); the rest is simply
+allowed to be a few seconds old, which is cheaper than being clever. Entitlement and suspension
+checks are deliberately **not** cached — they decide whether an agent may answer a call, and being
+seconds out of date there is a correctness problem, not a latency one.
+
+Set `ConnectionStrings:Redis` (e.g. `localhost:6379,abortConnect=false`) and the cache is Redis,
+shared by every instance. Leave it empty — the default — and the same cache runs in process, which
+is correct for a single instance and needs nothing installed. Either way a cache failure is not an
+outage: every read falls through to SQL and every write failure is logged and ignored.
+
 ## Run it
 
 **Backend** (http://localhost:5200, Swagger at `/swagger`):
@@ -65,6 +88,18 @@ dotnet run --urls http://localhost:5300
 
 **Super admin login** (seeded automatically): `superadmin@demo.com` / `Super123!`
 
+**Client business accounts** — three worked examples (a towing company, an electrical contractor
+and a plumber), each with its own services, price list, knowledge base, agent wording and coverage
+areas. Not seeded on startup; created on demand and safe to re-run:
+
+```powershell
+dotnet run --project backend/AiReceptionist.Api -- seed-tenants
+```
+
+It prints each account's email and password when it creates them. The businesses themselves are in
+[`TenantSeeder.cs`](backend/AiReceptionist.Api/Data/TenantSeeder.cs) — change the passwords there,
+or in Settings afterwards, before anyone real uses them.
+
 ## What's implemented
 
 | SRS section | Status |
@@ -79,6 +114,7 @@ dotnet run --urls http://localhost:5300
 | Knowledge Base (§13) | CRUD + auto-generated **final AI prompt** (system prompt + business info + services + products + FAQs + policies + hours); core instructions not editable by tenants, only platform-wide from the super admin console |
 | AI Agent (§14) | Per-tenant config: voice, language, greeting, transfer number, Retell agent id |
 | Call management (§15) | Call log with transcript, recording URL, AI summary; Retell webhook endpoint (`POST /api/v1/webhooks/retell`) |
+| Service areas | Per-branch coverage (country, city, radius in miles or the whole city); every address a caller gives is geocoded against them on OpenStreetMap before booking, with nearby landmarks used to confirm the street ([below](#service-areas)) |
 | Security (§20) | Standardized response envelope with traceId, exception middleware, CORS restrictions, IP + login rate limiting, audit trail, soft delete, encrypted web-app payloads (below) |
 | API standards (§21) | REST, pagination/filtering, Swagger, response compression, health checks (`/health`) |
 | Pricing & billing | Tier catalogue with per-customer overrides, Stripe subscriptions + Checkout + billing portal, metered AI minutes with overage carried onto the next invoice, mirrored invoices, customer-facing billing page ([below](#billing-and-stripe)) |
@@ -233,6 +269,49 @@ Stripe signs the raw body. Every handler is safe to run twice: event ids are cla
 are acted on, and a redelivered paid invoice cannot record a second payment or move the billing
 period twice.
 
+
+## Service areas
+
+A caller who gives an address nobody can serve — one that does not exist, or one an hour outside
+the nearest branch — costs a wasted visit that nothing catches until the day. **Settings →
+Business → Locations & coverage** is where a business says where it works: one row per branch,
+each with a country, a city, and either a radius in miles or "cover the whole city".
+
+With no rows there, nothing is checked and every address is accepted, exactly as before — so this
+is invisible to a tenant who does not use it.
+
+- **On the call.** The agent gets a `check_service_area` tool and is told to call it the moment an
+  address is given, before a time is agreed. It answers whether the address exists, whether it is
+  covered, and often names a landmark within walking distance — "just by the old town hall?" is a
+  far better check that the street was heard right than reading a postcode back.
+- **The rule is enforced at booking, not by the agent.** `book_appointment` runs the same check
+  itself, so a model that skips the tool still cannot book a job nobody can reach. The lookup was
+  cached seconds earlier, so this costs nothing on the call.
+- **Inside the area** → booked normally.
+- **Right city, past the radius** → booked anyway, and the caller is told plainly that a colleague
+  will ring back to confirm it. The appointment carries a **Confirm area** chip on the
+  Appointments screen. Turning away a customer twenty minutes outside the line, over the phone, is
+  the worse outcome.
+- **Anywhere else** → not booked. The agent apologises and suggests they find someone local.
+- **What is stored.** The caller's own words stay in `Appointments.ServiceAddress`; what
+  OpenStreetMap made of them — the resolved place, its coordinates, the branch, the distance and
+  any landmarks — is kept beside it in `ServiceLocationJson`, never over it.
+
+### OpenStreetMap
+
+No key and no account. [Nominatim](https://nominatim.openstreetmap.org) geocodes addresses and
+backs the city picker; [Overpass](https://overpass-api.de) finds the landmarks. Both are free
+services on donated capacity, so `Services/GeocodingService.cs` is built around their usage
+policy: server-side only (never the browser — the policy wants one identifiable client, and a
+caller's home address should not be sent to a third party from the customer's own machine), one
+request per second deployment-wide, an identifying `User-Agent`, hard caching, short timeouts and
+no exception that can escape into a live call.
+
+Set `Osm:Contact` to an email or URL you own before any real traffic — it goes in the User-Agent
+so they can reach you rather than simply block you. If the map cannot be reached at all, bookings
+go through unchecked and are marked `Unverified`: refusing every caller because a free service is
+having a bad afternoon is a far worse failure than the occasional unvetted address.
+
 ## Retell AI integration
 
 Fully implemented in `Services/RetellService.cs`, `Controllers/RetellController.cs`,
@@ -254,6 +333,13 @@ Fully implemented in `Services/RetellService.cs`, `Controllers/RetellController.
 - **Webhook** — `POST /api/v1/webhooks/retell` handles `call_ended` / `call_analyzed`: stores the call
   log, transcript, recording URL and AI summary, matches returning customers by phone, and writes
   customer timeline events. Tenant is resolved from the payload's `agent_id`.
+- **Automatic call backfill** — `Services/CallBackfillWorker.cs` runs the same import the *Sync*
+  button runs, for every connected tenant, every `Retell:CallSyncMinutes` minutes (default 5) and
+  once at startup. It exists because minutes are summed from `CallLogs`: until a call has a row,
+  neither it nor its minutes exist anywhere in the product, so a webhook that never arrived — a
+  rotated tunnel URL, a restart mid-call, a delivery Retell gave up on — left the dashboard looking
+  frozen until somebody pressed Sync by hand. Calls already stored are skipped, so a quiet period
+  costs one Retell call per tenant and no writes.
 - **Transferred-call intent capture** — cold transfers hand the call to a human, so the AI's live
   tools stop firing and anything the human books is invisible to the system. A background worker
   (`Services/CallIntentWorker.cs`) reads the transcript of each **transferred** call with Claude

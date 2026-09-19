@@ -207,6 +207,7 @@ public interface ISettingsRepository
     Task<AgentConfig?> GetAgentConfigAsync(int orgId);
     Task<AgentConfig?> GetAgentConfigByRetellAgentIdAsync(string retellAgentId);
     Task<int?> FindOrganizationByRetellPhoneNumberAsync(string phoneNumber, int excludeOrgId);
+    Task<bool> AnyOtherOrganizationNamedAsync(int orgId, string name);
     Task UpsertAgentConfigAsync(AgentConfig config);
     Task<IEnumerable<int>> GetConnectedOrganizationIdsAsync();
 }
@@ -214,14 +215,29 @@ public interface ISettingsRepository
 public class SettingsRepository : ISettingsRepository
 {
     private readonly IDbConnectionFactory _db;
-    public SettingsRepository(IDbConnectionFactory db) => _db = db;
+    private readonly ICache _cache;
 
-    public async Task<Organization?> GetOrganizationAsync(int orgId)
+    public SettingsRepository(IDbConnectionFactory db, ICache cache)
     {
-        using var conn = _db.Create();
-        return await conn.QuerySingleOrDefaultAsync<Organization>(
-            "SELECT * FROM Organizations WHERE Id=@orgId AND IsDeleted=0", new { orgId });
+        _db = db;
+        _cache = cache;
     }
+
+    /// <summary>
+    /// Cached: this row is read on every live-call tool, every prompt build and every dashboard
+    /// load, and written only from the two methods below — which drop the key.
+    ///
+    /// Suspension is deliberately not read through here (see <c>AuthRepository</c>, which asks for
+    /// <c>IsActive</c> directly), so an operator switching an account off in the console still
+    /// takes effect on the next request rather than at the end of this entry's life.
+    /// </summary>
+    public Task<Organization?> GetOrganizationAsync(int orgId) =>
+        _cache.GetOrSetAsync(CacheKeys.Org(orgId), CacheTtl.Config, async () =>
+        {
+            using var conn = _db.Create();
+            return await conn.QuerySingleOrDefaultAsync<Organization>(
+                "SELECT * FROM Organizations WHERE Id=@orgId AND IsDeleted=0", new { orgId });
+        });
 
     public async Task UpdateOrganizationAsync(Organization org)
     {
@@ -232,14 +248,20 @@ public class SettingsRepository : ISettingsRepository
                 BusinessHoursJson=@BusinessHoursJson, MaxConcurrentAppointments=@MaxConcurrentAppointments,
                 ProductsEnabled=@ProductsEnabled, OnboardingCompleted=@OnboardingCompleted
             WHERE Id=@Id AND IsDeleted=0", org);
+
+        // Business hours and timezone are read by the booking tools mid-call, so this one cannot
+        // be left to expire: the agent would keep quoting the old opening times.
+        await _cache.RemoveAsync(CacheKeys.Org(org.Id));
     }
 
-    public async Task<AgentConfig?> GetAgentConfigAsync(int orgId)
-    {
-        using var conn = _db.Create();
-        return await conn.QuerySingleOrDefaultAsync<AgentConfig>(
-            "SELECT * FROM AgentConfig WHERE OrganizationId=@orgId", new { orgId });
-    }
+    /// <summary>Cached: read by every webhook, every sync pass and every backfill.</summary>
+    public Task<AgentConfig?> GetAgentConfigAsync(int orgId) =>
+        _cache.GetOrSetAsync(CacheKeys.Agent(orgId), CacheTtl.Config, async () =>
+        {
+            using var conn = _db.Create();
+            return await conn.QuerySingleOrDefaultAsync<AgentConfig>(
+                "SELECT * FROM AgentConfig WHERE OrganizationId=@orgId", new { orgId });
+        });
 
     // Hidden (soft-deleted) organizations are excluded: their stale config must never be
     // pushed to Retell, where it would overwrite the agent of whichever live tenant shares
@@ -286,6 +308,18 @@ public class SettingsRepository : ISettingsRepository
             new { phoneNumber, excludeOrgId });
     }
 
+    /// <summary>True when any other organization goes by this name. Asked before deleting a Retell
+    /// resource that can only be recognised by the name it was given, so two tenants called the
+    /// same thing can never clean up each other's content. Hidden organizations count: their
+    /// resources may still be on the account.</summary>
+    public async Task<bool> AnyOtherOrganizationNamedAsync(int orgId, string name)
+    {
+        using var conn = _db.Create();
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM Organizations WHERE Id <> @orgId AND Name = @name",
+            new { orgId, name }) > 0;
+    }
+
     public async Task UpsertAgentConfigAsync(AgentConfig c)
     {
         using var conn = _db.Create();
@@ -321,6 +355,11 @@ public class SettingsRepository : ISettingsRepository
                 VALUES (@OrganizationId, @Voice, @Language, @Greeting, @TransferNumber,
                 @RetellAgentId, @RetellLlmId, @RetellKnowledgeBaseId, @DetachedRetellAgentId, @DetachedRetellLlmId,
                 @DetachedRetellKnowledgeBaseId, @RetellPhoneNumber, @LastSyncedAt, @Enabled, @EnabledToolsJson);", c);
+
+        // Connecting, disconnecting or stopping an agent all land here, and every one of them has
+        // to be true for the very next webhook — this is the linkage that decides which tenant a
+        // call belongs to.
+        await _cache.RemoveAsync(CacheKeys.Agent(c.OrganizationId));
     }
 }
 

@@ -61,7 +61,13 @@ public class SidebarCounts
 public class AppointmentRepository : IAppointmentRepository
 {
     private readonly IDbConnectionFactory _db;
-    public AppointmentRepository(IDbConnectionFactory db) => _db = db;
+    private readonly ICache _cache;
+
+    public AppointmentRepository(IDbConnectionFactory db, ICache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
 
     private const string SelectSql = @"
         SELECT a.*, c.Name AS CustomerName, c.Phone AS CustomerPhone, s.Name AS ServiceName,
@@ -173,14 +179,14 @@ public class AppointmentRepository : IAppointmentRepository
         if (assignment is null || assignment.OnDutyIds.Count == 0 || assignment.CandidateIds.Count == 0)
         {
             id = await conn.ExecuteScalarAsync<int?>($@"
-                INSERT INTO Appointments (OrganizationId, CustomerId, ServiceId, StaffUserId, EmployeeId, StartAt, EndAt, Status, PaymentStatus, Amount, ServiceAddress, IsEmergency, Notes)
+                INSERT INTO Appointments (OrganizationId, CustomerId, ServiceId, StaffUserId, EmployeeId, StartAt, EndAt, Status, PaymentStatus, Amount, ServiceAddress, AreaStatus, ServiceLocationJson, IsEmergency, Notes)
                 OUTPUT INSERTED.Id
-                SELECT @OrganizationId, @CustomerId, @ServiceId, @StaffUserId, @EmployeeId, @StartAt, @EndAt, @Status, @PaymentStatus, @Amount, @ServiceAddress, @IsEmergency, @Notes
+                SELECT @OrganizationId, @CustomerId, @ServiceId, @StaffUserId, @EmployeeId, @StartAt, @EndAt, @Status, @PaymentStatus, @Amount, @ServiceAddress, @AreaStatus, @ServiceLocationJson, @IsEmergency, @Notes
                 WHERE {SlotIsFreeSql}",
                 new
                 {
                     a.OrganizationId, a.CustomerId, a.ServiceId, a.StaffUserId, a.EmployeeId, a.StartAt, a.EndAt,
-                    a.Status, a.PaymentStatus, a.Amount, a.ServiceAddress, a.IsEmergency, a.Notes,
+                    a.Status, a.PaymentStatus, a.Amount, a.ServiceAddress, a.AreaStatus, a.ServiceLocationJson, a.IsEmergency, a.Notes,
                     ExcludeId = (int?)null,
                 }, tx);
         }
@@ -189,14 +195,14 @@ public class AppointmentRepository : IAppointmentRepository
             var row = await conn.QuerySingleOrDefaultAsync<InsertedAppointment>($@"
                 {ChooseEmployeeSql}
 
-                INSERT INTO Appointments (OrganizationId, CustomerId, ServiceId, StaffUserId, EmployeeId, StartAt, EndAt, Status, PaymentStatus, Amount, ServiceAddress, IsEmergency, Notes)
+                INSERT INTO Appointments (OrganizationId, CustomerId, ServiceId, StaffUserId, EmployeeId, StartAt, EndAt, Status, PaymentStatus, Amount, ServiceAddress, AreaStatus, ServiceLocationJson, IsEmergency, Notes)
                 OUTPUT INSERTED.Id, INSERTED.EmployeeId
-                SELECT @OrganizationId, @CustomerId, @ServiceId, @StaffUserId, @Chosen, @StartAt, @EndAt, @Status, @PaymentStatus, @Amount, @ServiceAddress, @IsEmergency, @Notes
+                SELECT @OrganizationId, @CustomerId, @ServiceId, @StaffUserId, @Chosen, @StartAt, @EndAt, @Status, @PaymentStatus, @Amount, @ServiceAddress, @AreaStatus, @ServiceLocationJson, @IsEmergency, @Notes
                 WHERE @Chosen IS NOT NULL;",
                 new
                 {
                     a.OrganizationId, a.CustomerId, a.ServiceId, a.StaffUserId, a.StartAt, a.EndAt,
-                    a.Status, a.PaymentStatus, a.Amount, a.ServiceAddress, a.IsEmergency, a.Notes,
+                    a.Status, a.PaymentStatus, a.Amount, a.ServiceAddress, a.AreaStatus, a.ServiceLocationJson, a.IsEmergency, a.Notes,
                     ExcludeId = (int?)null,
                     OnDutyIds = assignment.OnDutyIds,
                     CandidateIds = assignment.CandidateIds,
@@ -273,7 +279,16 @@ public class AppointmentRepository : IAppointmentRepository
 
     /// <summary>Badge counts for the sidebar: appointments awaiting confirmation,
     /// missed calls needing follow-up, and total active customers.</summary>
-    public async Task<SidebarCounts> GetSidebarCountsAsync(int orgId)
+    /// <summary>
+    /// Cached briefly. Three COUNT(*)s is not much on its own, but every open tab asks for them
+    /// every minute whether anything happened or not — this collapses a whole team's tabs into
+    /// one query per window, and a badge twenty seconds behind is still a badge.
+    /// </summary>
+    public async Task<SidebarCounts> GetSidebarCountsAsync(int orgId) =>
+        await _cache.GetOrSetAsync(CacheKeys.SidebarCounts(orgId), CacheTtl.Counters,
+            () => LoadSidebarCountsAsync(orgId)) ?? await LoadSidebarCountsAsync(orgId);
+
+    private async Task<SidebarCounts> LoadSidebarCountsAsync(int orgId)
     {
         using var conn = _db.Create();
         return await conn.QuerySingleAsync<SidebarCounts>(@"

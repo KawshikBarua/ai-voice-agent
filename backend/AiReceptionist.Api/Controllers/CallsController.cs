@@ -20,10 +20,11 @@ public class CallsController : ControllerBase
     private readonly IAiToolsRepository _ai;
     private readonly ICustomerRepository _customers;
     private readonly IAppointmentRepository _appointments;
+    private readonly CallSyncStatus _syncStatus;
 
     public CallsController(ICallRepository calls, IRetellService retell, ITenantProvider tenant,
         ICallActionSuggestionRepository suggestions, ISettingsRepository settings, IAiToolsRepository ai,
-        ICustomerRepository customers, IAppointmentRepository appointments)
+        ICustomerRepository customers, IAppointmentRepository appointments, CallSyncStatus syncStatus)
     {
         _calls = calls;
         _retell = retell;
@@ -33,6 +34,7 @@ public class CallsController : ControllerBase
         _ai = ai;
         _customers = customers;
         _appointments = appointments;
+        _syncStatus = syncStatus;
     }
 
     /// <summary>Imports any calls Retell recorded that never reached us via webhook
@@ -42,9 +44,31 @@ public class CallsController : ControllerBase
     public async Task<IActionResult> Sync()
     {
         var imported = await _retell.BackfillCallsAsync(_tenant.OrganizationId);
+        // "Last synced" means exactly that, however it happened. The automatic schedule is left
+        // alone: a manual sync does not buy the next one more time, and pretending otherwise
+        // would make the countdown lie about when the agent's own import runs.
+        _syncStatus.LastRunAt = DateTime.UtcNow;
         return Ok(ApiResponse<object>.Ok(new { imported },
             imported == 0 ? "No new calls found." : $"Imported {imported} call(s) from Retell."));
     }
+
+    /// <summary>
+    /// The automatic import's schedule, for the dashboard's countdown.
+    ///
+    /// <c>secondsUntilNext</c> is computed here rather than left to the browser: a countdown
+    /// derived from an absolute timestamp is wrong by however far the reader's clock is off, and
+    /// on a machine with a badly set clock that is minutes, not seconds.
+    /// </summary>
+    [HttpGet("sync/status")]
+    public IActionResult SyncStatus() =>
+        Ok(ApiResponse<object>.Ok(new
+        {
+            intervalSeconds = (int)_syncStatus.Interval.TotalSeconds,
+            secondsUntilNext = _syncStatus.SecondsUntilNext,
+            lastRunAt = _syncStatus.LastRunAt,
+            nextRunAt = _syncStatus.NextRunAt,
+            lastImported = _syncStatus.LastImported,
+        }));
 
     [HttpGet]
     public async Task<IActionResult> List([FromQuery] int page = 1, [FromQuery] int pageSize = 20) =>

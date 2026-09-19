@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, unwrap } from '../api/client'
 import {
@@ -115,6 +115,157 @@ function StatTile({ label, value, unit, footnote, delta, featured, to, children 
     </div>
   )
   return to ? <Link to={to} className="block h-full">{body}</Link> : body
+}
+
+/* ---------------------------------------------------------------- call sync */
+
+const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+
+const agoLabel = (iso) => {
+  if (!iso) return 'not yet'
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000))
+  if (seconds < 45) return 'just now'
+  const mins = Math.round(seconds / 60)
+  return mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`
+}
+
+/**
+ * When the agent's calls are next pulled in, counting down.
+ *
+ * Calls normally arrive by webhook the moment they end; this is the sweep that catches the ones
+ * that did not, and until it runs those calls — and their minutes — are not on this page. So the
+ * question "why does that number not move?" now has a visible answer with a time on it, rather
+ * than a Sync button somebody has to know to press.
+ *
+ * Two details make it honest rather than decorative:
+ *  - the server sends *seconds remaining*, not a timestamp, so a reader whose clock is wrong
+ *    still sees the real interval;
+ *  - reaching zero refreshes the figures it was counting down for, a few seconds later, once the
+ *    pass has had time to finish. A countdown that ends and changes nothing on screen is worse
+ *    than no countdown.
+ */
+function useCallSync() {
+  const queryClient = useQueryClient()
+  const [remaining, setRemaining] = useState(null)
+
+  const { data, isFetching } = useQuery({
+    queryKey: ['call-sync-status'],
+    queryFn: () => api.get('/calls/sync/status').then(unwrap),
+    // The schedule only changes when the API restarts; the countdown itself runs locally.
+    refetchInterval: 10 * 60_000,
+    // One attempt. The only realistic failure is an API that does not serve this route yet,
+    // and retrying that produces nothing but a longer wait before the reader is told so.
+    retry: false,
+  })
+
+  useEffect(() => {
+    if (!data) return undefined
+    const seconds = data.secondsUntilNext ?? 0
+
+    // Counted against a deadline rather than by decrementing: a background tab's timers are
+    // throttled to about once a minute, and a counter that only knows how many ticks it has
+    // had comes back minutes behind.
+    const deadline = Date.now() + seconds * 1000
+    let refreshed = false
+
+    const read = () => {
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
+      setRemaining(left)
+
+      if (left === 0 && seconds > 0 && !refreshed) {
+        refreshed = true
+        setTimeout(() => {
+          for (const key of [['call-sync-status'], ['dashboard'], ['billing-usage'], ['calls']])
+            queryClient.invalidateQueries({ queryKey: key })
+        }, 4000)
+      }
+    }
+
+    read()
+    const id = setInterval(read, 1000)
+    return () => clearInterval(id)
+  }, [data, queryClient])
+
+  const due = Boolean(data) && remaining === 0
+  const every = data?.intervalSeconds ? Math.round(data.intervalSeconds / 60) : null
+
+  // "We asked and got nothing back, and we are not still asking." Deliberately derived from the
+  // absence of data rather than from `isError`: a request that is cancelled — a remount, a
+  // navigation, React's double-invoke in development — leaves the query pending forever with no
+  // error attached, and the first version of this sat on "Checking the schedule…" for good
+  // because of it. This covers a 404, a cancellation and an outage with one boolean.
+  const unavailable = !data && !isFetching
+
+  return {
+    due,
+    unavailable,
+    clock: !data ? '—' : due ? 'now' : clock(remaining ?? data.secondsUntilNext),
+    detail: unavailable
+      // Names the likely cause. This route is the newest thing here, so an API that predates it
+      // is the common case — and "checking…" forever would hide that completely.
+      ? 'Unavailable — the API may need restarting'
+      : !data
+        ? 'Checking the schedule…'
+        : due
+          ? 'Importing calls from Retell…'
+          : `Synced ${agoLabel(data.lastRunAt)}${every ? ` · every ${every} min` : ''}`,
+  }
+}
+
+/** The spinning-arrows glyph, spinning only while a pass is actually running. */
+function SyncGlyph({ spinning, className = 'h-4 w-4' }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`${className} ${spinning ? 'animate-spin' : ''}`} fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v6h-6" />
+    </svg>
+  )
+}
+
+/**
+ * The header's copy of the countdown — above the fold, where "next sync" is actually useful.
+ * Hidden below sm, where the header is already two rows of controls and this is the least
+ * important of them; the card row below carries the same figure for that case.
+ */
+function CallSyncChip() {
+  const { due, unavailable, clock: value, detail } = useCallSync()
+  if (unavailable) return null
+
+  return (
+    <span
+      title={detail}
+      className="hidden items-center gap-2 rounded-pill bg-card px-3.5 py-2.5 text-sm shadow-sm sm:inline-flex"
+    >
+      <SyncGlyph spinning={due} className="h-3.5 w-3.5 text-muted" />
+      <span className="text-muted">Sync</span>
+      <span className="font-semibold tabular-nums">{value}</span>
+    </span>
+  )
+}
+
+/** The same countdown as a full row, inside the AI agent card. */
+function CallSyncRow() {
+  const { due, clock: value, detail } = useCallSync()
+
+  return (
+    <div className="flex items-center gap-3 rounded-2xl bg-panel p-3.5">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-sm text-on-ink">
+        <SyncGlyph spinning={due} />
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <p className="text-base font-bold">Call sync</p>
+          {/* Tabular figures: without them the countdown shifts sideways every second as the
+              digits change width, which is the sort of thing that reads as cheap. */}
+          <p className="shrink-0 text-base font-bold tabular-nums">{value}</p>
+        </div>
+        {/* Kept short enough to survive this card's width: it sits in the narrow column, and a
+            sub-line that truncates mid-word looks broken rather than terse. */}
+        <p className="mt-0.5 truncate text-xs text-ink-soft">{detail}</p>
+      </div>
+    </div>
+  )
 }
 
 /** The four numbers under the call chart — the quality behind the volume. */
@@ -263,6 +414,9 @@ export default function Dashboard() {
             crowding into whatever space the title leaves. */}
         <div className="flex w-full flex-wrap items-center gap-2.5 sm:w-auto">
           {(offline || unreachable) && <Chip tone="red">{offline ? 'Offline' : 'Unavailable'}</Chip>}
+          {/* When the agent's calls are next imported. Up here because the answer to "why has
+              that number not moved?" is worth seeing without scrolling for it. */}
+          <CallSyncChip />
           <form onSubmit={submitSearch}
             className="hidden items-center gap-2 rounded-pill bg-card px-4 py-2.5 shadow-sm lg:flex">
             <button type="submit" aria-label="Search customers" className="grid place-items-center">
@@ -639,6 +793,9 @@ export default function Dashboard() {
                   </p>
                 </div>
               </Link>
+              {/* Directly under the connection it depends on: this is the other half of "are my
+                  calls actually reaching me". */}
+              <CallSyncRow />
               <Link to="/knowledge-base" className="flex items-center gap-3 rounded-2xl bg-mint p-3.5 transition hover:brightness-95">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-sm text-on-ink">📚</span>
                 <div>

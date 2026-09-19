@@ -1,3 +1,4 @@
+using AiReceptionist.Api.Common;
 using AiReceptionist.Api.Data.Repositories;
 using System.Globalization;
 
@@ -271,14 +272,16 @@ public class BillingService : IBillingService
     private readonly IBillingRepository _billing;
     private readonly ISettingsRepository _settings;
     private readonly IStripeGateway _stripe;
+    private readonly ICache _cache;
     private readonly ILogger<BillingService> _logger;
 
     public BillingService(IBillingRepository billing, ISettingsRepository settings,
-        IStripeGateway stripe, ILogger<BillingService> logger)
+        IStripeGateway stripe, ICache cache, ILogger<BillingService> logger)
     {
         _billing = billing;
         _settings = settings;
         _stripe = stripe;
+        _cache = cache;
         _logger = logger;
     }
 
@@ -1085,7 +1088,17 @@ public class BillingService : IBillingService
         };
     }
 
-    public async Task<UsageSnapshot> GetUsageAsync(int orgId, CancellationToken ct = default)
+    /// <summary>
+    /// Cached for ten seconds. Every open dashboard and billing page polls this every fifteen,
+    /// and a call has to finish before a single one of its minutes exists — so there is nothing
+    /// finer-grained to catch, and the window mostly serves to stop one customer's three open
+    /// tabs running three sets of aggregates against the call log.
+    /// </summary>
+    public async Task<UsageSnapshot> GetUsageAsync(int orgId, CancellationToken ct = default) =>
+        await _cache.GetOrSetAsync(CacheKeys.Usage(orgId), CacheTtl.Usage,
+            () => LoadUsageAsync(orgId, ct), ct) ?? await LoadUsageAsync(orgId, ct);
+
+    private async Task<UsageSnapshot> LoadUsageAsync(int orgId, CancellationToken ct)
     {
         var sub = await _billing.GetSubscriptionAsync(orgId);
 

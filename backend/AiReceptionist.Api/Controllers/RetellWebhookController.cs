@@ -51,7 +51,14 @@ public class RetellWebhookController : ControllerBase
         if (!RetellSignature.Accept(connection.ApiKey, connection.VerifySignature, raw,
                 Request.Headers["X-Retell-Signature"], allowUnverified: _env.IsDevelopment()))
         {
-            _logger.LogWarning("Rejected Retell webhook: invalid signature");
+            // Loud, and with enough detail to tell a forgery from a scheme mismatch. A rejection
+            // here is invisible from the outside: Retell retries a handful of times and then the
+            // call it was carrying is gone for good, so this log is the only place it can surface.
+            _logger.LogWarning(
+                "Rejected Retell webhook: signature did not verify. Header='{Signature}', body {Length} bytes. " +
+                "If genuine deliveries are being rejected, the stored API key or the signing scheme is wrong — " +
+                "every call they carried is being dropped.",
+                Request.Headers["X-Retell-Signature"].ToString(), raw.Length);
             return Unauthorized();
         }
 

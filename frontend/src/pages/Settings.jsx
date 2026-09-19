@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Children, useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
@@ -6,6 +6,7 @@ import { api, signOut, unwrap } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useThemeStore } from '../store/theme'
 import { Avatar, Chip, PillButton } from '../components/ui'
+import { icons } from '../components/AppLayout'
 import {
   currentSubscription, disablePush, enablePush, iosNeedsInstall, permission, pushSupported,
 } from '../lib/push'
@@ -18,58 +19,88 @@ import {
 const inputBase =
   'w-full min-w-0 rounded-2xl border px-4 py-2.5 text-base outline-none transition-colors'
 
+/** The editable state of a control: a real box, because it is about to be typed in. */
+const inputLive = `${inputBase} border-line bg-card text-ink focus:border-ink`
+
 /**
- * One labelled control. Locked fields keep the same shape as editable ones so the card does
- * not reflow when Edit is pressed — only the border and background change.
+ * One micro-caption above a control, shared by `Field` and by the handful of forms that build
+ * their own rows (closures, locations, adding a person). They used to carry their own label
+ * styling, so half the page introduced its fields one way and half another.
+ */
+const fieldLabel =
+  'mb-1 block text-[0.7rem] font-semibold uppercase tracking-[0.07em] text-muted'
+
+/**
+ * One labelled control.
+ *
+ * The label is a quiet micro-caption rather than a bold line: on a page that is almost entirely
+ * labels, a label set at the same weight as the value it introduces competes with it, and forty
+ * of them turn a settings screen into a wall of headings.
  */
 function Field({ label, children, full = false, hint }) {
   return (
-    <div className={full ? 'sm:col-span-2' : ''}>
-      <label className="mb-1.5 block text-xs font-semibold text-ink-soft">{label}</label>
+    <div className={`min-w-0 ${full ? 'sm:col-span-2' : ''}`}>
+      <label className={fieldLabel}>{label}</label>
       {children}
-      {hint && <p className="mt-1.5 text-xs text-muted">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs leading-relaxed text-muted">{hint}</p>}
     </div>
   )
 }
 
-function TextInput({ locked, className = '', ...rest }) {
+/**
+ * A field that is not being edited.
+ *
+ * Locked controls used to render as disabled inputs — a grey box with a value sitting in it. A
+ * settings page spends most of its life in that state, so the whole screen read as a form that
+ * had been switched off, which is both wrong (most of it is simply information) and the single
+ * loudest reason it looked unfinished. A value is now typeset as a value, over a hairline: it is
+ * legible at full contrast, it still occupies an input's height so nothing jumps when Edit is
+ * pressed, and the difference between "reading" and "editing" is unmistakable.
+ */
+function ReadValue({ value, multiline = false }) {
+  const empty = value === null || value === undefined || value === ''
   return (
-    <input
-      disabled={locked}
-      className={`${inputBase} ${
-        locked
-          ? 'border-transparent bg-panel text-ink-soft'
-          : 'border-line bg-card text-ink focus:border-ink'
-      } ${className}`}
-      {...rest}
-    />
+    <p
+      className={`min-h-[2.75rem] w-full min-w-0 border-b border-line px-0.5 py-2.5 text-base ${
+        empty ? 'text-muted' : 'text-ink'
+      } ${multiline ? 'whitespace-pre-wrap leading-relaxed' : 'truncate'}`}
+    >
+      {empty ? '—' : value}
+    </p>
   )
 }
 
+function TextInput({ locked, className = '', ...rest }) {
+  if (locked) return <ReadValue value={rest.value} />
+  return <input className={`${inputLive} ${className}`} {...rest} />
+}
+
+/**
+ * Locked selects show the chosen option's *label*, not its value — the voice picker stores an
+ * identifier, and printing `11labs-Grace` where the page had been showing "Grace — female" is
+ * the kind of detail that makes software feel unfinished.
+ */
 function SelectInput({ locked, children, ...rest }) {
+  if (locked) {
+    const chosen = Children.toArray(children).find(
+      (option) => String(option.props?.value ?? option.props?.children) === String(rest.value),
+    )
+    const label = chosen
+      ? Children.toArray(chosen.props.children).map((part) => (typeof part === 'object' ? part.props?.children : part)).join('')
+      : rest.value
+    return <ReadValue value={label} />
+  }
+
   return (
-    <select
-      disabled={locked}
-      className={`${inputBase} ${
-        locked ? 'border-transparent bg-panel text-ink-soft' : 'border-line bg-card text-ink focus:border-ink'
-      }`}
-      {...rest}
-    >
+    <select className={inputLive} {...rest}>
       {children}
     </select>
   )
 }
 
 function TextArea({ locked, className = '', ...rest }) {
-  return (
-    <textarea
-      disabled={locked}
-      className={`${inputBase} ${
-        locked ? 'border-transparent bg-panel text-ink-soft' : 'border-line bg-card text-ink focus:border-ink'
-      } ${className}`}
-      {...rest}
-    />
-  )
+  if (locked) return <ReadValue value={rest.value} multiline />
+  return <textarea className={`${inputLive} ${className}`} {...rest} />
 }
 
 const PencilIcon = () => (
@@ -81,55 +112,91 @@ const PencilIcon = () => (
 )
 
 /**
+ * Every card on this page.
+ *
+ * There were nine copies of this chrome, each with its own heading size and padding, which is
+ * what made the screen look assembled rather than designed. One component means one type scale,
+ * one radius, one shadow and one rule under every heading — and a new section cannot drift from
+ * the others without someone deliberately making it.
+ *
+ * The header rule is the load-bearing part: cards on this page carry between one and twenty
+ * controls, and without a line the eye cannot tell a card's title from a field label below it.
+ */
+function SettingsCard({ title, subtitle, action, children, className = '', bodyClassName = '' }) {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.28, ease: 'easeOut' }}
+      className={`theme-fade overflow-hidden rounded-card border border-line bg-card shadow-sm ${className}`}
+    >
+      {(title || action) && (
+        <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line px-5 py-4 sm:px-6">
+          <div className="min-w-[12rem] flex-1">
+            <h2 className="font-display text-base font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+            {subtitle && <p className="mt-1 text-[0.8rem] leading-relaxed text-muted">{subtitle}</p>}
+          </div>
+          {action}
+        </header>
+      )}
+      <div className={`px-5 py-5 sm:px-6 ${bodyClassName}`}>{children}</div>
+    </motion.section>
+  )
+}
+
+/**
+ * The quiet control in a card header. Deliberately not a filled button: there are five of these
+ * down the page and five filled buttons would each claim to be the thing to do next.
+ */
+function EditButton({ onClick, label = 'Edit' }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-pill px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:bg-panel hover:text-ink"
+    >
+      <PencilIcon />
+      {label}
+    </button>
+  )
+}
+
+/**
  * A settings card that is read-only until Edit is pressed. Locking by default is what stops
  * a stray keystroke on a page full of inputs from silently changing the business the AI
  * quotes prices from.
  */
 function EditableCard({ title, subtitle, editing, onEdit, onCancel, onSave, saving, error, children, footer }) {
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+    <SettingsCard
+      title={title}
+      subtitle={subtitle}
+      action={onEdit && !editing ? <EditButton onClick={onEdit} /> : null}
     >
-      <div className="mb-5 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-md font-bold">{title}</h2>
-          {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}
-        </div>
-
-        {onEdit && !editing && (
-          <button
-            onClick={onEdit}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-line bg-card px-3 py-1.5 text-sm font-semibold text-ink-soft transition hover:bg-panel"
-          >
-            Edit <PencilIcon />
-          </button>
-        )}
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2">{children}</div>
+      {/* gap-x is wider than gap-y on purpose: two columns of fields need a visible channel
+          between them, while rows of a form want to read as one block. */}
+      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">{children}</div>
 
       {error && (
-        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
+        <p className="mt-5 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
           {error}
         </p>
       )}
 
+      {/* The actions sit below a rule and to the right, where a form's commit belongs — and
+          only exist while there is something to commit. */}
       {editing && (
-        <div className="mt-5 grid gap-2.5 sm:flex sm:items-center">
-          <PillButton onClick={onSave} disabled={saving}>
-            {saving ? 'Saving…' : 'Save changes'}
-          </PillButton>
+        <div className="mt-6 flex flex-col gap-2.5 border-t border-line pt-5 sm:flex-row sm:justify-end">
           <PillButton variant="outline" onClick={onCancel} disabled={saving}>
             Cancel
+          </PillButton>
+          <PillButton variant="primary" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save changes'}
           </PillButton>
         </div>
       )}
 
       {footer}
-    </motion.section>
+    </SettingsCard>
   )
 }
 
@@ -144,10 +211,9 @@ function CardState({ title, isPending, error }) {
         : error?.response?.data?.message ?? 'Could not load this section. Please retry.'
 
   return (
-    <section className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5">
-      <h2 className="text-md font-bold">{title}</h2>
-      <p className={`mt-2 text-sm ${isPending ? 'text-muted' : 'text-danger'}`}>{message}</p>
-    </section>
+    <SettingsCard title={title}>
+      <p className={`text-sm ${isPending ? 'text-muted' : 'text-danger'}`}>{message}</p>
+    </SettingsCard>
   )
 }
 
@@ -237,16 +303,35 @@ const invalidHourRows = (rows) =>
 /**
  * One day's hours.
  *
- * A day name, a checkbox and two time pickers do not fit across a phone, and left to wrap they
- * broke differently depending on the length of the weekday — seven rows, no two aligned. So below
- * sm the row becomes two lines (day and open-state, then the times) and the times take the full
- * width, which also makes them far easier to hit. `sm:contents` dissolves the first line's
- * wrapper at larger widths so all four parts sit on the single row they always did.
+ * Reading and editing are two different layouts, because they are two different jobs. A week of
+ * opening times is a *table* — seven days down the left, seven times down the right, scanned in
+ * a second — and that is what it now is when nobody is editing: no disabled checkboxes, no
+ * greyed time pickers, no seven stacked grey slabs each with 500px of nothing on its right.
+ *
+ * Editing brings the controls in, on the same grid, so the times stay in the column the reader
+ * was just looking at. Below sm the row becomes two lines (day and open-state, then the times)
+ * and the times take the full width, which also makes them far easier to hit.
  */
 function HoursRow({ row, editing, onChange }) {
-  const timeInput = `min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm outline-none transition-colors sm:flex-none sm:py-1.5 ${
-    editing ? 'border-line bg-card text-ink focus:border-ink' : 'border-transparent bg-card/60 text-ink-soft'
-  }`
+  const timeInput =
+    'min-w-0 flex-1 rounded-xl border border-line bg-card px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-ink sm:flex-none sm:py-1.5'
+
+  if (!editing) {
+    return (
+      <div className="flex items-baseline justify-between gap-4 py-2.5">
+        <span className={`text-sm font-semibold ${row.open ? 'text-ink' : 'text-muted'}`}>
+          {row.label}
+        </span>
+        {row.open ? (
+          <span className="text-sm tabular-nums text-ink-soft">
+            {row.start} <span className="text-muted">–</span> {row.end}
+          </span>
+        ) : (
+          <span className="text-sm text-muted">Closed</span>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-2 rounded-2xl bg-panel px-3.5 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-2 sm:px-4">
@@ -256,25 +341,26 @@ function HoursRow({ row, editing, onChange }) {
         <label className="flex shrink-0 items-center gap-2 text-sm text-ink-soft">
           <input
             type="checkbox"
-            className="h-4 w-4 rounded accent-ink"
+            className="h-4 w-4 rounded accent-brand-strong"
             checked={row.open}
-            disabled={!editing}
             onChange={(e) => onChange({ ...row, open: e.target.checked })}
           />
           Open
         </label>
       </div>
 
+      {/* Pushed to the right edge so the times stay in the column they occupy when the card is
+          being read — switching to Edit should not move the thing you came to change. */}
       {row.open ? (
-        <div className="flex items-center gap-2">
-          <input type="time" className={timeInput} value={row.start} disabled={!editing}
+        <div className="flex items-center gap-2 sm:ml-auto">
+          <input type="time" className={timeInput} value={row.start}
             onChange={(e) => onChange({ ...row, start: e.target.value })} aria-label={`${row.label} opening time`} />
           <span className="shrink-0 text-sm text-muted">to</span>
-          <input type="time" className={timeInput} value={row.end} disabled={!editing}
+          <input type="time" className={timeInput} value={row.end}
             onChange={(e) => onChange({ ...row, end: e.target.value })} aria-label={`${row.label} closing time`} />
         </div>
       ) : (
-        <span className="text-sm font-medium text-muted">Closed all day</span>
+        <span className="text-sm font-medium text-muted sm:ml-auto">Closed all day</span>
       )}
     </div>
   )
@@ -317,37 +403,29 @@ function HolidaysCard() {
   })
 
   if (isPending || error)
-    return <CardState title="Holidays & Closures" isPending={isPending} error={error} />
+    return <CardState title="Holidays & closures" isPending={isPending} error={error} />
 
   const addError = errorText(add, 'Could not add that closure. Please retry.')
   const today = todayStart()
   const field = 'min-w-0 rounded-2xl border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-ink'
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+    <SettingsCard
+      title="Holidays & closures"
+      subtitle="Days the business is shut. These override your weekly hours — the AI will not book anyone in, and tells callers why."
     >
-      <h2 className="text-md font-bold">Holidays &amp; Closures</h2>
-      <p className="mt-0.5 text-xs text-muted">
-        Days the business is shut. These override your weekly hours — the AI will not book
-        anyone in, and tells callers why.
-      </p>
-
       {/* Stacked and full-width on a phone; the same single line as before from sm. */}
       <form
-        className="mt-4 grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
+        className="grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
         onSubmit={(e) => { e.preventDefault(); add.mutate({ date, name: name.trim() || 'Closed' }) }}
       >
         <div>
-          <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-date">Date</label>
+          <label className={fieldLabel} htmlFor="closure-date">Date</label>
           <input id="closure-date" type="date" required className={`${field} w-full sm:w-auto`} value={date}
             onChange={(e) => setDate(e.target.value)} />
         </div>
         <div className="sm:min-w-[180px] sm:flex-1">
-          <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="closure-name">Reason</label>
+          <label className={fieldLabel} htmlFor="closure-name">Reason</label>
           <input id="closure-name" className={`${field} w-full`} value={name} placeholder="e.g. Christmas Day"
             onChange={(e) => setName(e.target.value)} />
         </div>
@@ -389,10 +467,380 @@ function HolidaysCard() {
           )
         })}
       </div>
-    </motion.section>
+    </SettingsCard>
   )
 }
 
+/* -------------------------------------------------------------- coverage areas */
+
+// leading-6 is load-bearing rather than decoration. A native <select> sizes itself from font
+// metrics and ignores line-height altogether, while an <input> takes it from the page — so the
+// country box came out 41px against the city box's 44px and the two sat visibly off each other.
+// Pinning the line-height fixes the input half; LocationSelect below fixes the select half.
+const locationField =
+  'min-w-0 rounded-2xl border border-line bg-card px-4 py-2.5 text-base leading-6 outline-none focus:border-ink'
+
+/**
+ * A country-style dropdown that is exactly as tall as the text box beside it.
+ *
+ * `appearance-none` is what makes that possible: it takes the select out of the browser's own
+ * sizing and puts it on the same box model as an input, so the two line up at every font size.
+ * The cost is the native arrow, which is why one is drawn here — `currentColor` so it follows
+ * the theme, and `pointer-events-none` so it never swallows a click meant for the control.
+ */
+function LocationSelect({ className = '', children, ...rest }) {
+  return (
+    <div className="relative">
+      <select className={`${locationField} w-full appearance-none pr-10 ${className}`} {...rest}>
+        {children}
+      </select>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        className="pointer-events-none absolute right-4 top-1/2 size-4 -translate-y-1/2 text-muted"
+      >
+        <path d="M6 8l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  )
+}
+
+const MIN_MILES = 1
+const MAX_MILES = 200
+
+const asKm = (miles) => Math.round(miles * 1.609344)
+
+/** Describes one branch's reach in a single phrase, the way the AI will put it to a caller. */
+const describeCoverage = (l) =>
+  l.coversEntireCity ? `All of ${l.city}` : `${Math.round(l.coverageRadiusMiles)} mi (${asKm(l.coverageRadiusMiles)} km) around ${l.city}`
+
+/** Settles a fast-changing value once typing stops, so the city search runs on a pause rather
+ *  than on every keystroke — one request instead of a dozen, and no flicker between them. */
+function useDebounced(value, ms = 300) {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), ms)
+    return () => clearTimeout(timer)
+  }, [value, ms])
+  return settled
+}
+
+// Matches the server's own floor, and it is a floor rather than a threshold: OpenStreetMap is a
+// search engine, not an autocomplete. On a short fragment it guesses at what sounds similar —
+// "Lon" in the UK comes back as Brookeborough and Falkirk, with no London — and on a genuine
+// prefix it often returns nothing at all ("Manche" finds no Manchester). So the full name is what
+// actually works, which is what the placeholder and the empty state both say.
+const MIN_CITY_QUERY = 4
+
+/**
+ * Type-ahead over the cities of one country.
+ *
+ * Deliberately not a plain dropdown of every city: the United States alone has tens of thousands,
+ * which is megabytes to ship and unusable to scroll. The answers come from the same OpenStreetMap
+ * data the coverage check itself uses, so a city that can be picked here is one an address can
+ * later be measured against — and picking one is what captures the city's boundary, which is what
+ * "cover the whole city" is judged on.
+ */
+function CityPicker({ countryCode, value, onChange, id }) {
+  const [open, setOpen] = useState(false)
+  const typed = value.trim()
+  const query = useDebounced(typed)
+  const longEnough = query.length >= MIN_CITY_QUERY
+
+  const { data: cities, isFetching } = useQuery({
+    queryKey: ['cities', countryCode, query.toLowerCase()],
+    queryFn: () => api.get('/locations/cities', { params: { countryCode, q: query } }).then(unwrap),
+    enabled: Boolean(countryCode) && longEnough,
+    staleTime: Infinity,
+  })
+
+  // The list stays up while a new query is in flight, so the box does not empty and re-fill on
+  // every pause in typing. Only the footer changes.
+  const suggestions = cities ?? []
+  const settled = !isFetching && query === typed
+
+  return (
+    <div className="relative">
+      <input
+        id={id}
+        className={`${locationField} w-full`}
+        value={value}
+        autoComplete="off"
+        disabled={!countryCode}
+        placeholder={countryCode ? 'Type the full city name…' : 'Pick a country first'}
+        onChange={(e) => { onChange(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+        // A blur that fires before the click lands would close the list out from under the
+        // pointer, so the close waits a frame for the selection to register.
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+      />
+      {open && typed.length > 0 && (
+        <ul className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-2xl border border-line bg-card py-1 shadow-lg">
+          {suggestions.map((c) => (
+            <li key={`${c.city}|${c.region}`}>
+              <button
+                type="button"
+                className="block w-full px-4 py-2 text-left text-sm hover:bg-panel"
+                // The whole suggestion is kept, not just its name: the server re-resolves it on
+                // save, and this is the spelling that finds it again.
+                onClick={() => { onChange(c.city); setOpen(false) }}
+              >
+                {c.city}
+                {c.region && <span className="text-muted"> · {c.region}</span>}
+              </button>
+            </li>
+          ))}
+          {!longEnough && (
+            <li className="px-4 py-2 text-sm text-muted">Keep typing the city name…</li>
+          )}
+          {longEnough && !settled && suggestions.length === 0 && (
+            <li className="px-4 py-2 text-sm text-muted">Searching…</li>
+          )}
+          {/* Worth being specific: this searches real places rather than filtering a list, so a
+              half-typed name usually finds nothing at all. Someone who typed "Manche" and read
+              "no match" would conclude Manchester was unavailable. */}
+          {longEnough && settled && suggestions.length === 0 && (
+            <li className="px-4 py-2 text-sm text-muted">
+              No match — try the city's full name, spelled out.
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/** The radius control, plus the switch that makes it irrelevant. */
+function CoverageInput({ miles, entireCity, city, onMiles, onEntireCity, onCommit, idPrefix }) {
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="size-4 accent-brand-strong"
+          checked={entireCity}
+          onChange={(e) => onEntireCity(e.target.checked)}
+        />
+        <span>Cover the whole of {city || 'the city'}</span>
+      </label>
+
+      <div className={entireCity ? 'pointer-events-none opacity-40' : ''}>
+        <div className="flex items-baseline justify-between text-xs text-muted">
+          <label htmlFor={`${idPrefix}-radius`}>Coverage radius</label>
+          <span className="font-semibold text-ink-soft">{Math.round(miles)} mi · {asKm(miles)} km</span>
+        </div>
+        <input
+          id={`${idPrefix}-radius`}
+          type="range"
+          min={MIN_MILES}
+          max={MAX_MILES}
+          step={1}
+          value={miles}
+          disabled={entireCity}
+          className="mt-1 w-full accent-brand-strong"
+          onChange={(e) => onMiles(Number(e.target.value))}
+          // Saved when the thumb is let go rather than on every pixel of the drag: a slider
+          // fires a change per step, and a hundred of those would be a hundred requests.
+          onPointerUp={onCommit}
+          onKeyUp={onCommit}
+          onBlur={onCommit}
+        />
+      </div>
+    </div>
+  )
+}
+
+/** One saved branch. Coverage is edited in place — the slider writes when it is let go. */
+function LocationRow({ location, onSave, onRemove, busy }) {
+  const [draft, setDraft] = useState(location)
+  useEffect(() => setDraft(location), [location])
+
+  const changed = draft.coverageRadiusMiles !== location.coverageRadiusMiles ||
+    draft.coversEntireCity !== location.coversEntireCity
+
+  return (
+    <div className="rounded-2xl bg-panel px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold">{location.name}</span>
+        <Chip tone="cream">{location.city}, {location.countryName}</Chip>
+        <button
+          onClick={() => onRemove(location.id)}
+          disabled={busy}
+          className="rounded-pill px-3 py-1 text-xs font-semibold text-danger transition hover:bg-danger-soft disabled:opacity-50"
+        >
+          Remove
+        </button>
+      </div>
+
+      <div className="mt-3 max-w-sm">
+        <CoverageInput
+          idPrefix={`loc-${location.id}`}
+          city={location.city}
+          miles={draft.coverageRadiusMiles}
+          entireCity={draft.coversEntireCity}
+          onMiles={(coverageRadiusMiles) => setDraft({ ...draft, coverageRadiusMiles })}
+          onEntireCity={(coversEntireCity) => {
+            setDraft({ ...draft, coversEntireCity })
+            onSave({ ...draft, coversEntireCity })
+          }}
+          onCommit={() => { if (changed) onSave(draft) }}
+        />
+      </div>
+    </div>
+  )
+}
+
+const blankLocation = { countryCode: '', city: '', name: '', coverageRadiusMiles: 10, coversEntireCity: false }
+
+/**
+ * The branches the business works out of, and how far each one travels.
+ *
+ * This is what an address given on a call is checked against: the AI looks it up on
+ * OpenStreetMap the moment the caller says it, and either books it, books it with a warning that
+ * someone will ring back, or explains that it is outside the area — rather than everyone finding
+ * out on the day. With no branches here nothing is checked and every address is accepted, which
+ * is how every business starts.
+ */
+function LocationsCard() {
+  const qc = useQueryClient()
+  const { data: locations, isPending, error } = useQuery({
+    queryKey: ['locations'],
+    queryFn: () => api.get('/locations').then(unwrap),
+  })
+  // Fixed reference data — fetched once and kept for the session.
+  const { data: countries } = useQuery({
+    queryKey: ['countries'],
+    queryFn: () => api.get('/locations/countries').then(unwrap),
+    staleTime: Infinity,
+  })
+
+  const [form, setForm] = useState(blankLocation)
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['locations'] })
+    // The prompt names the areas covered, so its preview goes stale otherwise.
+    qc.invalidateQueries({ queryKey: ['final-prompt'] })
+  }
+
+  const add = useMutation({
+    mutationFn: (body) => api.post('/locations', body).then(unwrap),
+    onSuccess: () => { refresh(); setForm(blankLocation) },
+  })
+  const save = useMutation({
+    mutationFn: (body) => api.put(`/locations/${body.id}`, body).then(unwrap),
+    onSuccess: refresh,
+  })
+  const remove = useMutation({
+    mutationFn: (id) => api.delete(`/locations/${id}`),
+    onSuccess: refresh,
+  })
+
+  if (isPending || error)
+    return <CardState title="Locations & coverage" isPending={isPending} error={error} />
+
+  const problem = errorText(add, 'Could not add that location. Please retry.') ??
+    errorText(save, 'Could not save that change. Please retry.') ??
+    errorText(remove, 'Could not remove that location. Please retry.')
+
+  const ready = form.countryCode && form.city.trim().length > 1
+
+  return (
+    <SettingsCard
+      title="Locations & coverage"
+      subtitle="Where you work from, and how far you travel. The AI checks every address a caller gives against these before it books — an address it cannot find, or one outside every area, is caught on the phone. Leave this empty and no address is ever checked."
+    >
+      <form
+        className="grid gap-3 sm:grid-cols-2"
+        onSubmit={(e) => { e.preventDefault(); if (ready) add.mutate({ ...form, isActive: true }) }}
+      >
+        <div>
+          <label className={fieldLabel} htmlFor="loc-country">Country</label>
+          <LocationSelect
+            id="loc-country"
+            value={form.countryCode}
+            onChange={(e) => setForm({ ...form, countryCode: e.target.value, city: '' })}
+          >
+            <option value="">Choose a country…</option>
+            {(countries ?? []).map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+          </LocationSelect>
+        </div>
+
+        <div>
+          <label className={fieldLabel} htmlFor="loc-city">City</label>
+          <CityPicker
+            id="loc-city"
+            countryCode={form.countryCode}
+            value={form.city}
+            onChange={(city) => setForm({ ...form, city })}
+          />
+        </div>
+
+        <div>
+          <label className={fieldLabel} htmlFor="loc-name">
+            Branch name <span className="font-normal text-muted">(optional)</span>
+          </label>
+          <input
+            id="loc-name"
+            className={`${locationField} w-full`}
+            value={form.name}
+            placeholder={form.city || 'e.g. North depot'}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+        </div>
+
+        <CoverageInput
+          idPrefix="loc-new"
+          city={form.city}
+          miles={form.coverageRadiusMiles}
+          entireCity={form.coversEntireCity}
+          onMiles={(coverageRadiusMiles) => setForm({ ...form, coverageRadiusMiles })}
+          onEntireCity={(coversEntireCity) => setForm({ ...form, coversEntireCity })}
+          onCommit={() => {}}
+        />
+
+        <div className="sm:col-span-2">
+          <PillButton type="submit" className="w-full sm:w-auto" disabled={!ready || add.isPending}>
+            {add.isPending ? 'Adding…' : 'Add location'}
+          </PillButton>
+        </div>
+      </form>
+
+      {problem && (
+        <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm font-medium text-danger">
+          {problem}
+        </p>
+      )}
+
+      <div className="mt-5 space-y-2">
+        {locations.length === 0 && (
+          <p className="rounded-2xl bg-panel px-4 py-3 text-sm text-muted">
+            No locations yet — the AI accepts any address a caller gives.
+          </p>
+        )}
+        {locations.map((l) => (
+          <LocationRow
+            key={l.id}
+            location={l}
+            busy={remove.isPending || save.isPending}
+            onSave={(next) => save.mutate(next)}
+            onRemove={(id) => remove.mutate(id)}
+          />
+        ))}
+      </div>
+
+      {locations.length > 0 && (
+        <p className="px-1 pt-3 text-xs text-muted">
+          An address inside one of these is booked as normal. One in the right city but past the
+          radius is still booked, and the caller is told a colleague will ring back to confirm it.
+          Anywhere else is turned down politely. Covering: {locations.map(describeCoverage).join(' · ')}.
+        </p>
+      )}
+    </SettingsCard>
+  )
+}
 /* ------------------------------------------------------------------- team */
 
 /**
@@ -473,18 +921,18 @@ function TimeOffEditor({ employee, entries, onAdd, onRemove, adding, error }) {
       >
         <div className="grid grid-cols-2 gap-2 sm:contents">
         <div className="min-w-0">
-          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-from-${employee.id}`}>First day</label>
+          <label className={fieldLabel} htmlFor={`off-from-${employee.id}`}>First day</label>
           <input id={`off-from-${employee.id}`} type="date" required className={`${field} w-full`} value={from}
             onChange={(e) => setFrom(e.target.value)} />
         </div>
         <div className="min-w-0">
-          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-to-${employee.id}`}>Last day</label>
+          <label className={fieldLabel} htmlFor={`off-to-${employee.id}`}>Last day</label>
           <input id={`off-to-${employee.id}`} type="date" className={`${field} w-full`} value={to} min={from}
             onChange={(e) => setTo(e.target.value)} />
         </div>
         </div>
         <div className="sm:min-w-[150px] sm:flex-1">
-          <label className="mb-1 block text-[11px] font-semibold text-muted" htmlFor={`off-why-${employee.id}`}>Reason</label>
+          <label className={fieldLabel} htmlFor={`off-why-${employee.id}`}>Reason</label>
           <input id={`off-why-${employee.id}`} className={`${field} w-full`} value={reason} placeholder="Holiday"
             onChange={(e) => setReason(e.target.value)} />
         </div>
@@ -707,32 +1155,24 @@ function TeamPanel() {
 
   return (
     <div className="space-y-4">
-      <motion.section
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+      <SettingsCard
+        title="Team"
+        subtitle="Who takes appointments. The AI can book one caller with each person at the same time — two people means two callers can both have noon."
       >
-        <h2 className="text-md font-bold">Team</h2>
-        <p className="mt-0.5 text-xs text-muted">
-          Who takes appointments. The AI can book one caller with each person at the same time —
-          two people means two callers can both have noon.
-        </p>
-
         <form
-          className="mt-4 grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
+          className="grid gap-2.5 sm:flex sm:flex-wrap sm:items-end"
           onSubmit={(e) => {
             e.preventDefault()
             add.mutate({ name: newName.trim(), jobTitle: newTitle.trim() || null, isActive: true })
           }}
         >
           <div className="sm:min-w-[160px] sm:flex-1">
-            <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="new-employee">Name</label>
+            <label className={fieldLabel} htmlFor="new-employee">Name</label>
             <input id="new-employee" required className={`${field} w-full`} value={newName} placeholder="e.g. James"
               onChange={(e) => setNewName(e.target.value)} />
           </div>
           <div className="sm:min-w-[160px] sm:flex-1">
-            <label className="mb-1.5 block text-xs font-semibold text-ink-soft" htmlFor="new-employee-title">Job title</label>
+            <label className={fieldLabel} htmlFor="new-employee-title">Job title</label>
             <input id="new-employee-title" className={`${field} w-full`} value={newTitle} placeholder="Optional"
               onChange={(e) => setNewTitle(e.target.value)} />
           </div>
@@ -781,7 +1221,7 @@ function TeamPanel() {
                 'when someone is off. The AI works this out for itself on every call.'}
           </p>
         )}
-      </motion.section>
+      </SettingsCard>
     </div>
   )
 }
@@ -883,21 +1323,13 @@ function NotificationsPanel() {
 
   return (
     <div className="space-y-4">
-      <motion.section
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+      <SettingsCard
+        title="Notifications"
+        subtitle="Be told the moment your AI books someone in, even with this app closed. Emergencies and anything happening today keep notifying until somebody marks them as seen."
       >
-        <h2 className="text-md font-bold">Notifications</h2>
-        <p className="mt-0.5 text-xs text-muted">
-          Be told the moment your AI books someone in, even with this app closed. Emergencies and
-          anything happening today keep notifying until somebody marks them as seen.
-        </p>
-
         {/* The server has no key pair, so nothing can be delivered to anyone. */}
         {!config?.enabled && (
-          <p className="mt-4 rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
+          <p className="rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
             Notifications are not switched on for this server yet. Whoever runs it needs to
             generate a key pair once — it is free and takes a minute. Until then, anything that
             needs you still waits on your Dashboard.
@@ -979,21 +1411,14 @@ function NotificationsPanel() {
             )}
           </div>
         )}
-      </motion.section>
+      </SettingsCard>
 
       {devices?.length > 0 && (
-        <motion.section
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.28, ease: 'easeOut' }}
-          className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+        <SettingsCard
+          title="Devices being notified"
+          subtitle="Everyone on your team who has turned notifications on. Remove a phone you no longer carry."
         >
-          <h2 className="text-md font-bold">Devices being notified</h2>
-          <p className="mt-0.5 text-xs text-muted">
-            Everyone on your team who has turned notifications on. Remove a phone you no longer carry.
-          </p>
-
-          <div className="mt-4 space-y-2">
+          <div className="space-y-2">
             {devices.map((device) => (
               <div key={device.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-2xl bg-panel px-4 py-2.5">
                 <span className="w-full min-w-0 truncate text-sm font-semibold sm:w-auto sm:flex-1">
@@ -1011,7 +1436,7 @@ function NotificationsPanel() {
               </div>
             ))}
           </div>
-        </motion.section>
+        </SettingsCard>
       )}
     </div>
   )
@@ -1030,24 +1455,25 @@ function ProfilePanel() {
 
   return (
     <div className="space-y-4">
-      <motion.section
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
-      >
-        {/*
-          The role chip goes under the name on a phone rather than beside it. Sharing the row with
-          an 80px avatar left the text about 190px on a small screen, which truncated a person's
-          own name to "Vict…" — the one thing on this card that should always be readable.
-        */}
-        <div className="flex items-center gap-4">
+      {/*
+        The identity card. No heading of its own — a card whose entire content is a person's name
+        does not need a title saying so, and the old "Profile" heading above a name at the same
+        weight read as a label attached to nothing.
+
+        The role chip goes under the name on a phone rather than beside it. Sharing the row with
+        an 80px avatar left the text about 190px on a small screen, which truncated a person's
+        own name to "Vict…" — the one thing on this card that should always be readable.
+      */}
+      <SettingsCard bodyClassName="!py-6">
+        <div className="flex items-center gap-5">
           <Avatar name={name} size="xl" tone="lavender" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-lg font-bold">{name}</p>
-            <p className="truncate text-sm text-ink-soft">{user?.email}</p>
-            <p className="truncate text-xs text-muted">{org?.name ?? '—'}</p>
-            <div className="mt-2 sm:hidden">
+            <p className="truncate font-display text-xl font-semibold tracking-[-0.01em]">{name}</p>
+            <p className="mt-0.5 truncate text-sm text-ink-soft">{user?.email}</p>
+            <p className="mt-2 flex items-center gap-2 text-xs text-muted">
+              <span className="truncate">{org?.name ?? '—'}</span>
+            </p>
+            <div className="mt-3 sm:hidden">
               <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
             </div>
           </div>
@@ -1055,10 +1481,10 @@ function ProfilePanel() {
             <Chip tone="lavender">{user?.role ?? 'Member'}</Chip>
           </div>
         </div>
-      </motion.section>
+      </SettingsCard>
 
       <EditableCard
-        title="Personal Information"
+        title="Personal information"
         subtitle="Your sign-in identity. Ask an administrator to change these."
       >
         <Field label="Full Name">
@@ -1131,7 +1557,7 @@ function BusinessPanel() {
   return (
     <div className="space-y-4">
       <EditableCard
-        title="Business Information"
+        title="Business information"
         subtitle="Shown to callers and used in the AI prompt"
         editing={editing}
         onEdit={() => setEditing(true)}
@@ -1164,7 +1590,7 @@ function BusinessPanel() {
       </EditableCard>
 
       <EditableCard
-        title="Business Hours"
+        title="Business hours"
         subtitle={`When you take appointments — local time in ${form.timezone || 'UTC'}`}
         editing={editingHours}
         onEdit={() => setEditingHours(true)}
@@ -1173,7 +1599,10 @@ function BusinessPanel() {
         saving={save.isPending}
         error={editingHours ? hoursError : null}
       >
-        <div className="space-y-2 sm:col-span-2">
+        {/* Hairlines between rows while reading — the week is a table, and a table wants rules,
+            not seven separate slabs. The editor keeps its own spacing, because there each row
+            is a group of controls rather than a line of text. */}
+        <div className={`sm:col-span-2 ${editingHours ? 'space-y-2' : 'divide-y divide-line'}`}>
           {hours.map((row, i) => (
             <HoursRow
               key={row.key}
@@ -1182,12 +1611,14 @@ function BusinessPanel() {
               onChange={(next) => setHours(hours.map((r, j) => (j === i ? next : r)))}
             />
           ))}
-          <p className="px-1 pt-1 text-xs text-muted">
+          <p className="pt-4 text-xs leading-relaxed text-muted">
             The AI offers slots only inside these hours and refuses to book outside them. Someone
             who works part of the week gets their own hours under Team.
           </p>
         </div>
       </EditableCard>
+
+      <LocationsCard />
 
       <HolidaysCard />
     </div>
@@ -1241,54 +1672,47 @@ function AgentPanel() {
   })
 
   if (isPending || error || !form)
-    return <CardState title="AI Agent" isPending={isPending} error={error} />
+    return <CardState title="AI agent" isPending={isPending} error={error} />
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const cancel = () => { setForm(agent); save.reset(); setEditing(false) }
 
   return (
     <div className="space-y-4">
-      <motion.section
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.28, ease: 'easeOut' }}
-        className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-md font-bold">AI phone agent</h2>
-            <p className="mt-0.5 text-xs text-muted">
-              Set up and maintained for you by the platform team
-            </p>
-          </div>
+      <SettingsCard
+        title="AI phone agent"
+        subtitle="Set up and maintained for you by the platform team"
+        action={
           <Chip tone={status?.connected ? 'mint' : 'cream'}>
             {status?.connected ? 'Answering calls' : 'Not set up yet'}
           </Chip>
-        </div>
+        }
+      >
+        {/* Two facts, and both are numbers somebody may need to read out loud — so they are
+            typeset as values on their own line rather than squeezed against their label with
+            a truncation waiting to happen. */}
+        <dl className="grid gap-3 sm:grid-cols-2">
+          {[
+            { term: 'Retell phone number', value: status?.retellPhoneNumber ?? 'Not assigned' },
+            { term: 'Transfer number', value: agent.transferNumber ?? 'Not set' },
+          ].map((item) => (
+            <div key={item.term} className="min-w-0 rounded-2xl bg-panel px-4 py-3">
+              <dt className="text-[0.7rem] font-semibold uppercase tracking-[0.07em] text-muted">
+                {item.term}
+              </dt>
+              <dd className="mt-1 truncate text-base font-semibold tabular-nums">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <div className="flex items-center justify-between gap-3 rounded-2xl bg-panel px-4 py-3">
-            <span className="text-sm text-ink-soft">Retell phone number</span>
-            <span className="max-w-[55%] truncate text-xs font-semibold">
-              {status?.retellPhoneNumber ?? 'Not assigned'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-3 rounded-2xl bg-panel px-4 py-3">
-            <span className="text-sm text-ink-soft">Transfer number</span>
-            <span className="max-w-[55%] truncate text-xs font-semibold">
-              {agent.transferNumber ?? 'Not set'}
-            </span>
-          </div>
-        </div>
-
-        <p className="mt-3 text-xs text-muted">
+        <p className="mt-4 text-xs leading-relaxed text-muted">
           Your phone numbers are managed for you — contact support to change the number your AI
           answers or where calls are transferred.
         </p>
-      </motion.section>
+      </SettingsCard>
 
       <EditableCard
-        title="Voice & Greeting"
+        title="Voice & greeting"
         subtitle="How the agent sounds and what callers hear first"
         editing={editing}
         onEdit={() => setEditing(true)}
@@ -1348,18 +1772,11 @@ function AppearancePanel() {
   const setMode = useThemeStore((s) => s.setMode)
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="theme-fade rounded-card border border-line bg-card p-4 shadow-sm sm:p-5"
+    <SettingsCard
+      title="Appearance"
+      subtitle="Applies across the whole app and is remembered on this device."
     >
-      <h2 className="text-md font-bold">Appearance</h2>
-      <p className="mt-0.5 text-xs text-muted">
-        Applies across the whole app and is remembered on this device.
-      </p>
-
-      <div role="radiogroup" aria-label="Theme" className="mt-5 grid gap-3 sm:grid-cols-3">
+      <div role="radiogroup" aria-label="Theme" className="grid gap-3 sm:grid-cols-3">
         {THEME_OPTIONS.map((option) => {
           const active = mode === option.mode
           return (
@@ -1368,94 +1785,152 @@ function AppearancePanel() {
               role="radio"
               aria-checked={active}
               onClick={() => setMode(option.mode)}
+              // The chosen theme is marked by a ring rather than a 1px border swap: a border
+              // that only changes colour moves nothing, so on a card this size the selection
+              // was easy to miss entirely.
               className={`flex flex-col items-start gap-2 rounded-2xl border p-4 text-left transition ${
                 active
-                  ? 'border-ink bg-panel'
-                  : 'border-line bg-card hover:bg-panel'
+                  ? 'border-brand-strong bg-panel ring-2 ring-brand-strong/25'
+                  : 'border-line bg-card hover:border-brand/40 hover:bg-panel'
               }`}
             >
-              <span className={`grid h-9 w-9 place-items-center rounded-full ${active ? 'bg-ink text-on-ink' : 'bg-panel text-ink-soft'}`}>
+              <span
+                className={`grid h-9 w-9 place-items-center rounded-full transition ${
+                  active ? 'bg-brand-strong text-on-brand' : 'bg-panel text-ink-soft'
+                }`}
+              >
                 <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor"
                   strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   {option.icon.map((d, i) => <path key={i} d={d} />)}
                 </svg>
               </span>
-              <span className="text-base font-semibold">{option.label}</span>
-              <span className="text-xs text-muted">{option.hint}</span>
+              <span className="text-[0.95rem] font-semibold">{option.label}</span>
+              <span className="text-xs leading-relaxed text-muted">{option.hint}</span>
             </button>
           )
         })}
       </div>
-    </motion.section>
+    </SettingsCard>
   )
 }
 
 /* ------------------------------------------------------------------ page */
 
+/**
+ * The sections, in the order somebody actually goes looking for them: who I am, then the
+ * business, then the people, then the things that reach me, then the agent, then taste.
+ *
+ * Each carries an icon and a one-line description. The icons are the app sidebar's own set
+ * (`icons` in AppLayout) rather than a second family invented here — two icon vocabularies
+ * three inches apart is the sort of thing that reads as "unfinished" without anyone being
+ * able to say why. The descriptions only show on the desktop rail, where there is room: they
+ * turn six one-word labels into a menu somebody can choose from without clicking each one.
+ */
 const SECTIONS = [
-  { id: 'profile', label: 'Profile', Panel: ProfilePanel },
-  { id: 'business', label: 'Business', Panel: BusinessPanel },
-  { id: 'team', label: 'Team', Panel: TeamPanel },
-  { id: 'notifications', label: 'Notifications', Panel: NotificationsPanel },
-  { id: 'agent', label: 'AI Agent', Panel: AgentPanel },
-  { id: 'appearance', label: 'Appearance', Panel: AppearancePanel },
+  { id: 'profile', label: 'Profile', hint: 'Your sign-in identity', icon: icons.users, Panel: ProfilePanel },
+  { id: 'business', label: 'Business', hint: 'Details, hours and coverage', icon: icons.book, Panel: BusinessPanel },
+  { id: 'team', label: 'Team', hint: 'Who takes appointments', icon: icons.appointments, Panel: TeamPanel },
+  { id: 'notifications', label: 'Notifications', hint: 'What reaches your phone', icon: icons.bell, Panel: NotificationsPanel },
+  { id: 'agent', label: 'AI agent', hint: 'Voice, greeting and numbers', icon: icons.phone, Panel: AgentPanel },
+  { id: 'appearance', label: 'Appearance', hint: 'Light, night or system', icon: icons.settings, Panel: AppearancePanel },
 ]
+
+/** The rail's icon. Same 24-grid and stroke weight as the app sidebar's. */
+const SectionIcon = ({ d }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+    strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]" aria-hidden="true">
+    {d.map((path, i) => <path key={i} d={path} />)}
+  </svg>
+)
 
 export default function Settings() {
   const [active, setActive] = useState('profile')
   const navigate = useNavigate()
 
-  const Panel = SECTIONS.find((s) => s.id === active).Panel
+  const current = SECTIONS.find((s) => s.id === active)
 
   return (
-    <div>
-      <header className="mb-5 sm:mb-6">
-        <h1 className="font-display text-xl font-semibold tracking-[-0.01em] sm:text-2xl">Settings</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          Manage your account information and preferences
-        </p>
+    // A reading column, like every other page in this app. Left full-bleed, a settings form on
+    // a wide monitor puts a 500px box around a first name and strands its label a screen away
+    // from the value — which is most of why this page looked amateur next to the rest.
+    <div className="mx-auto max-w-5xl">
+      <header className="mb-5 flex flex-wrap items-end justify-between gap-x-4 gap-y-3 sm:mb-7">
+        <div className="min-w-0">
+          <h1 className="font-display text-xl font-semibold tracking-[-0.01em] sm:text-2xl">Settings</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Manage your account, your business and how your AI answers.
+          </p>
+        </div>
+
+        {/*
+          Sign out belongs here, not in the section list. It was the seventh item in a menu of
+          six sections — the only one that was not a section, the only one in danger red, and
+          sitting directly under "Appearance" where a mis-tap costs you your session.
+        */}
+        {/* `ml-auto` keeps it at the right edge even when it wraps onto its own line on a
+            phone, where a full-width-left button directly under the title would read as the
+            page's primary action rather than as the way out. */}
+        <PillButton
+          variant="outline"
+          onClick={async () => { await signOut(); navigate('/login') }}
+          className="ml-auto shrink-0"
+        >
+          Sign out
+        </PillButton>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[210px_minmax(0,1fr)] lg:gap-5">
-        <nav className="theme-fade h-max min-w-0 rounded-card border border-line bg-card p-2.5 shadow-sm lg:sticky lg:top-0 lg:p-3">
-          {/*
-            Every section visible at once. This was briefly a swipeable strip, which is the wrong
-            trade for navigation: it hides two of the five behind a gesture with nothing on screen
-            saying they are there, so finding Appearance means discovering the scroll first. Pills
-            that wrap cost one extra line and hide nothing. From lg it is the sidebar list again.
-          */}
-          <ul className="flex flex-wrap gap-1.5 lg:flex-col lg:gap-1">
-            {SECTIONS.map((section) => (
-              <li key={section.id} className="lg:w-full">
-                <button
-                  onClick={() => setActive(section.id)}
-                  aria-current={active === section.id ? 'page' : undefined}
-                  className={`whitespace-nowrap rounded-2xl px-3 py-2 text-sm font-semibold transition lg:w-full lg:px-4 lg:py-2.5 lg:text-left lg:text-base ${
-                    active === section.id
-                      ? 'bg-lavender text-ink'
-                      : 'text-ink-soft hover:bg-panel'
-                  }`}
-                >
-                  {section.label}
-                </button>
-              </li>
-            ))}
-          </ul>
+      <div className="grid gap-4 lg:grid-cols-[236px_minmax(0,1fr)] lg:gap-7">
+        {/*
+          The rail. No card around it any more: a bordered panel next to the app's own bordered
+          sidebar read as two competing navigations, and the one that was not the app's looked
+          like a copy of it. Plain rows on the page, with the active row carrying the same raised
+          card and brand ink the sidebar uses for the current page — one vocabulary, used twice.
 
-          <div className="mt-2 border-t border-line pt-2">
-            <button
-              onClick={async () => { await signOut(); navigate('/login') }}
-              className="w-full whitespace-nowrap rounded-2xl px-3 py-2 text-left text-sm font-semibold text-danger transition hover:bg-danger-soft lg:px-4 lg:py-2.5 lg:text-base"
-            >
-              Sign out
-            </button>
-          </div>
+          Every section stays visible at once. This was briefly a swipeable strip, which is the
+          wrong trade for navigation: it hides items behind a gesture with nothing on screen
+          saying they are there. Pills that wrap cost one line and hide nothing.
+        */}
+        <nav aria-label="Settings sections" className="h-max min-w-0 lg:sticky lg:top-0">
+          <ul className="flex flex-wrap gap-1.5 lg:flex-col lg:gap-1">
+            {SECTIONS.map((section) => {
+              const selected = active === section.id
+              return (
+                <li key={section.id} className="lg:w-full">
+                  <button
+                    onClick={() => setActive(section.id)}
+                    aria-current={selected ? 'page' : undefined}
+                    className={`flex items-center gap-2.5 whitespace-nowrap rounded-2xl px-3 py-2 text-sm font-semibold transition lg:w-full lg:items-start lg:px-3.5 lg:py-2.5 lg:text-left ${
+                      selected
+                        ? 'bg-card text-brand-strong shadow-sm lg:ring-1 lg:ring-line'
+                        : 'text-ink-soft hover:bg-card/70 hover:text-ink'
+                    }`}
+                  >
+                    <span className={`shrink-0 lg:mt-0.5 ${selected ? 'text-brand-strong' : 'text-muted'}`}>
+                      <SectionIcon d={section.icon} />
+                    </span>
+                    <span className="min-w-0 lg:flex-1">
+                      {section.label}
+                      {/* The description is desktop-only: on a phone these are pills in a row,
+                          and a second line inside each would wrap the row to four. */}
+                      <span
+                        className={`hidden whitespace-normal text-[0.72rem] font-medium leading-snug lg:mt-0.5 lg:block ${
+                          selected ? 'text-ink-soft' : 'text-muted'
+                        }`}
+                      >
+                        {section.hint}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         </nav>
 
         {/* Remounting on section change replays the card entrance animation, so switching
             sections reads as a change of content rather than a silent swap. */}
-        <div key={active} className="min-w-0">
-          <Panel />
+        <div key={active} className="min-w-0 space-y-4">
+          <current.Panel />
         </div>
       </div>
     </div>

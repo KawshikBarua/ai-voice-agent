@@ -1,3 +1,4 @@
+using AiReceptionist.Api.Common;
 using Dapper;
 
 namespace AiReceptionist.Api.Data.Repositories;
@@ -129,9 +130,26 @@ public interface IDashboardRepository
 public class DashboardRepository : IDashboardRepository
 {
     private readonly IDbConnectionFactory _db;
-    public DashboardRepository(IDbConnectionFactory db) => _db = db;
+    private readonly ICache _cache;
 
-    public async Task<DashboardStats> GetStatsAsync(int orgId, StatsWindow w)
+    public DashboardRepository(IDbConnectionFactory db, ICache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
+
+    /// <summary>
+    /// Cached for a minute. This is the most expensive read in the application — a dozen
+    /// correlated aggregates plus five series over the whole call and appointment history — and
+    /// it is run on every dashboard load and every refetch. Nothing writes it, so there is no
+    /// invalidation to get wrong; a figure up to a minute old on a page of month-to-date totals
+    /// is not a figure anybody can act differently on.
+    /// </summary>
+    public async Task<DashboardStats> GetStatsAsync(int orgId, StatsWindow w) =>
+        await _cache.GetOrSetAsync(CacheKeys.DashboardStats(orgId, w.TodayLocalDate), CacheTtl.Stats,
+            () => LoadStatsAsync(orgId, w)) ?? await LoadStatsAsync(orgId, w);
+
+    private async Task<DashboardStats> LoadStatsAsync(int orgId, StatsWindow w)
     {
         using var conn = _db.Create();
 

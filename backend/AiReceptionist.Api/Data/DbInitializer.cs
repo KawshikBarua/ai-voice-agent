@@ -489,6 +489,12 @@ CREATE INDEX IX_Appointments_Org_Start ON Appointments(OrganizationId, StartAt) 
 -- Field-service support (plumbers, electricians, HVAC, locksmiths, cleaners)
 IF COL_LENGTH('Appointments','ServiceAddress') IS NULL ALTER TABLE Appointments ADD ServiceAddress NVARCHAR(500) NULL;
 IF COL_LENGTH('Appointments','IsEmergency') IS NULL ALTER TABLE Appointments ADD IsEmergency BIT NOT NULL DEFAULT 0;
+-- Where the address a caller gives is checked against (see BusinessLocations below). Both are
+-- null on every booking taken without an address, and on every organization that has set no
+-- coverage areas — which is what keeps this additive for tenants who never use it.
+IF COL_LENGTH('Appointments','AreaStatus') IS NULL ALTER TABLE Appointments ADD AreaStatus NVARCHAR(20) NULL;
+IF COL_LENGTH('Appointments','ServiceLocationJson') IS NULL ALTER TABLE Appointments ADD ServiceLocationJson NVARCHAR(MAX) NULL;
+
 
 -- Who is handling the appointment (see the Employees table below). Nullable: bookings taken
 -- before the roster existed keep no assignment, and the availability rules account for them.
@@ -532,6 +538,37 @@ CREATE TABLE EmployeeTimeOff (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_EmployeeTimeOff_Org_Employee')
 CREATE INDEX IX_EmployeeTimeOff_Org_Employee ON EmployeeTimeOff(OrganizationId, EmployeeId, StartDate);
 
+
+-- ------------------------------------------------------------- coverage areas
+-- One row per branch: where it is, and how far it will travel from there. The AI checks the
+-- address a caller gives against these before it books, so a job an hour outside the nearest
+-- branch is caught on the phone rather than on the day. No rows = no coverage rules at all.
+IF OBJECT_ID('BusinessLocations') IS NULL
+CREATE TABLE BusinessLocations (
+    Id INT IDENTITY PRIMARY KEY,
+    OrganizationId INT NOT NULL REFERENCES Organizations(Id),
+    Name NVARCHAR(150) NOT NULL,
+    CountryCode NVARCHAR(2) NOT NULL,                  -- ISO 3166-1 alpha-2
+    CountryName NVARCHAR(100) NOT NULL,
+    City NVARCHAR(150) NOT NULL,
+    Latitude FLOAT NOT NULL,                           -- resolved server-side from the city
+    Longitude FLOAT NOT NULL,
+    CoverageRadiusMiles FLOAT NOT NULL DEFAULT 10,
+    CoversEntireCity BIT NOT NULL DEFAULT 0,
+    IsActive BIT NOT NULL DEFAULT 1,
+    CreatedAt DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    ModifiedAt DATETIME2 NULL,
+    IsDeleted BIT NOT NULL DEFAULT 0
+);
+-- The rectangle OpenStreetMap draws around the city. That, not the city name, is what a branch
+-- covering its whole city is measured against: an address in London reports its city as City of
+-- Westminster, so no name comparison would ever put the two together. Nullable, because rows
+-- written before this existed fall back to comparing names.
+IF COL_LENGTH('BusinessLocations','BoundsSouth') IS NULL
+ALTER TABLE BusinessLocations ADD BoundsSouth FLOAT NULL, BoundsNorth FLOAT NULL, BoundsWest FLOAT NULL, BoundsEast FLOAT NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_BusinessLocations_Org')
+CREATE INDEX IX_BusinessLocations_Org ON BusinessLocations(OrganizationId) INCLUDE (IsActive);
 
 IF OBJECT_ID('CallLogs') IS NULL
 CREATE TABLE CallLogs (

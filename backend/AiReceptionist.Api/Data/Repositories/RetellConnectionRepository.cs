@@ -1,3 +1,4 @@
+using AiReceptionist.Api.Common;
 using AiReceptionist.Api.Domain;
 using Dapper;
 
@@ -23,11 +24,13 @@ public class RetellConnectionRepository : IRetellConnectionRepository
 {
     private readonly IDbConnectionFactory _db;
     private readonly IConfiguration _config;
+    private readonly ICache _cache;
 
-    public RetellConnectionRepository(IDbConnectionFactory db, IConfiguration config)
+    public RetellConnectionRepository(IDbConnectionFactory db, IConfiguration config, ICache cache)
     {
         _db = db;
         _config = config;
+        _cache = cache;
     }
 
     public async Task<RetellConnection?> GetAsync()
@@ -37,7 +40,19 @@ public class RetellConnectionRepository : IRetellConnectionRepository
             "SELECT TOP 1 * FROM RetellConnection ORDER BY Id");
     }
 
-    public async Task<RetellConnection> GetEffectiveAsync()
+    /// <summary>
+    /// Cached: one row, read before every outbound Retell request and on every inbound webhook
+    /// (it carries the signing setting), and written only from the platform console.
+    ///
+    /// The merge with appsettings is done before caching rather than after, because the fallback
+    /// is fixed for the life of the process — caching the merged view means a hit needs no work
+    /// at all, and configuration reload would drop the entry within its five minutes anyway.
+    /// </summary>
+    public async Task<RetellConnection> GetEffectiveAsync() =>
+        await _cache.GetOrSetAsync(CacheKeys.RetellConnection, CacheTtl.Config, LoadEffectiveAsync)
+        ?? await LoadEffectiveAsync();
+
+    private async Task<RetellConnection> LoadEffectiveAsync()
     {
         var row = await GetAsync();
         return new RetellConnection
@@ -78,6 +93,10 @@ public class RetellConnectionRepository : IRetellConnectionRepository
                     DefaultVoiceId=@DefaultVoiceId, VerifySignature=@VerifySignature,
                     ModifiedAt=GETUTCDATE(), ModifiedByUserId=@userId
                 WHERE Id=@id", p);
+
+        // A rotated key or a changed webhook URL has to take effect at once — this is usually
+        // being saved *because* the old value stopped working.
+        await _cache.RemoveAsync(CacheKeys.RetellConnection);
     }
 
     private static string? Coalesce(string? primary, string? fallback) =>

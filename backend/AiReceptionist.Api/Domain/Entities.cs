@@ -174,6 +174,19 @@ public class Appointment
     /// <summary>Where the work happens — required for field-service trades (plumbing,
     /// electrical, HVAC, locksmith, cleaning) whose technician travels to the caller.</summary>
     public string? ServiceAddress { get; set; }
+    /// <summary>How <see cref="ServiceAddress"/> fared against the branches' coverage areas
+    /// (see <see cref="BusinessLocation"/>): "Covered", or "OutOfArea" for a booking taken outside
+    /// the radius that staff still have to ring back and confirm. Null when the organization has
+    /// configured no coverage areas, or when no address was given — the ordinary case, and the
+    /// reason nothing about existing bookings changes.</summary>
+    public string? AreaStatus { get; set; }
+
+    /// <summary>What OpenStreetMap made of the address, as JSON: the place it resolved to, its
+    /// coordinates, which branch covers it, how far away that is, and any landmark within walking
+    /// distance. Kept beside <see cref="ServiceAddress"/> rather than replacing it, so the words
+    /// the caller actually used are never lost behind a tidied-up version of them.</summary>
+    public string? ServiceLocationJson { get; set; }
+
     /// <summary>Caller-reported urgency captured during the call.</summary>
     public bool IsEmergency { get; set; }
     public string? Notes { get; set; }
@@ -235,6 +248,60 @@ public class CallActionSuggestion
     // joined
     public DateTime? CallStartedAt { get; set; }
     public string? FromNumber { get; set; }
+}
+
+/// <summary>
+/// One branch of the business and the area it will travel to from it.
+///
+/// The problem this solves is a caller giving an address nobody can serve — either because it is
+/// not a real place or because it is an hour outside the nearest branch. A booking taken on one
+/// costs a wasted visit, so the address is checked against these areas while the caller is still
+/// on the phone (see <c>IServiceAreaService</c>).
+///
+/// An organization with no rows here has no coverage rules at all and every address is accepted,
+/// exactly as before this existed.
+/// </summary>
+public class BusinessLocation
+{
+    public int Id { get; set; }
+    public int OrganizationId { get; set; }
+    /// <summary>What the owner calls this branch — "Manhattan", "North depot". Defaults to the
+    /// city when they do not name it.</summary>
+    public string Name { get; set; } = "";
+    /// <summary>ISO 3166-1 alpha-2, upper case. Narrows the geocoder to the countries the business
+    /// actually works in, which makes a lookup both faster and much harder to confuse — there is a
+    /// Manchester in England and another in New Hampshire.</summary>
+    public string CountryCode { get; set; } = "";
+    public string CountryName { get; set; } = "";
+    public string City { get; set; } = "";
+    /// <summary>The branch's centre, resolved server-side from the city as it is saved. Never
+    /// taken from the browser: it is what every coverage decision is measured from, so a client
+    /// that could set it could put itself inside anyone's area.</summary>
+    public double Latitude { get; set; }
+    public double Longitude { get; set; }
+    /// <summary>How far from that centre this branch will travel. Ignored while
+    /// <see cref="CoversEntireCity"/> is set.</summary>
+    public double CoverageRadiusMiles { get; set; } = 10;
+    /// <summary>The rectangle OpenStreetMap draws around this city, stored when the branch is
+    /// saved. This — not the city's name — is what "covers the whole city" is measured against:
+    /// an address in London reports its city as "City of Westminster", so no amount of name
+    /// matching would ever put the two together, while both sit plainly inside one box.
+    /// Null on a branch saved before this existed, or one the geocoder gave no usable box for;
+    /// the name comparison in <see cref="Common.Geo.SameCity"/> covers those.</summary>
+    public double? BoundsSouth { get; set; }
+    public double? BoundsNorth { get; set; }
+    public double? BoundsWest { get; set; }
+    public double? BoundsEast { get; set; }
+
+    /// <summary>Anywhere in the city counts as covered, however far out it is — the answer for a
+    /// business whose patch is administrative rather than a circle on a map.</summary>
+    public bool CoversEntireCity { get; set; }
+    /// <summary>Off for now — a branch that is shut, or not open yet. Never used to cover an
+    /// address, but kept so past bookings still say where they came from.</summary>
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ModifiedAt { get; set; }
+    public bool IsDeleted { get; set; }
 }
 
 /// <summary>A single calendar date the business is closed — a public holiday, a shutdown day

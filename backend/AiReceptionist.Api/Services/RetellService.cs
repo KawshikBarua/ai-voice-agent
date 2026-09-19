@@ -81,6 +81,7 @@ public class RetellService : IRetellService
     private readonly IPromptBuilderService _prompts;
     private readonly ICallRepository _calls;
     private readonly ICustomerRepository _customers;
+    private readonly IBusinessLocationRepository _locations;
     private readonly ILogger<RetellService> _logger;
 
     /// <summary>The model behind every tenant's agent. Sent on every sync rather than left to
@@ -98,6 +99,7 @@ public class RetellService : IRetellService
 
     public RetellService(HttpClient http, IRetellConnectionRepository connection, ISettingsRepository settings,
         IPromptBuilderService prompts, ICallRepository calls, ICustomerRepository customers,
+        IBusinessLocationRepository locations,
         ILogger<RetellService> logger)
     {
         _http = http;
@@ -106,6 +108,7 @@ public class RetellService : IRetellService
         _prompts = prompts;
         _calls = calls;
         _customers = customers;
+        _locations = locations;
         _logger = logger;
     }
 
@@ -211,7 +214,8 @@ public class RetellService : IRetellService
                 model = LlmModel,
                 general_prompt = prompt,
                 begin_message = string.IsNullOrWhiteSpace(agent.Greeting) ? null : agent.Greeting,
-                general_tools = BuildTools(orgId, agent.TransferNumber, IndustryTemplates.Resolve(org.Industry)),
+                general_tools = BuildTools(orgId, agent.TransferNumber, IndustryTemplates.Resolve(org.Industry),
+                    hasServiceArea: (await _locations.ListActiveAsync(orgId)).Count > 0),
                 knowledge_base_ids = string.IsNullOrWhiteSpace(agent.RetellKnowledgeBaseId)
                     ? Array.Empty<string>()
                     : new[] { agent.RetellKnowledgeBaseId },
@@ -228,13 +232,21 @@ public class RetellService : IRetellService
             if (kbIsNew && !string.IsNullOrWhiteSpace(previousKbId) && previousKbId != kbId)
                 await TryDeleteKnowledgeBaseAsync(previousKbId, ct);
 
+            // Then anything an earlier sync left behind. A delete that failed once was never
+            // retried before, and every version of this code prior to the in-place update built a
+            // base per sync — so an established tenant can be carrying a copy of its reference
+            // content for every restart the API has ever had. This is the pass that clears them,
+            // and it runs on every sync so the account converges on one base per organization
+            // whether or not the operator ever reconnects the agent.
+            await PruneSupersededKnowledgeBasesAsync(orgId, org.Name, agent.RetellKnowledgeBaseId, ct);
+
             // 3) Create or update the Agent bound to that LLM
             var agentPayload = new
             {
                 // The org id rides along in the name so the operator's Retell dashboard shows which
                 // tenant each agent serves, and so a later connect can recognise this agent as ours
                 // even if the LLM it points at has been deleted. Never seen by callers or tenants.
-                agent_name = $"{org.Name} — Frontly {AgentNameTag(orgId)}",
+                agent_name = $"{org.Name} — Frontly {OrgTag(orgId)}",
                 voice_id = MapVoice(agent.Voice),
                 language = string.IsNullOrWhiteSpace(agent.Language) ? "en-US" : agent.Language,
                 response_engine = new { type = "retell-llm", llm_id = agent.RetellLlmId },
@@ -587,8 +599,13 @@ public class RetellService : IRetellService
     /// sync is not rare: every tenant edit queues one and every connected tenant is re-synced when
     /// the API restarts. Creating a base per sync (which is what this used to do unconditionally)
     /// meant one abandoned knowledge base per organization per restart piling up on the shared
-    /// Retell account. A base is only created when there is none, when <paramref name="forceCreate"/>
-    /// asks for a clean one, or when Retell will not accept the in-place update.</summary>
+    /// Retell account.
+    ///
+    /// A base is only created when there is none, when <paramref name="forceCreate"/> asks for a
+    /// clean one, or when Retell says the stored one is gone. Every other failure — a timeout, a
+    /// rate limit, a base still indexing the edit before this one — keeps the existing base and
+    /// leaves its content one sync behind, because a base that is briefly stale costs a caller
+    /// nothing, while a base built per hiccup is the pile this exists to prevent.</summary>
     private async Task<(string? Id, bool IsNew)> SyncKnowledgeBaseAsync(
         int orgId, string orgName, string? existingId, bool forceCreate, CancellationToken ct)
     {
@@ -605,19 +622,33 @@ public class RetellService : IRetellService
                     existingId, orgId, docs.Count);
                 return (existingId, false);
             }
+            catch (RetellApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                // The only failure that justifies a second base: this one has been deleted in the
+                // Retell dashboard or lost with a replaced key, so there is nothing left to update.
+                _logger.LogWarning(ex,
+                    "Retell knowledge base {KbId} for org {OrgId} no longer exists — creating a replacement.",
+                    existingId, orgId);
+            }
             catch (Exception ex)
             {
-                // Falling back to a replacement keeps a re-sync working when the base was deleted
-                // in the Retell dashboard or the update is refused; the caller deletes the old one.
+                // The base is still there, it just would not take the update this time. Keeping it
+                // means the agent answers from the previous content until the next sync retries —
+                // and, unlike creating a replacement, it cannot leave a copy behind.
                 _logger.LogWarning(ex,
-                    "Could not update Retell knowledge base {KbId} for org {OrgId} in place — creating a replacement.",
+                    "Could not update Retell knowledge base {KbId} for org {OrgId} in place — keeping it, " +
+                    "with its previous content, until the next sync.",
                     existingId, orgId);
+                return (existingId, false);
             }
         }
 
         using var form = new MultipartFormDataContent
         {
-            { new StringContent($"{orgName} — reference ({DateTime.UtcNow:yyyyMMddHHmmss})"), "knowledge_base_name" },
+            // Tagged with the organization id, not stamped with the time: the tag is what lets a
+            // later sync recognise a base as this tenant's own and clear away the superseded ones,
+            // and a name that never changes stops the dashboard reading as a row of copies.
+            { new StringContent($"{orgName} — reference {OrgTag(orgId)}"), "knowledge_base_name" },
             { KnowledgeTextsContent(docs), "knowledge_base_texts" },
         };
 
@@ -641,8 +672,9 @@ public class RetellService : IRetellService
         string knowledgeBaseId, List<KnowledgeDocument> docs, CancellationToken ct)
     {
         // Reading the base first also settles whether it still exists — a stale id has to surface
-        // here as a failure so the caller can fall back to creating a replacement.
-        var stale = await ListKnowledgeBaseSourceIdsAsync(knowledgeBaseId, ct);
+        // here as a 404 so the caller can fall back to creating a replacement — and whether it is
+        // ready to be written to at all.
+        var stale = await WaitForKnowledgeBaseReadyAsync(knowledgeBaseId, ct);
 
         using var form = new MultipartFormDataContent
         {
@@ -680,7 +712,37 @@ public class RetellService : IRetellService
         }
     }
 
-    private async Task<List<string>> ListKnowledgeBaseSourceIdsAsync(string knowledgeBaseId, CancellationToken ct)
+    /// <summary>Waits for the base to finish indexing, then returns the sources it holds. Retell
+    /// refuses new sources while a base is still working through the last batch, and syncs arrive
+    /// in bursts — one per tenant edit, and one per connected tenant on every restart — so an edit
+    /// made moments after another used to fail and take a replacement base with it. Gives up
+    /// waiting after a few seconds and tries the write anyway: the worst case is the failure that
+    /// would have happened immediately otherwise, and that no longer costs a duplicate.</summary>
+    private async Task<List<string>> WaitForKnowledgeBaseReadyAsync(string knowledgeBaseId, CancellationToken ct)
+    {
+        const int maxAttempts = 6;
+        for (var attempt = 1; ; attempt++)
+        {
+            var (sourceIds, status) = await ReadKnowledgeBaseAsync(knowledgeBaseId, ct);
+            if (attempt >= maxAttempts ||
+                !string.Equals(status, "in_progress", StringComparison.OrdinalIgnoreCase))
+            {
+                if (attempt >= maxAttempts)
+                    _logger.LogWarning(
+                        "Retell knowledge base {KbId} was still indexing after {Attempts} checks — updating it anyway.",
+                        knowledgeBaseId, attempt);
+                return sourceIds;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+    }
+
+    /// <summary>Reads a knowledge base: the ids of the sources it holds, and how far along its
+    /// indexing is. A base Retell has forgotten surfaces as a 404 <see cref="RetellApiException"/>,
+    /// which is the one signal that justifies building a replacement.</summary>
+    private async Task<(List<string> SourceIds, string? Status)> ReadKnowledgeBaseAsync(
+        string knowledgeBaseId, CancellationToken ct)
     {
         var response = await _http.GetAsync($"/get-knowledge-base/{knowledgeBaseId}", ct);
         var body = await response.Content.ReadAsStringAsync(ct);
@@ -689,15 +751,110 @@ public class RetellService : IRetellService
                 $"Retell API GET /get-knowledge-base/{knowledgeBaseId} failed ({(int)response.StatusCode}): {body}");
 
         using var doc = JsonDocument.Parse(body);
-        if (!doc.RootElement.TryGetProperty("knowledge_base_sources", out var sources) ||
-            sources.ValueKind != JsonValueKind.Array)
-            return [];
+        var root = doc.RootElement;
 
-        return sources.EnumerateArray()
+        // Retell has carried the indexing state under both names; either one answers the question,
+        // and a base that reports neither is treated as ready rather than waited on pointlessly.
+        var status = GetStr(root, "status") ?? GetStr(root, "knowledge_base_status");
+
+        if (!root.TryGetProperty("knowledge_base_sources", out var sources) ||
+            sources.ValueKind != JsonValueKind.Array)
+            return ([], status);
+
+        var sourceIds = sources.EnumerateArray()
             .Select(s => GetStr(s, "source_id"))
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => id!)
             .ToList();
+        return (sourceIds, status);
+    }
+
+    /// <summary>Deletes every knowledge base on the account that belongs to this organization apart
+    /// from the one its LLM now points at, so a tenant's reference content exists in exactly one
+    /// place. Never fatal and never noisy on a healthy account: on all but the first run after this
+    /// shipped there is nothing to find.
+    ///
+    /// Ownership is the tag this service writes into the name — carrying the organization id, so it
+    /// survives a rename and cannot be shared with another tenant. Bases created before that tag
+    /// existed can only be recognised by the name they were given, so those are matched by their
+    /// old naming pattern and only when no other organization goes by the same name. A tenant
+    /// deleting a namesake's content is the one outcome worth being slow about.</summary>
+    private async Task PruneSupersededKnowledgeBasesAsync(
+        int orgId, string orgName, string? keepId, CancellationToken ct)
+    {
+        try
+        {
+            var tag = OrgTag(orgId);
+
+            // What the previous naming scheme produced: "<org name> — reference (20250910143000)".
+            // Built from the name exactly as stored, because that is what was interpolated into it.
+            var legacyPrefix = $"{orgName} — reference (";
+            var matchLegacy = !string.IsNullOrWhiteSpace(orgName) &&
+                              !await _settings.AnyOtherOrganizationNamedAsync(orgId, orgName!);
+
+            var removed = 0;
+            foreach (var kb in await ListKnowledgeBasesAsync(ct))
+            {
+                var id = GetStr(kb, "knowledge_base_id");
+                if (id is null || id == keepId) continue;
+
+                var name = GetStr(kb, "knowledge_base_name") ?? "";
+                var ours = name.Contains(tag, StringComparison.Ordinal) ||
+                           (matchLegacy && name.StartsWith(legacyPrefix, StringComparison.OrdinalIgnoreCase));
+                if (!ours) continue;
+
+                if (await TryDeleteKnowledgeBaseAsync(id, ct))
+                {
+                    removed++;
+                    _logger.LogInformation(
+                        "Removed superseded Retell knowledge base {KbId} ('{Name}') for org {OrgId}",
+                        id, name, orgId);
+                }
+            }
+
+            if (removed > 0)
+                _logger.LogInformation(
+                    "Org {OrgId} now has one Retell knowledge base ({KbId}); {Removed} superseded copy/copies removed.",
+                    orgId, keepId, removed);
+        }
+        catch (Exception ex)
+        {
+            // Housekeeping only: the sync itself is done and the agent is answering from the right
+            // base. A copy left behind costs storage, not correctness, and the next sync tries again.
+            _logger.LogWarning(ex, "Could not prune superseded Retell knowledge bases for org {OrgId}", orgId);
+        }
+    }
+
+    /// <summary>Every knowledge base on the Retell account. Retell has returned this listing both
+    /// as a bare array and inside a wrapper, so both are read — a listing that quietly came back
+    /// empty would look exactly like an account with nothing left to clean up.</summary>
+    private async Task<List<JsonElement>> ListKnowledgeBasesAsync(CancellationToken ct)
+    {
+        var response = await _http.GetAsync("/list-knowledge-bases", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new RetellApiException(response.StatusCode,
+                $"Retell API GET /list-knowledge-bases failed ({(int)response.StatusCode}): {body}");
+
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        var array = root;
+
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            array = default;
+            foreach (var name in new[] { "knowledge_bases", "items", "data", "results" })
+                if (root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array)
+                {
+                    array = v;
+                    break;
+                }
+        }
+
+        // Cloned because the JsonDocument backing them is disposed on the way out.
+        return array.ValueKind == JsonValueKind.Array
+            ? array.EnumerateArray().Select(e => e.Clone()).ToList()
+            : [];
     }
 
     private static StringContent KnowledgeTextsContent(List<KnowledgeDocument> docs) =>
@@ -833,7 +990,15 @@ public class RetellService : IRetellService
                     if (kb.GetString() is { Length: > 0 } kbId) kbIds.Add(kbId);
         }
 
-        var nameTag = AgentNameTag(orgId);
+        var nameTag = OrgTag(orgId);
+
+        // Knowledge bases wear the same tag, which is what still identifies one after the LLM that
+        // pointed at it is gone — the shape every abandoned base from a failed sync ends up in.
+        foreach (var kb in await ListKnowledgeBasesAsync(ct))
+            if (GetStr(kb, "knowledge_base_name")?.Contains(nameTag, StringComparison.Ordinal) == true &&
+                GetStr(kb, "knowledge_base_id") is { Length: > 0 } taggedKbId)
+                kbIds.Add(taggedKbId);
+
         foreach (var listed in await ListAllAsync("/v2/list-agents", "/list-agents", HttpMethod.Post, ct))
         {
             var id = GetStr(listed, "agent_id");
@@ -935,20 +1100,28 @@ public class RetellService : IRetellService
     /// <summary>The marker written into every agent's name so the operator's Retell dashboard says
     /// which tenant an agent serves, and so this code can still recognise its own work after the
     /// LLM behind an agent is gone. Organization ids are stable; names are not.</summary>
-    private static string AgentNameTag(int orgId) => $"[org {orgId}]";
+    private static string OrgTag(int orgId) => $"[org {orgId}]";
 
-    private async Task TryDeleteKnowledgeBaseAsync(string knowledgeBaseId, CancellationToken ct)
+    /// <summary>Removes a knowledge base we no longer want, reporting whether it is gone. A base
+    /// Retell has already forgotten counts as gone — that is the state being asked for. A refusal
+    /// is never thrown: the sync that called this has already succeeded, and the pruning pass will
+    /// come back for it.</summary>
+    private async Task<bool> TryDeleteKnowledgeBaseAsync(string knowledgeBaseId, CancellationToken ct)
     {
         try
         {
             var response = await _http.DeleteAsync($"/delete-knowledge-base/{knowledgeBaseId}", ct);
-            if (!response.IsSuccessStatusCode)
-                _logger.LogWarning("Could not delete old Retell knowledge base {KbId}: {Status}",
-                    knowledgeBaseId, response.StatusCode);
+            if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound)
+                return true;
+
+            _logger.LogWarning("Could not delete old Retell knowledge base {KbId}: {Status}",
+                knowledgeBaseId, response.StatusCode);
+            return false;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not delete old Retell knowledge base {KbId}", knowledgeBaseId);
+            return false;
         }
     }
 
@@ -1007,7 +1180,7 @@ public class RetellService : IRetellService
     /// other provider would take it away without saying so.</summary>
     private string MapVoice(string? voice) => RetellVoices.Resolve(voice, _defaultVoiceId);
 
-    private List<object> BuildTools(int orgId, string? transferNumber, IndustryProfile profile)
+    private List<object> BuildTools(int orgId, string? transferNumber, IndustryProfile profile, bool hasServiceArea)
     {
         // On-site trades cannot dispatch without an address, so Retell must collect it.
         string[] requiredBookingFields = profile.IsFieldService
@@ -1125,6 +1298,20 @@ public class RetellService : IRetellService
 
             new { type = "end_call", name = "end_call", description = "End the call politely once the caller has no further requests." },
         };
+
+        // Only offered to businesses that have drawn a coverage area. Everyone else keeps the tool
+        // list they had, so nothing about their agent changes.
+        if (hasServiceArea)
+        {
+            tools.Insert(0, Custom("check_service_area",
+                "Check an address is real and within the area this business covers. Call this the moment the caller " +
+                "gives you an address — before you agree a time, and before you book. It answers whether the address " +
+                "was found, whether it is covered, and often names a landmark beside it you can use to confirm you " +
+                "heard the street correctly. Call it once per address; call it again only if the caller corrects it.",
+                new { address = str("The address exactly as the caller gave it, including the town or city") },
+                ["address"],
+                whileWaiting: "Say something short and natural like 'let me just check we come out that way' — one short phrase only."));
+        }
 
         // Retell requires strict E.164 (no spaces/dashes) — normalize before sending.
         var transferE164 = PhoneUtil.Normalize(transferNumber);

@@ -302,7 +302,11 @@ export default function Catalogue() {
   const currency = org?.currency ?? ''
 
   return (
-    <div>
+    // Same reading column as Appointments, Calls, Customers and Billing. Without it the
+    // rows run the full width of a desktop, which puts a service name at the far left and
+    // its Edit button a screen away — and stretches a two-column form to field widths
+    // nobody needs for a price or a duration.
+    <div className="mx-auto max-w-5xl">
       <PageHeader title="Services & Products" />
       <SyncNote />
 

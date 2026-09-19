@@ -31,7 +31,14 @@ if (args.Length > 0 && args[0].Equals("vapid", StringComparison.OrdinalIgnoreCas
     return;
 }
 
-var builder = WebApplication.CreateBuilder(args);
+// `dotnet run --project backend/AiReceptionist.Api -- seed-tenants` creates the client business
+// accounts and exits instead of serving. Unlike `vapid` above it cannot be handled here: it needs
+// the database schema and the geocoder, both of which come out of the host built below. So it is
+// only noted here — and stripped from the arguments, because the configuration binder rejects a
+// bare word it cannot read as a setting.
+var seedTenants = args.Length > 0 && args[0].Equals("seed-tenants", StringComparison.OrdinalIgnoreCase);
+
+var builder = WebApplication.CreateBuilder(seedTenants ? args[1..] : args);
 
 // Git-ignored local secrets (e.g. Retell API key) — see appsettings.Local.json
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
@@ -54,6 +61,28 @@ builder.Services.AddResponseCompression();
 // RSA key pair the browser wraps its per-session AES key with, plus the live sessions.
 builder.Services.AddSingleton<IPayloadKeyRing, PayloadKeyRing>();
 
+// ---------- Cache ----------
+// Redis when there is one, an in-process dictionary when there is not. Both sit behind
+// IDistributedCache, so nothing downstream knows or cares which is running — a developer needs no
+// extra service, and a deployment with several instances gets one cache they all share (a
+// per-instance cache would have each of them holding its own idea of a tenant's settings).
+var redis = builder.Configuration.GetConnectionString("Redis");
+if (string.IsNullOrWhiteSpace(redis))
+{
+    builder.Services.AddDistributedMemoryCache();
+}
+else
+{
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redis;
+        // Keyed per application rather than per instance: two instances of this API must share
+        // entries, and anything else on the same Redis must not collide with them.
+        options.InstanceName = "aireceptionist:";
+    });
+}
+builder.Services.AddSingleton<ICache, Cache>();
+
 builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 builder.Services.AddScoped<ITenantProvider, TenantProvider>();
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -63,10 +92,24 @@ builder.Services.AddScoped<IPromptBuilderService, PromptBuilderService>();
 builder.Services.AddHttpClient<IRetellService, RetellService>();
 builder.Services.AddSingleton<IRetellSyncQueue, RetellSyncQueue>();
 builder.Services.AddHostedService<RetellSyncWorker>();
+// The net under the call webhook: imports anything it did not deliver, so minutes move on their
+// own instead of waiting for somebody to press Sync. The status object is shared with the calls
+// controller, which is where the dashboard reads the countdown from.
+builder.Services.AddSingleton<CallSyncStatus>();
+builder.Services.AddHostedService<CallBackfillWorker>();
 
 // Transferred-call intent capture: mine transcripts for booking intent (Anthropic)
 builder.Services.AddHttpClient<ICallIntentService, CallIntentService>();
 builder.Services.AddHostedService<CallIntentWorker>();
+
+// Coverage areas: is the address a caller just gave one this business will travel to?
+// Geocoding is a singleton because the rate limiter and cache it holds have to be shared by the
+// whole process — Nominatim's usage policy is one request per second per application, not per
+// tenant. The named client carries the User-Agent that policy also requires.
+builder.Services.AddHttpClient(GeocodingService.HttpClientName,
+    (sp, http) => GeocodingService.ConfigureClient(http, sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton<IGeocodingService, GeocodingService>();
+builder.Services.AddScoped<IServiceAreaService, ServiceAreaService>();
 
 builder.Services.AddScoped<IAuthRepository, AuthRepository>();
 builder.Services.AddScoped<ICustomerRepository, CustomerRepository>();
@@ -84,6 +127,8 @@ builder.Services.AddScoped<IAiToolsRepository, AiToolsRepository>();
 builder.Services.AddScoped<ICallActionSuggestionRepository, CallActionSuggestionRepository>();
 builder.Services.AddScoped<IRetellConnectionRepository, RetellConnectionRepository>();
 builder.Services.AddScoped<IPromptTemplateRepository, PromptTemplateRepository>();
+builder.Services.AddScoped<IBusinessLocationRepository, BusinessLocationRepository>();
+
 
 // Billing: tiers, Stripe, usage periods and the overage carried to the next invoice.
 // ---------- Browser notifications (Web Push) ----------
@@ -211,6 +256,14 @@ catch (Exception ex)
     app.Logger.LogError(ex,
         "Could not initialize AiDB. Ensure SQL Server is running and the connection string is correct. " +
         "The API will start, but database calls will fail until the database is available.");
+}
+
+// The seed-tenants command (see the top of this file). Runs against the schema just initialized,
+// prints the accounts' sign-in details and exits without serving.
+if (seedTenants)
+{
+    await TenantSeeder.RunAsync(app.Services, app.Configuration, app.Logger);
+    return;
 }
 
 // ---------- Secret hygiene ----------

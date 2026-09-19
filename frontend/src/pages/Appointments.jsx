@@ -230,6 +230,12 @@ export default function Appointments() {
               <div className="flex flex-wrap items-center justify-between gap-2 sm:contents">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                   {a.isEmergency && <Chip tone="red">Emergency</Chip>}
+                  {/* An address the AI took outside the coverage area: booked, but nobody has
+                      promised the caller it is going ahead. Someone has to ring back. */}
+                  {a.areaStatus === 'OutOfArea' && <Chip tone="cream">Confirm area</Chip>}
+                  {/* The map could not be reached, so nothing was checked. Rare, and worth
+                      knowing: the coverage rule quietly did not apply to this one. */}
+                  {a.areaStatus === 'Unverified' && <Chip tone="cream">Address unchecked</Chip>}
                   <Chip tone={statusTone(a.status)}>{a.status}</Chip>
                   <Chip tone={statusTone(a.paymentStatus)}>{a.paymentStatus}</Chip>
                 </div>
