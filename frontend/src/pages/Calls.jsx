@@ -26,6 +26,10 @@ export default function Calls() {
       qc.invalidateQueries({ queryKey: ['calls'] })
       qc.invalidateQueries({ queryKey: ['sidebar-counts'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
+      // A sync can correct call lengths, which moves the minutes; and it is a sync, so the
+      // dashboard's "Synced … ago" should say so.
+      qc.invalidateQueries({ queryKey: ['billing-usage'] })
+      qc.invalidateQueries({ queryKey: ['call-sync-status'] })
     },
   })
 

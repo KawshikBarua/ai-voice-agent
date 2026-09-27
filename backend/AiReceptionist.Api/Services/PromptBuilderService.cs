@@ -7,22 +7,43 @@ namespace AiReceptionist.Api.Services;
 /// <summary>A single document uploaded to the Retell knowledge base.</summary>
 public record KnowledgeDocument(string Title, string Text);
 
+/// <summary>The stages of a call. Each is a Retell LLM state: its own prompt and its own tools.</summary>
+public static class AgentStates
+{
+    public const string Triage = "triage";
+    public const string Scheduling = "scheduling";
+    public const string Booking = "booking";
+    public const string ExistingBooking = "existing_booking";
+
+    public static readonly string[] All = [Triage, Scheduling, Booking, ExistingBooking];
+}
+
+/// <summary>A tenant's prompt as Retell receives it: the general prompt, in force on every turn,
+/// and one prompt per state, appended to it while the call is in that state.</summary>
+public record AgentPrompt(string General, IReadOnlyDictionary<string, string> States)
+{
+    /// <summary>Everything as one text, for the read-only previews.</summary>
+    public string Render() =>
+        General + string.Concat(AgentStates.All.Select(s => $"\n\n==== State: {s} ====\n{States[s]}"));
+}
+
 /// <summary>
-/// Splits tenant content into the two places Retell can hold it (SRS §13):
+/// Splits tenant content into the places Retell can hold it (SRS §13):
 ///
-///  • <b>System prompt</b> — small, always in context: personality, rules, conversation
-///    flow, business identity, hours, emergency rules and tool usage. Things the agent
-///    must obey on every turn. Its wording is platform-wide and editable in the super admin
-///    console (PromptTemplate); this class fills it in with the tenant's own facts.
+///  • <b>General prompt</b> — always in context: personality, rules, business identity, hours and
+///    emergency rules. Things the agent must obey on every turn.
+///  • <b>State prompts</b> — only while the call is at that stage: finding out what they need,
+///    finding a time, taking the booking, or dealing with one they already have.
 ///  • <b>Knowledge base</b> — retrieved on demand: product/service catalogues, FAQs,
 ///    policies and long reference text. Bulky, frequently changing content that would
 ///    otherwise bloat the prompt (and cost tokens on every single turn).
 ///
-/// Clients never edit the core instructions; only their own data feeds these.
+/// The wording is platform-wide and editable in the super admin console (PromptTemplate); this
+/// class fills it in with the tenant's own facts. Clients never edit the core instructions.
 /// </summary>
 public interface IPromptBuilderService
 {
-    Task<string> BuildSystemPromptAsync(int orgId);
+    Task<AgentPrompt> BuildAgentPromptAsync(int orgId);
     Task<List<KnowledgeDocument>> BuildKnowledgeDocumentsAsync(int orgId);
 }
 
@@ -49,7 +70,7 @@ public class PromptBuilderService : IPromptBuilderService
         _locations = locations;
     }
 
-    public async Task<string> BuildSystemPromptAsync(int orgId)
+    public async Task<AgentPrompt> BuildAgentPromptAsync(int orgId)
     {
         var org = await _settings.GetOrganizationAsync(orgId)
                   ?? throw new InvalidOperationException("Organization not found.");
@@ -58,11 +79,14 @@ public class PromptBuilderService : IPromptBuilderService
         var kb = (await _knowledge.ListAsync(orgId)).ToList();
         var services = (await _catalog.ListServicesAsync(orgId, 1, 500)).Items.ToList();
 
-        // Style, rules, call shape and tool policy are platform-wide and edited in the super admin
-        // console; everything below them is this tenant's own data.
+        // Style, rules and the wording of each state are platform-wide and edited in the super admin
+        // console; everything else is this tenant's own data.
         var template = await _template.GetEffectiveAsync();
 
         var sb = new StringBuilder();
+        // Tenant facts that only matter at one stage of the call are appended to that state's wording.
+        var scheduling = new StringBuilder(profile.IsFieldService ? template.FieldSchedulingState : template.SchedulingState).AppendLine();
+        var booking = new StringBuilder(template.BookingState).AppendLine();
 
         sb.AppendLine($"You are {profile.Role} for {org.Name}, a {org.Industry} business.");
         sb.AppendLine($"You answer the phone. Call the person on the other end the {profile.CustomerNoun}.");
@@ -79,9 +103,6 @@ public class PromptBuilderService : IPromptBuilderService
         }
 
         sb.AppendLine();
-        sb.AppendLine(profile.IsFieldService ? template.FieldServiceGuide : template.ConversationGuide);
-
-        sb.AppendLine();
         sb.AppendLine("## Business details");
         sb.AppendLine($"- Name: {org.Name}");
         if (!string.IsNullOrWhiteSpace(org.Address)) sb.AppendLine($"- Address: {org.Address}");
@@ -91,21 +112,6 @@ public class PromptBuilderService : IPromptBuilderService
             sb.AppendLine("- This business travels to the customer: a full service address is mandatory for every booking.");
         if (!string.IsNullOrWhiteSpace(agent?.TransferNumber))
             sb.AppendLine($"- Human transfer number: {agent.TransferNumber}");
-
-        // This prompt is built when the tenant syncs, not per call, so a date written in here would
-        // be wrong by tomorrow. {{current_time_<iana>}} is Retell's own placeholder: it is filled in
-        // as each call starts, in this tenant's timezone — every organization gets its own, and the
-        // inbound webhook overwrites it with our value so a Retell-side fault cannot leave the agent
-        // guessing. The rules below it matter as much as the value: left to itself the model dates
-        // everything from its training cutoff, which is how "tomorrow" lands in the wrong year.
-        var clock = "{{current_time_" + TenantTime.IanaId(org.Timezone) + "}}";
-        sb.AppendLine();
-        sb.AppendLine("## Right now");
-        sb.AppendLine($"- The current local date and time is {clock}.");
-        sb.AppendLine($"- That is {org.Timezone}, the timezone this business works in. Every date and time you say is in it.");
-        sb.AppendLine("- That line is filled in fresh at the start of every call, so it is right. Your own sense of the date is not: never state or work out today's date, the day of the week, or the year from memory.");
-        sb.AppendLine("- Do not do date arithmetic yourself. Give check_availability what the caller actually said — \"tomorrow\", \"next Friday\", \"the 3rd\" — and use the date it hands back.");
-        sb.AppendLine("- Every tool reply carries the current date and time as well. Trust it over anything you worked out earlier in the call.");
 
         // Always emitted, even with no hours configured: BusinessHours falls back to 09:00–17:00
         // and the booking tools enforce that fallback, so staying silent here would leave the
@@ -138,11 +144,18 @@ public class PromptBuilderService : IPromptBuilderService
                           "appointment is with, and that is the only name you may pass on.");
         }
 
-        // Where the business will travel to. Stated as facts plus the one rule that matters,
-        // because the agent has to know it is not free to agree to any address — but the actual
-        // decision is check_service_area's, which measures the distance rather than guessing at
-        // it from a list of place names.
         var branches = await _locations.ListActiveAsync(orgId);
+
+        // Whether an address is collected at all, which is not the same question as whether there is
+        // a coverage area to check it against. A trade that travels takes an address on every job
+        // even when the owner has never drawn a patch — so how to take one over the phone is gated
+        // on this, and only the rules about what the check answers are gated on the branches.
+        var takesAddress = profile.IsFieldService || branches.Count > 0;
+
+        // Where the business will travel to. The facts are general — "do you come out to X?" can be
+        // asked at any point — but the actual decision is check_service_area's, which measures the
+        // distance rather than guessing at it from a list of place names, and that belongs to the
+        // state where the address is collected.
         if (branches.Count > 0)
         {
             sb.AppendLine();
@@ -150,16 +163,45 @@ public class PromptBuilderService : IPromptBuilderService
             foreach (var b in branches)
             {
                 sb.AppendLine(b.CoversEntireCity
-                    ? $"- {b.Name}: anywhere in {b.City}, {b.CountryName}."
-                    : $"- {b.Name}: {b.City}, {b.CountryName}, and about {b.CoverageRadiusMiles:0} " +
+                    ? $"- {b.Name}: anywhere in {b.PlaceName}."
+                    : $"- {b.Name}: {b.PlaceName}, and about {b.CoverageRadiusMiles:0} " +
                       $"mile{(Math.Round(b.CoverageRadiusMiles) == 1 ? "" : "s")} around it.");
             }
-            sb.AppendLine("- The moment a caller gives you an address, call check_service_area with it — before you agree a time and before you book.");
-            sb.AppendLine("- Never judge for yourself whether somewhere is close enough. Distances are not something to estimate from a place name; the tool measures them.");
-            sb.AppendLine("- If it names a landmark beside the address, use it to check you heard the street right — \"just by the old town hall?\" — rather than reading the address back word for word.");
-            sb.AppendLine("- If the address cannot be found, say so plainly and go through it again. Never book an address the map does not know.");
-            sb.AppendLine("- If it is outside the area but in a town covered, take the booking and say honestly that it is outside the usual patch, so someone will ring back to confirm. Do not tell them it is certain.");
-            sb.AppendLine("- If it is somewhere not covered at all, do not book. Apologise, say plainly that it is outside the area served, and suggest they find someone local. Be kind about it and do not leave them hoping.");
+            sb.AppendLine("- Never judge for yourself whether somewhere is close enough. Distances are not something to estimate from a place name; the address is checked when it is taken.");
+        }
+
+        // The craft of getting an address out of someone on a phone call. Nothing here depends on a
+        // coverage check — it is about how people actually speak — so it is emitted wherever an
+        // address is taken, and worded without reference to a tool that may not be offered.
+        if (takesAddress)
+        {
+            scheduling.AppendLine();
+            scheduling.AppendLine("## Taking an address over the phone");
+            scheduling.AppendLine("Nobody dictates an address neatly. Take it the way they give it.");
+            scheduling.AppendLine("- Take whatever they gave you, even just a street and a number. They rang a local firm and assume you know the town. Do not hold the address back waiting for a town, and do not make them repeat it in a tidier order.");
+            scheduling.AppendLine("- Never ask for a postcode or ZIP. People blank on it under stress even when they know it, and nothing here needs it.");
+            scheduling.AppendLine("- They often stop halfway. Leave a beat before you speak: the rest of it, or the town, usually follows on its own. Prompt only if the silence holds.");
+            scheduling.AppendLine("- A landmark or a cross street is a real answer — \"the unit behind the builders' merchant\", \"near the petrol station on the main road\". Take it as they said it. If you still need more, ask what is on the sign outside or what the nearest street is, not for a house number they may not have.");
+            scheduling.AppendLine("- If they say it is the same place as last time, call identify_customer and use the address it gives back. Read it back once to confirm; do not make them dictate it again.");
+            scheduling.AppendLine("- Read an address back in their own words. Reciting \"1220 Grand\" as \"1220 Grand Avenue, Kansas City, Jackson County, Missouri\" sounds like a machine and invites a correction to something that was already right.");
+
+            booking.AppendLine("- Gate codes, buzzer numbers, flat and suite numbers, \"come round the back\" — take these whenever they come up and put them in the address you send to book_appointment. Never treat one as a reason to re-check the address or as a missing part of it.");
+        }
+
+        // What the coverage check answers, and what to do with each verdict. Only for a business that
+        // has drawn a patch, because only then is check_service_area offered at all.
+        if (branches.Count > 0)
+        {
+            scheduling.AppendLine();
+            scheduling.AppendLine("## Checking the address");
+            scheduling.AppendLine("- The moment a caller gives you an address, call check_service_area with it — before you agree a time.");
+            scheduling.AppendLine("- Send it even when it is only a street and a number. The check searches this business's own area first, so a bare street usually resolves; it does not need a town from you.");
+            scheduling.AppendLine("- Ask for the town only when the check comes back asking for it, and then ask for the town alone — not the whole address again.");
+            scheduling.AppendLine("- If it names a landmark beside the address, use it to check you heard the street right — \"just by the old town hall?\" — rather than reading the address back word for word.");
+            scheduling.AppendLine("- The tidied-up address it returns is for planning the route, not for reading out. Confirm in the caller's own words.");
+            scheduling.AppendLine("- If the address cannot be found, go through it with them once more: the street, the number and the town. If it still cannot be found, carry on anyway. It is flagged for a colleague to confirm, so tell the caller someone will ring to confirm the address before the visit.");
+            scheduling.AppendLine("- If it is outside the area but in a town covered, carry on and say honestly that it is outside the usual patch, so someone will ring back to confirm. Do not tell them it is certain.");
+            scheduling.AppendLine("- If it is somewhere not covered at all, do not book. Apologise, say plainly that it is outside the area served, and suggest they find someone local. Be kind about it and do not leave them hoping.");
         }
 
         var closures = (await _holidays.ListUpcomingAsync(orgId, TodayLocal(org))).ToList();
@@ -178,7 +220,8 @@ public class PromptBuilderService : IPromptBuilderService
                 sb.AppendLine($"- {c.Date:yyyy-MM-dd} ({c.Date:dddd}) — {c.Name}");
         }
 
-        // Emergency rules are safety-critical: they stay in the prompt, never the knowledge base.
+        // Emergency rules are safety-critical: they stay in the general prompt, never a state or the
+        // knowledge base, so they hold at every stage of the call.
         var emergencies = kb.Where(k => k.Category == "EmergencyRule").ToList();
         if (emergencies.Count > 0)
         {
@@ -187,31 +230,52 @@ public class PromptBuilderService : IPromptBuilderService
             foreach (var e in emergencies) sb.AppendLine($"- {e.Title}: {e.Content}");
         }
 
-        // Same-day handling for the services this tenant has flagged as emergency work. The flag
-        // already reaches the catalogue document, but that only tells the agent such a service
-        // exists — this is what tells it to do something about one. It sits after the emergency
-        // rules deliberately: those are safety instructions and have to win wherever the two ever
-        // point in different directions.
+        // Same-day handling for the services this tenant has flagged as emergency work. Recognising
+        // one is general; how to find it a slot happens while finding a time. It sits after the
+        // emergency rules deliberately: those are safety instructions and have to win wherever the
+        // two ever point in different directions.
         var urgent = services.Where(s => s.IsAvailable && s.IsEmergency).ToList();
         if (urgent.Count > 0)
         {
             sb.AppendLine();
             sb.AppendLine("## Urgent work (can usually be seen the same day)");
             foreach (var s in urgent) sb.AppendLine($"- {s.Name}");
-            sb.AppendLine("When a caller needs one of these:");
-            sb.AppendLine("- Take the trouble seriously before you take the details. One short line in your own words — \"that sounds like a horrible thing to be dealing with, let's get someone out to you\" — and then get on with helping. Say it once: sympathy repeated turns into padding, and what they actually want is someone at the door.");
-            sb.AppendLine("- Check today before you ask which day suits. Give check_availability the word \"today\" and let it tell you what is left.");
-            sb.AppendLine("- If today has something, lead with it — \"I can get someone to you this afternoon, about three\" — and offer another day only if they would rather.");
-            sb.AppendLine("- If today has nothing, say so plainly and offer the earliest you do have. Do not talk around it, and do not leave them hoping.");
-            sb.AppendLine("- Never say today is possible until check_availability has shown you a slot on it. A same-day promise you cannot keep is worse than the honest answer.");
+            sb.AppendLine("When a caller needs one of these, take the trouble seriously before you take the details. One short line in your own words — \"that sounds like a horrible thing to be dealing with, let's get someone out to you\" — and then get on with helping. Say it once: sympathy repeated turns into padding, and what they actually want is someone at the door.");
             if (emergencies.Count > 0)
-                sb.AppendLine("- The emergency rules above still come first. Where one of them says to hang up, call emergency services or leave the property, that is the answer — deal with their safety and do not book around it.");
+                sb.AppendLine("The emergency rules above still come first. Where one of them says to hang up, call emergency services or leave the property, that is the answer — deal with their safety and do not book around it.");
+
+            scheduling.AppendLine();
+            scheduling.AppendLine("## Urgent work");
+            scheduling.AppendLine("- Check today before you ask which day suits. Give check_availability the word \"today\" and let it tell you what is left.");
+            scheduling.AppendLine("- If today has something, lead with it — \"I can get someone to you this afternoon, about three\" — and offer another day only if they would rather.");
+            scheduling.AppendLine("- If today has nothing, say so plainly and offer the earliest you do have. Do not talk around it, and do not leave them hoping.");
+            scheduling.AppendLine("- Never say today is possible until check_availability has shown you a slot on it. A same-day promise you cannot keep is worse than the honest answer.");
         }
 
+        // Last on purpose. This prompt is built when the tenant syncs, not per call, so a date written
+        // in here would be wrong by tomorrow. {{current_time_<iana>}} is Retell's own placeholder: it
+        // is filled in as each call starts, in this tenant's timezone — every organization gets its
+        // own, and the inbound webhook overwrites it with our value so a Retell-side fault cannot
+        // leave the agent guessing. Being the only text that changes from call to call, it goes after
+        // everything that does not, so the model provider can reuse its cached copy of the rest of the
+        // prompt across calls. The rules below it matter as much as the value: left to itself the
+        // model dates everything from its training cutoff, which is how "tomorrow" lands in the wrong year.
+        var clock = "{{current_time_" + TenantTime.IanaId(org.Timezone) + "}}";
         sb.AppendLine();
-        sb.AppendLine(template.ToolPolicy);
+        sb.AppendLine("## Right now");
+        sb.AppendLine($"- The current local date and time is {clock}.");
+        sb.AppendLine($"- That is {org.Timezone}, the timezone this business works in. Every date and time you say is in it.");
+        sb.AppendLine("- That line is filled in fresh at the start of every call, so it is right. Your own sense of the date is not: never state or work out today's date, the day of the week, or the year from memory.");
+        sb.AppendLine("- Do not do date arithmetic yourself. Give check_availability what the caller actually said — \"tomorrow\", \"next Friday\", \"the 3rd\" — and use the date it hands back.");
+        sb.AppendLine("- Every tool reply carries the current date and time as well. Trust it over anything you worked out earlier in the call.");
 
-        return sb.ToString();
+        return new AgentPrompt(sb.ToString(), new Dictionary<string, string>
+        {
+            [AgentStates.Triage] = template.TriageState,
+            [AgentStates.Scheduling] = scheduling.ToString(),
+            [AgentStates.Booking] = booking.ToString(),
+            [AgentStates.ExistingBooking] = template.ExistingBookingState,
+        });
     }
 
     public async Task<List<KnowledgeDocument>> BuildKnowledgeDocumentsAsync(int orgId)

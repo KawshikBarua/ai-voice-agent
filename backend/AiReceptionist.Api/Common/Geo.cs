@@ -56,6 +56,29 @@ public static class Geo
 
     public static double ToKm(double miles) => miles * KmPerMile;
 
+    /// <summary>A rectangle of the given radius around a point — what gets handed to the geocoder
+    /// to say "find this street near here, not the one four states away".
+    ///
+    /// Callers give a street and a number and stop, because they rang a local company and assume
+    /// it knows the town. Searched nationwide that is a coin toss; searched inside this box it is
+    /// the address they meant. Deliberately a little larger than the radius it is built from: the
+    /// box only decides which candidates are worth considering, and the real distance is measured
+    /// properly afterwards, so erring wide costs a slightly longer shortlist and erring narrow
+    /// costs the booking.</summary>
+    public static GeoBounds BoxAround(double latitude, double longitude, double radiusMiles)
+    {
+        const double MilesPerDegreeLatitude = 69d;
+        var miles = Math.Clamp(radiusMiles, 5d, 100d);
+
+        var dLat = miles / MilesPerDegreeLatitude;
+        // Lines of longitude close together towards the poles, so a mile is worth more degrees the
+        // further north or south it is. The floor keeps the arithmetic finite near the poles, where
+        // nobody is running a plumbing business anyway.
+        var dLon = miles / (MilesPerDegreeLatitude * Math.Max(0.05, Math.Cos(latitude * Math.PI / 180d)));
+
+        return new GeoBounds(latitude - dLat, latitude + dLat, longitude - dLon, longitude + dLon);
+    }
+
     /// <summary>Whether two city names are the same place.
     ///
     /// One side was typed by an owner and the other comes out of OpenStreetMap, which answers with

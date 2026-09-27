@@ -29,6 +29,19 @@ export function minutes(n) {
   return m === 0 ? `${h.toLocaleString()}h` : `${h.toLocaleString()}h ${m}m`
 }
 
+/**
+ * Total talk time to the second: 265 → "4m 25s" · 7389 → "2h 03m 09s".
+ * Shown beside minutes so a customer can check the minutes against their call list — minutes are
+ * this figure rounded up once, never each call rounded up on its own.
+ */
+export function talkTime(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0))
+  if (s < 60) return `${s}s`
+  const pad = (n) => String(n).padStart(2, '0')
+  if (s < 3600) return `${Math.floor(s / 60)}m ${pad(s % 60)}s`
+  return `${Math.floor(s / 3600).toLocaleString()}h ${pad(Math.floor((s % 3600) / 60))}m ${pad(s % 60)}s`
+}
+
 /** Seconds → "4m 05s", for average call length. */
 export function duration(seconds) {
   const s = Math.max(0, Math.round(Number(seconds) || 0))

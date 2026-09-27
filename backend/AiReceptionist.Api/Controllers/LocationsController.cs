@@ -71,7 +71,7 @@ public class LocationsController : ControllerBase
         if (problem is not null) return BadRequest(ApiResponse<object>.Fail(problem));
 
         prepared!.Id = await _locations.CreateAsync(prepared);
-        await AnnounceAsync("BusinessLocationAdded", $"{prepared.City}, {prepared.CountryName}");
+        await AnnounceAsync("BusinessLocationAdded", prepared.PlaceName);
         return Ok(ApiResponse<BusinessLocation>.Ok(prepared, $"{prepared.Name} added."));
     }
 
@@ -86,7 +86,7 @@ public class LocationsController : ControllerBase
         if (!await _locations.UpdateAsync(prepared))
             return NotFound(ApiResponse<object>.Fail("That location no longer exists."));
 
-        await AnnounceAsync("BusinessLocationUpdated", $"{prepared.City}, {prepared.CountryName}");
+        await AnnounceAsync("BusinessLocationUpdated", prepared.PlaceName);
         return Ok(ApiResponse<BusinessLocation>.Ok(prepared, $"{prepared.Name} updated."));
     }
 
@@ -115,10 +115,22 @@ public class LocationsController : ControllerBase
         // Resolved through the same search the picker used, so the usual path is a cache hit and
         // saving is instant — and a city that does not exist in the chosen country is caught here
         // rather than at the first call that depends on it.
+        //
+        // The region the owner picked decides between same-named cities. Without one, taking the
+        // first hit is what put a Brooklyn, Ohio branch in New York, so an ambiguous name is refused.
         var matches = await _geocoding.SearchCitiesAsync(input.CountryCode, city, ct);
-        var match = matches.FirstOrDefault(m => Geo.SameCity(m.City, city)) ?? matches.FirstOrDefault();
+        var named = matches.Where(m => Geo.SameCity(m.City, city)).ToList();
+        if (named.Count == 0) named = matches.ToList();
+        var region = input.Region?.Trim();
+        var match = string.IsNullOrEmpty(region)
+            ? (named.Select(m => m.Region).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1 ? null : named.FirstOrDefault())
+            : named.FirstOrDefault(m => string.Equals(m.Region, region, StringComparison.OrdinalIgnoreCase));
+        if (match is null && string.IsNullOrEmpty(region) && named.Count > 1)
+            return (null, $"There is more than one {city} in {countryName} ({string.Join(", ", named.Select(m => m.Region))}). " +
+                          "Pick the right one from the list.");
         if (match is null)
-            return (null, $"We could not find '{city}' in {countryName}. Check the spelling, or pick from the list.");
+            return (null, $"We could not find '{city}{(string.IsNullOrEmpty(region) ? "" : ", " + region)}' in {countryName}. " +
+                          "Check the spelling, or pick from the list.");
 
         var name = (input.Name ?? "").Trim();
         return (new BusinessLocation
@@ -128,6 +140,7 @@ public class LocationsController : ControllerBase
             CountryCode = input.CountryCode.ToUpperInvariant(),
             CountryName = countryName,
             City = match.City,
+            Region = match.Region,
             Latitude = match.Latitude,
             Longitude = match.Longitude,
             BoundsSouth = match.Bounds?.South,

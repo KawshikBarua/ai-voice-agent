@@ -347,7 +347,7 @@
                 <div class="field">
                     <label for="GraceDays">Grace days after the period ends</label>
                     <input type="number" min="0" max="90" id="GraceDays" name="GraceDays" value="@(sub?.GraceDays ?? 7)" />
-                    <div class="help">The account counts as overdue only once these days have passed.</div>
+                    <div class="help">Overdue days allowed after the period ends. Once they pass, the voice agent stops answering until the bill is paid.</div>
                 </div>
                 <div class="field">
                     <label for="IncludedMinutes">AI minutes included per period</label>
@@ -362,7 +362,7 @@
             </div>
             <label class="check">
                 <input type="checkbox" name="AutoSuspend" value="true" checked="@(sub?.AutoSuspend ?? true)" />
-                <span>Disable this account automatically once the grace period lapses.</span>
+                <span>Stop the voice agent automatically once the grace period lapses. The customer can still sign in and pay.</span>
             </label>
             <input type="hidden" name="AutoSuspend" value="false" />
             <div class="field">
@@ -391,6 +391,13 @@
                 <span>
                     @org.MinutesUsedThisPeriod.ToString("N0") min
                     @if (org.IsMetered) { <text> of @org.IncludedMinutes.ToString("N0")</text> }
+                </span>
+            </div>
+            <div class="kv">
+                <span>Talk time behind it</span>
+                <span>
+                    @Display.TalkTime(org.SecondsUsedThisPeriod)
+                    <small style="color:var(--muted);">— every call's seconds added up, rounded up to a whole minute once</small>
                 </span>
             </div>
 
@@ -608,7 +615,7 @@
             <div class="kv"><span>Disabled at</span><span>@Display.When(org.SuspendedAt)</span></div>
             <div class="kv"><span>Reason</span><span>@(org.SuspendedReason ?? "—")</span></div>
         }
-        <div class="kv"><span>Auto-disable when overdue</span><span>@(sub?.AutoSuspend == true ? "On" : "Off")</span></div>
+        <div class="kv"><span>Stop agent when overdue</span><span>@(sub?.AutoSuspend == true ? "On" : "Off")</span></div>
         <div class="kv"><span>Paid through</span><span>@(org.PaidThrough.HasValue ? Display.Day(org.PaidThrough) : "—")</span></div>
 
         <div style="margin-top:14px;">

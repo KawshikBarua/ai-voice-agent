@@ -42,11 +42,11 @@ public class BusinessLocationRepository : IBusinessLocationRepository
     {
         using var conn = _db.Create();
         return await conn.ExecuteScalarAsync<int>(@"
-            INSERT INTO BusinessLocations (OrganizationId, Name, CountryCode, CountryName, City,
+            INSERT INTO BusinessLocations (OrganizationId, Name, CountryCode, CountryName, City, Region,
                 Latitude, Longitude, CoverageRadiusMiles, CoversEntireCity, IsActive,
                 BoundsSouth, BoundsNorth, BoundsWest, BoundsEast)
             OUTPUT INSERTED.Id
-            VALUES (@OrganizationId, @Name, @CountryCode, @CountryName, @City,
+            VALUES (@OrganizationId, @Name, @CountryCode, @CountryName, @City, @Region,
                 @Latitude, @Longitude, @CoverageRadiusMiles, @CoversEntireCity, @IsActive,
                 @BoundsSouth, @BoundsNorth, @BoundsWest, @BoundsEast)", l);
     }
@@ -56,7 +56,7 @@ public class BusinessLocationRepository : IBusinessLocationRepository
         using var conn = _db.Create();
         var rows = await conn.ExecuteAsync(@"
             UPDATE BusinessLocations
-            SET Name=@Name, CountryCode=@CountryCode, CountryName=@CountryName, City=@City,
+            SET Name=@Name, CountryCode=@CountryCode, CountryName=@CountryName, City=@City, Region=@Region,
                 Latitude=@Latitude, Longitude=@Longitude, CoverageRadiusMiles=@CoverageRadiusMiles,
                 CoversEntireCity=@CoversEntireCity, IsActive=@IsActive,
                 BoundsSouth=@BoundsSouth, BoundsNorth=@BoundsNorth, BoundsWest=@BoundsWest, BoundsEast=@BoundsEast,

@@ -17,6 +17,58 @@ public interface ICallRepository
     Task<int> CreateAsync(CallLog call);
     Task<bool> UpdateAnalysisAsync(int orgId, string retellCallId, string summary);
     Task<bool> ExistsByRetellIdAsync(int orgId, string retellCallId);
+
+    /// <summary>What is on record for each of these Retell calls — just enough to tell whether it
+    /// still matches what Retell says. Keyed by Retell call id; a missing key means not recorded.</summary>
+    Task<IReadOnlyDictionary<string, RecordedCall>> GetRecordedAsync(
+        int orgId, IReadOnlyCollection<string> retellCallIds);
+
+    /// <summary>
+    /// Brings a call already on record into line with Retell's final reading of it, and says what
+    /// its duration was before and after. Null when the call is not on record.
+    ///
+    /// The duration is only ever replaced by a finished call's real, non-zero length, and never on a
+    /// call whose minutes have already been claimed by a closed billing period: an invoice that has
+    /// gone out stays exactly as it was issued. Such a call is reported through
+    /// <see cref="CallCorrection.LockedByInvoice"/> so the difference can be seen and credited by
+    /// hand rather than silently re-billed.
+    /// </summary>
+    Task<CallCorrection?> ReconcileAsync(int orgId, RetellCallReading fresh);
+}
+
+/// <summary>The billing-relevant facts about one recorded call.</summary>
+public sealed class RecordedCall
+{
+    public string RetellCallId { get; init; } = "";
+    public int DurationSeconds { get; init; }
+    public string Status { get; init; } = "";
+    public bool HasTranscript { get; init; }
+    public bool HasRecording { get; init; }
+    public DateTime? BilledPeriodEnd { get; init; }
+
+    /// <summary>True when Retell's finished reading of this call says something the record does
+    /// not: a different length, a different ending, or a transcript or recording it is missing.
+    /// An invoiced call's length is not counted as a difference — it cannot be changed here.</summary>
+    public bool DiffersFrom(RetellCallReading fresh) =>
+        fresh.IsFinished && (
+            (BilledPeriodEnd is null && fresh.DurationSeconds > 0 && fresh.DurationSeconds != DurationSeconds)
+            || (fresh.Status is { } status && status != Status)
+            || (!HasTranscript && fresh.Transcript is not null)
+            || (!HasRecording && fresh.RecordingUrl is not null));
+
+    /// <summary>Already invoiced at a length Retell does not agree with.</summary>
+    public bool InvoicedAtWrongLength(RetellCallReading fresh) =>
+        BilledPeriodEnd is not null && fresh.IsFinished
+        && fresh.DurationSeconds > 0 && fresh.DurationSeconds != DurationSeconds;
+}
+
+/// <summary>What a <see cref="ICallRepository.ReconcileAsync"/> did to a call's duration.</summary>
+public sealed record CallCorrection(int CallLogId, int PreviousSeconds, int CurrentSeconds, DateTime? BilledPeriodEnd)
+{
+    public bool DurationChanged => PreviousSeconds != CurrentSeconds;
+
+    /// <summary>The call's minutes were already on a closed period, so its duration was kept.</summary>
+    public bool LockedByInvoice => BilledPeriodEnd is not null;
 }
 
 public class CallRepository : ICallRepository
@@ -52,10 +104,15 @@ public class CallRepository : ICallRepository
         using var conn = _db.Create();
         try
         {
+            // IsTrial is decided here, from the organization's trial window as it stands when the
+            // call is recorded — the one moment that is known to be right (see DbInitializer).
             return await conn.ExecuteScalarAsync<int>(@"
-                INSERT INTO CallLogs (OrganizationId, CustomerId, RetellCallId, FromNumber, Direction, Status, DurationSeconds, Transcript, RecordingUrl, Summary, StartedAt)
+                INSERT INTO CallLogs (OrganizationId, CustomerId, RetellCallId, FromNumber, Direction, Status, DurationSeconds, Transcript, RecordingUrl, Summary, StartedAt, IsTrial)
                 OUTPUT INSERTED.Id
-                VALUES (@OrganizationId, @CustomerId, @RetellCallId, @FromNumber, @Direction, @Status, @DurationSeconds, @Transcript, @RecordingUrl, @Summary, @StartedAt)", call);
+                SELECT @OrganizationId, @CustomerId, @RetellCallId, @FromNumber, @Direction, @Status, @DurationSeconds, @Transcript, @RecordingUrl, @Summary, @StartedAt,
+                       CASE WHEN o.TrialEndsAt > @StartedAt AND ISNULL(o.TrialStartedAt, @StartedAt) <= @StartedAt
+                            THEN 1 ELSE 0 END
+                FROM Organizations o WHERE o.Id = @OrganizationId", call);
         }
         catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 2601 or 2627)
         {
@@ -73,6 +130,63 @@ public class CallRepository : ICallRepository
             SELECT COUNT(*) FROM CallLogs
             WHERE OrganizationId=@orgId AND RetellCallId=@retellCallId AND IsDeleted=0",
             new { orgId, retellCallId }) > 0;
+    }
+
+    public async Task<IReadOnlyDictionary<string, RecordedCall>> GetRecordedAsync(
+        int orgId, IReadOnlyCollection<string> retellCallIds)
+    {
+        var found = new Dictionary<string, RecordedCall>(StringComparer.Ordinal);
+        if (retellCallIds.Count == 0) return found;
+
+        using var conn = _db.Create();
+        // Chunked well under SQL Server's 2,100-parameter limit, since a deep sync can list
+        // a thousand calls in a page.
+        foreach (var chunk in retellCallIds.Distinct().Chunk(500))
+        {
+            var rows = await conn.QueryAsync<RecordedCall>(@"
+                SELECT RetellCallId, DurationSeconds, Status,
+                       CAST(CASE WHEN Transcript IS NULL THEN 0 ELSE 1 END AS BIT) AS HasTranscript,
+                       CAST(CASE WHEN RecordingUrl IS NULL THEN 0 ELSE 1 END AS BIT) AS HasRecording,
+                       BilledPeriodEnd
+                FROM CallLogs
+                WHERE OrganizationId = @orgId AND IsDeleted = 0 AND RetellCallId IN @ids",
+                new { orgId, ids = chunk });
+            foreach (var row in rows) found[row.RetellCallId] = row;
+        }
+        return found;
+    }
+
+    public async Task<CallCorrection?> ReconcileAsync(int orgId, RetellCallReading fresh)
+    {
+        if (fresh.CallId is null) return null;
+
+        // Only a finished call's reading is final. Anything earlier would be writing a partial
+        // transcript or a length that is still growing over the record.
+        var finished = fresh.IsFinished;
+        using var conn = _db.Create();
+        return await conn.QuerySingleOrDefaultAsync<CallCorrection>(@"
+            UPDATE CallLogs SET
+                DurationSeconds = CASE WHEN @seconds IS NOT NULL AND BilledPeriodEnd IS NULL
+                                       THEN @seconds ELSE DurationSeconds END,
+                Status       = COALESCE(@status, Status),
+                Transcript   = COALESCE(@transcript, Transcript),
+                RecordingUrl = COALESCE(@recordingUrl, RecordingUrl),
+                Summary      = COALESCE(@summary, Summary)
+            OUTPUT INSERTED.Id AS CallLogId,
+                   DELETED.DurationSeconds AS PreviousSeconds,
+                   INSERTED.DurationSeconds AS CurrentSeconds,
+                   DELETED.BilledPeriodEnd AS BilledPeriodEnd
+            WHERE OrganizationId = @orgId AND RetellCallId = @callId AND IsDeleted = 0",
+            new
+            {
+                orgId,
+                callId = fresh.CallId,
+                seconds = finished && fresh.DurationSeconds > 0 ? fresh.DurationSeconds : (int?)null,
+                status = finished ? fresh.Status : null,
+                transcript = finished ? fresh.Transcript : null,
+                recordingUrl = finished ? fresh.RecordingUrl : null,
+                summary = fresh.Summary,
+            });
     }
 
     public async Task<bool> UpdateAnalysisAsync(int orgId, string retellCallId, string summary)
@@ -203,6 +317,13 @@ public class HolidayRepository : IHolidayRepository
 public interface ISettingsRepository
 {
     Task<Organization?> GetOrganizationAsync(int orgId);
+
+    /// <summary>The same row straight from the database. For decisions that must not act on a
+    /// copy up to <see cref="CacheTtl.Config"/> old — whether a call may be answered — because
+    /// suspensions, stopped agents and trials are also written by the console, which cannot clear
+    /// this API's cache.</summary>
+    Task<Organization?> GetOrganizationFreshAsync(int orgId);
+
     Task UpdateOrganizationAsync(Organization org);
     Task<AgentConfig?> GetAgentConfigAsync(int orgId);
     Task<AgentConfig?> GetAgentConfigByRetellAgentIdAsync(string retellAgentId);
@@ -232,12 +353,14 @@ public class SettingsRepository : ISettingsRepository
     /// takes effect on the next request rather than at the end of this entry's life.
     /// </summary>
     public Task<Organization?> GetOrganizationAsync(int orgId) =>
-        _cache.GetOrSetAsync(CacheKeys.Org(orgId), CacheTtl.Config, async () =>
-        {
-            using var conn = _db.Create();
-            return await conn.QuerySingleOrDefaultAsync<Organization>(
-                "SELECT * FROM Organizations WHERE Id=@orgId AND IsDeleted=0", new { orgId });
-        });
+        _cache.GetOrSetAsync(CacheKeys.Org(orgId), CacheTtl.Config, () => GetOrganizationFreshAsync(orgId));
+
+    public async Task<Organization?> GetOrganizationFreshAsync(int orgId)
+    {
+        using var conn = _db.Create();
+        return await conn.QuerySingleOrDefaultAsync<Organization>(
+            "SELECT * FROM Organizations WHERE Id=@orgId AND IsDeleted=0", new { orgId });
+    }
 
     public async Task UpdateOrganizationAsync(Organization org)
     {

@@ -38,18 +38,32 @@ public class CallsController : ControllerBase
     }
 
     /// <summary>Imports any calls Retell recorded that never reached us via webhook
-    /// (tunnel down, API restarting, webhook retry exhausted).</summary>
+    /// (tunnel down, API restarting, webhook retry exhausted), and checks every recorded call's
+    /// length against Retell's, correcting any that were recorded wrong.</summary>
     [HttpPost("sync")]
     [Authorize(Roles = Roles.Staff)]
-    public async Task<IActionResult> Sync()
+    public async Task<IActionResult> Sync(CancellationToken ct)
     {
-        var imported = await _retell.BackfillCallsAsync(_tenant.OrganizationId);
+        var result = await _retell.BackfillCallsAsync(_tenant.OrganizationId, deep: true, ct);
         // "Last synced" means exactly that, however it happened. The automatic schedule is left
         // alone: a manual sync does not buy the next one more time, and pretending otherwise
         // would make the countdown lie about when the agent's own import runs.
         _syncStatus.LastRunAt = DateTime.UtcNow;
-        return Ok(ApiResponse<object>.Ok(new { imported },
-            imported == 0 ? "No new calls found." : $"Imported {imported} call(s) from Retell."));
+
+        var parts = new List<string>();
+        if (result.Imported > 0) parts.Add($"imported {result.Imported} call(s)");
+        if (result.Corrected > 0) parts.Add($"corrected the length of {result.Corrected} call(s)");
+        var message = parts.Count == 0
+            ? "Everything matches Retell. No new calls found."
+            : $"From Retell: {string.Join(" and ", parts)}.";
+
+        return Ok(ApiResponse<object>.Ok(new
+        {
+            imported = result.Imported,
+            corrected = result.Corrected,
+            inProgress = result.InProgress,
+            invoicedMismatches = result.InvoicedMismatches,
+        }, message));
     }
 
     /// <summary>

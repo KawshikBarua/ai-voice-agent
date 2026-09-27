@@ -11,6 +11,15 @@ public static class Display
     public static string Duration(int seconds) =>
         seconds <= 0 ? "—" : seconds < 60 ? $"{seconds}s" : $"{seconds / 60}m {seconds % 60:00}s";
 
+    /// <summary>Total talk time, to the second: "4m 25s", "2h 03m 09s".</summary>
+    public static string TalkTime(long seconds)
+    {
+        if (seconds <= 0) return "0s";
+        if (seconds < 60) return $"{seconds}s";
+        if (seconds < 3600) return $"{seconds / 60}m {seconds % 60:00}s";
+        return $"{seconds / 3600}h {seconds % 3600 / 60:00}m {seconds % 60:00}s";
+    }
+
     public static string When(DateTime? utc) => utc is null ? "—" : $"{utc:d MMM yyyy, HH:mm} UTC";
 
     public static string Day(DateTime? utc) => utc is null ? "—" : $"{utc:d MMM yyyy}";

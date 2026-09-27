@@ -73,9 +73,19 @@ public class OrganizationRow
     public int PendingOverageMinutes { get; set; }
     public decimal PendingOverageAmount { get; set; }
 
-    /// <summary>Minutes in the window now running — measured from the last closed period, the same
-    /// anchor billing uses, so this and the customer's own page agree.</summary>
+    /// <summary>When the subscription's current access period began. Null with no subscription.</summary>
+    public DateTime? SubscriptionPeriodStart { get; set; }
+
+    /// <summary>Minutes not yet billed — the same calls and the same rounding the API bills from
+    /// (see OrganizationRepository.FillUsageAsync), so this and the customer's own page agree.</summary>
     public int MinutesUsedThisPeriod { get; set; }
+
+    /// <summary>The exact talk time <see cref="MinutesUsedThisPeriod"/> was rounded up from.</summary>
+    public long SecondsUsedThisPeriod { get; set; }
+
+    /// <summary>On a real tier rather than a row that only holds a Stripe link — the same test as
+    /// SubscriptionRecord.HasPlan in the shared billing code.</summary>
+    public bool HasPlan => PlanId is > 0 || SubscriptionAmount > 0 || IncludedMinutes > 0;
 
     public bool IsAgentConnected => !string.IsNullOrWhiteSpace(RetellAgentId);
     public bool HasSubscription => CurrentPeriodEnd.HasValue;
@@ -107,7 +117,11 @@ public class OrganizationRow
 
     /// <summary>What the admin is being asked to act on: overdue and still enabled means the
     /// account is running unpaid.</summary>
-    public bool NeedsAttention => BillingState == BillingState.Overdue && IsActive;
+    /// <remarks>Past the grace days the API stops the agent by itself (AutoSuspend on), so what is
+    /// left to act on is an overdue account whose agent is still answering: auto-stop switched
+    /// off, and not suspended or stopped by hand.</remarks>
+    public bool NeedsAttention =>
+        BillingState == BillingState.Overdue && IsActive && AutoSuspend != true && !AgentRestricted;
 }
 
 /// <summary>Platform-wide roll-up shown at the top of the dashboard.</summary>
@@ -329,9 +343,11 @@ public class PromptTemplateInput
 {
     public string? Persona { get; set; }
     public string? CoreRules { get; set; }
-    public string? ConversationGuide { get; set; }
-    public string? FieldServiceGuide { get; set; }
-    public string? ToolPolicy { get; set; }
+    public string? TriageState { get; set; }
+    public string? SchedulingState { get; set; }
+    public string? FieldSchedulingState { get; set; }
+    public string? BookingState { get; set; }
+    public string? ExistingBookingState { get; set; }
 }
 
 /// <summary>The two numbers the platform operator owns. Blank clears a number.</summary>

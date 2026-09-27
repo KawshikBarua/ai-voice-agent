@@ -45,9 +45,11 @@ public class PromptTemplateStatus
 {
     public string Persona { get; set; } = "";
     public string CoreRules { get; set; } = "";
-    public string ConversationGuide { get; set; } = "";
-    public string FieldServiceGuide { get; set; } = "";
-    public string ToolPolicy { get; set; } = "";
+    public string TriageState { get; set; } = "";
+    public string SchedulingState { get; set; } = "";
+    public string FieldSchedulingState { get; set; } = "";
+    public string BookingState { get; set; } = "";
+    public string ExistingBookingState { get; set; } = "";
     public DateTime? ModifiedAt { get; set; }
 
     /// <summary>Human-readable names of the sections that differ from the platform default.</summary>
@@ -260,9 +262,11 @@ public class PlatformApiClient : IPlatformApiClient
             {
                 input.Persona,
                 input.CoreRules,
-                input.ConversationGuide,
-                input.FieldServiceGuide,
-                input.ToolPolicy,
+                input.TriageState,
+                input.SchedulingState,
+                input.FieldSchedulingState,
+                input.BookingState,
+                input.ExistingBookingState,
                 ResetToDefaults = resetToDefaults,
             };
             var response = await _http.PutAsync("api/v1/platform/prompt-template", Json(body), ct);

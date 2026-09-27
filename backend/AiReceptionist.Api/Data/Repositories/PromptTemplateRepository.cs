@@ -1,10 +1,11 @@
+using AiReceptionist.Api.Common;
 using AiReceptionist.Api.Domain;
 using AiReceptionist.Api.Services;
 using Dapper;
 
 namespace AiReceptionist.Api.Data.Repositories;
 
-/// <summary>The single, platform-wide wording of the system prompt (one row, edited by SuperAdmin).
+/// <summary>The single, platform-wide wording of the agent prompt (one row, edited by SuperAdmin).
 /// <see cref="GetEffectiveAsync"/> merges it with the built-in defaults so a section left blank
 /// keeps tracking the platform default instead of freezing whatever text was current when it was
 /// first saved.</summary>
@@ -23,8 +24,13 @@ public interface IPromptTemplateRepository
 public class PromptTemplateRepository : IPromptTemplateRepository
 {
     private readonly IDbConnectionFactory _db;
+    private readonly ICache _cache;
 
-    public PromptTemplateRepository(IDbConnectionFactory db) => _db = db;
+    public PromptTemplateRepository(IDbConnectionFactory db, ICache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
 
     public async Task<PromptTemplate?> GetAsync()
     {
@@ -35,17 +41,24 @@ public class PromptTemplateRepository : IPromptTemplateRepository
 
     public async Task<PromptTemplate> GetEffectiveAsync()
     {
-        var row = await GetAsync();
+        // Read on every agent sync, and a restart syncs every connected tenant at once. The stored
+        // row is what gets cached — an empty one when nothing is customised, so that case is cached
+        // too — never the merged text, so a deploy that improves a default reaches the very next sync.
+        var row = await _cache.GetOrSetAsync(CacheKeys.PromptTemplate, CacheTtl.Config,
+            async () => await GetAsync() ?? new PromptTemplate()) ?? new PromptTemplate();
+
         return new PromptTemplate
         {
-            Id = row?.Id ?? 0,
-            Persona = Coalesce(row?.Persona, PromptDefaults.Persona),
-            CoreRules = Coalesce(row?.CoreRules, PromptDefaults.CoreRules),
-            ConversationGuide = Coalesce(row?.ConversationGuide, PromptDefaults.ConversationGuide),
-            FieldServiceGuide = Coalesce(row?.FieldServiceGuide, PromptDefaults.FieldServiceGuide),
-            ToolPolicy = Coalesce(row?.ToolPolicy, PromptDefaults.ToolPolicy),
-            ModifiedAt = row?.ModifiedAt,
-            ModifiedByUserId = row?.ModifiedByUserId,
+            Id = row.Id,
+            Persona = Coalesce(row.Persona, PromptDefaults.Persona),
+            CoreRules = Coalesce(row.CoreRules, PromptDefaults.CoreRules),
+            TriageState = Coalesce(row.TriageState, PromptDefaults.TriageState),
+            SchedulingState = Coalesce(row.SchedulingState, PromptDefaults.SchedulingState),
+            FieldSchedulingState = Coalesce(row.FieldSchedulingState, PromptDefaults.FieldSchedulingState),
+            BookingState = Coalesce(row.BookingState, PromptDefaults.BookingState),
+            ExistingBookingState = Coalesce(row.ExistingBookingState, PromptDefaults.ExistingBookingState),
+            ModifiedAt = row.ModifiedAt,
+            ModifiedByUserId = row.ModifiedByUserId,
         };
     }
 
@@ -60,23 +73,30 @@ public class PromptTemplateRepository : IPromptTemplateRepository
         {
             template.Persona,
             template.CoreRules,
-            template.ConversationGuide,
-            template.FieldServiceGuide,
-            template.ToolPolicy,
+            template.TriageState,
+            template.SchedulingState,
+            template.FieldSchedulingState,
+            template.BookingState,
+            template.ExistingBookingState,
             userId,
             id,
         };
 
         if (id is null)
             await conn.ExecuteAsync(@"
-                INSERT INTO PromptTemplate (Persona, CoreRules, ConversationGuide, FieldServiceGuide, ToolPolicy, ModifiedAt, ModifiedByUserId)
-                VALUES (@Persona, @CoreRules, @ConversationGuide, @FieldServiceGuide, @ToolPolicy, GETUTCDATE(), @userId)", p);
+                INSERT INTO PromptTemplate (Persona, CoreRules, TriageState, SchedulingState, FieldSchedulingState,
+                    BookingState, ExistingBookingState, ModifiedAt, ModifiedByUserId)
+                VALUES (@Persona, @CoreRules, @TriageState, @SchedulingState, @FieldSchedulingState,
+                    @BookingState, @ExistingBookingState, GETUTCDATE(), @userId)", p);
         else
             await conn.ExecuteAsync(@"
-                UPDATE PromptTemplate SET Persona=@Persona, CoreRules=@CoreRules,
-                    ConversationGuide=@ConversationGuide, FieldServiceGuide=@FieldServiceGuide,
-                    ToolPolicy=@ToolPolicy, ModifiedAt=GETUTCDATE(), ModifiedByUserId=@userId
+                UPDATE PromptTemplate SET Persona=@Persona, CoreRules=@CoreRules, TriageState=@TriageState,
+                    SchedulingState=@SchedulingState, FieldSchedulingState=@FieldSchedulingState,
+                    BookingState=@BookingState, ExistingBookingState=@ExistingBookingState,
+                    ModifiedAt=GETUTCDATE(), ModifiedByUserId=@userId
                 WHERE Id=@id", p);
+
+        await _cache.RemoveAsync(CacheKeys.PromptTemplate);
     }
 
     private static string Coalesce(string? stored, string fallback) =>

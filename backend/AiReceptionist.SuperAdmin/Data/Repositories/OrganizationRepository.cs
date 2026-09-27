@@ -63,15 +63,8 @@ public class OrganizationRepository : IOrganizationRepository
                s.Currency AS SubscriptionCurrency, s.CurrentPeriodEnd, s.GraceDays, s.AutoSuspend,
                s.PlanId, s.IncludedMinutes, s.OverageRatePerMinute, s.StripeStatus,
                s.StripeSubscriptionId, s.PendingOverageMinutes, s.PendingOverageAmount,
-               -- Minutes in the window now running. It starts where the last closed period ended,
-               -- the same anchor the API bills from, so this column and the customer's own billing
-               -- page never disagree about how much they have used.
-               (SELECT ISNULL(SUM(CEILING(cl.DurationSeconds / 60.0)), 0) FROM CallLogs cl
-                  WHERE cl.OrganizationId = o.Id AND cl.IsDeleted = 0
-                    AND cl.StartedAt >= ISNULL(
-                        (SELECT MAX(up.PeriodEnd) FROM OrganizationUsagePeriods up
-                           WHERE up.OrganizationId = o.Id),
-                        s.CurrentPeriodStart)) AS MinutesUsedThisPeriod
+               s.CurrentPeriodStart AS SubscriptionPeriodStart
+               -- Minutes used are filled in afterwards by FillUsageAsync, not here: see there.
         FROM Organizations o
         LEFT JOIN AgentConfig ac ON ac.OrganizationId = o.Id
         LEFT JOIN OrganizationSubscriptions s ON s.OrganizationId = o.Id
@@ -85,17 +78,75 @@ public class OrganizationRepository : IOrganizationRepository
             sql += " AND (o.Name LIKE @term OR o.Email LIKE @term OR o.Industry LIKE @term OR o.Phone LIKE @term)";
         sql += " ORDER BY o.Name";
 
-        var rows = await conn.QueryAsync<OrganizationRow>(sql,
-            new { since = Since30d(), term = $"%{search?.Trim()}%" });
-        return rows.ToList();
+        var rows = (await conn.QueryAsync<OrganizationRow>(sql,
+            new { since = Since30d(), term = $"%{search?.Trim()}%" })).ToList();
+        await FillUsageAsync(conn, rows);
+        return rows;
     }
 
     public async Task<OrganizationRow?> GetAsync(int orgId)
     {
         using var conn = _db.Create();
-        return await conn.QuerySingleOrDefaultAsync<OrganizationRow>(
+        var row = await conn.QuerySingleOrDefaultAsync<OrganizationRow>(
             RowSelect + " AND o.Id = @orgId", new { since = Since30d(), orgId });
+        if (row is not null) await FillUsageAsync(conn, [row]);
+        return row;
     }
+
+    /// <summary>
+    /// Minutes used this period, counted exactly as the tenant API counts them for the customer's
+    /// own dashboard and invoice.
+    ///
+    /// This console used to count by date — calls started since the last closed period — while the
+    /// API counts by the unbilled marker (<see cref="BillingSchema.UnbilledPredicate"/>). The two
+    /// disagree as soon as a call is recorded after its period closed, and the per-call rounding was
+    /// copied here separately too, so the operator and the customer could be looking at two
+    /// different figures for the same bill. Both now come from <see cref="BillingSchema"/>.
+    ///
+    /// An account with no plan is bounded to the monthly window it is in, as the API's usage
+    /// endpoint bounds it (nothing is ever closed for it, so "unbilled" alone would be its whole
+    /// history). That window is worked out here with the same <see cref="UsageWindows"/> the API
+    /// uses rather than re-expressed in SQL, where month-end dates would drift from it.
+    /// </summary>
+    private static async Task FillUsageAsync(System.Data.IDbConnection conn, IReadOnlyList<OrganizationRow> rows)
+    {
+        var now = DateTime.UtcNow;
+
+        foreach (var chunk in rows.Chunk(500))
+        {
+            var parameters = new DynamicParameters();
+            var bounds = new List<string>(chunk.Length);
+            for (var i = 0; i < chunk.Length; i++)
+            {
+                parameters.Add($"o{i}", chunk[i].Id, System.Data.DbType.Int32);
+                parameters.Add($"f{i}", CountFrom(chunk[i], now), System.Data.DbType.DateTime2);
+                bounds.Add($"(@o{i}, @f{i})");
+            }
+
+            var usage = await conn.QueryAsync<(int OrgId, int Minutes, long Seconds)>($@"
+                SELECT b.OrgId,
+                       (SELECT {BillingSchema.MinutesExpression} FROM CallLogs
+                         WHERE OrganizationId = b.OrgId AND {BillingSchema.UsagePredicate("b.CountFrom")}) AS Minutes,
+                       (SELECT {BillingSchema.SecondsExpression} FROM CallLogs
+                         WHERE OrganizationId = b.OrgId AND {BillingSchema.UsagePredicate("b.CountFrom")}) AS Seconds
+                FROM (VALUES {string.Join(", ", bounds)}) AS b(OrgId, CountFrom)", parameters);
+
+            var byOrg = usage.ToDictionary(u => u.OrgId);
+            foreach (var row in chunk)
+            {
+                if (!byOrg.TryGetValue(row.Id, out var u)) continue;
+                row.MinutesUsedThisPeriod = u.Minutes;
+                row.SecondsUsedThisPeriod = u.Seconds;
+            }
+        }
+    }
+
+    /// <summary>Mirrors BillingService.LoadUsageAsync in the API: a plan counts every unbilled call;
+    /// no plan counts from the start of the monthly window now running.</summary>
+    private static DateTime? CountFrom(OrganizationRow row, DateTime now) =>
+        row.HasSubscription && row.HasPlan
+            ? null
+            : UsageWindows.Current(row.SubscriptionPeriodStart ?? now, BillingCycles.Monthly, now).Start;
 
     public async Task<OrganizationAgent?> GetAgentAsync(int orgId)
     {

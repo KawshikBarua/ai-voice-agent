@@ -46,6 +46,7 @@ A read-through cache sits in front of SQL for the handful of reads that dominate
 | Tenant settings row | Read by every live-call tool, every prompt build, every dashboard load | 5 min, dropped on write |
 | Retell agent linkage | Read by every webhook and every sync pass | 5 min, dropped on write |
 | Platform Retell connection | Read before every outbound Retell call | 5 min, dropped on write |
+| Platform prompt wording | Read by every agent sync — every connected tenant on each restart | 5 min, dropped on write |
 | Dashboard aggregates | The heaviest query in the app, re-run on every page load | 60 s |
 | Sidebar badge counts | Polled once a minute by every open tab | 20 s |
 | Minutes used | Polled every 15 s by every open tab | 10 s |
@@ -163,9 +164,10 @@ session, and the tenant app exposes nothing to the `SuperAdmin` role.
   verification live on one screen. Each tenant is either **Connect**-able or, once an agent exists,
   offers only **Re-sync** and **Disconnect**. The rule is enforced server-side, so an organization can
   never end up with a second agent.
-- **AI Prompt** — the wording every tenant's receptionist is built from: how it talks, the rules it
-  cannot break, the shape of a call (one version for businesses the customer visits, one for trades
-  that travel to them) and when it may call a tool. One text for the whole platform. Saving stores
+- **AI Prompt** — the wording every tenant's receptionist is built from: the general prompt (how it
+  talks, the rules it cannot break) and one prompt per call state — finding out what they need,
+  finding a time (one version for businesses the customer visits, one for trades that travel to
+  them), taking the booking, and an appointment they already have. One text for the whole platform. Saving stores
   it and touches nothing on Retell: a connected agent keeps the prompt it was built with until it is
   re-synced, so a rollout stays a deliberate, per-organization act. A section left blank falls back to the built-in default in
   `Services/PromptDefaults.cs`, so only genuine overrides are stored and "restore defaults" is a
@@ -318,8 +320,12 @@ Fully implemented in `Services/RetellService.cs`, `Controllers/RetellController.
 `Controllers/AiToolsController.cs` and `Controllers/RetellWebhookController.cs`:
 
 - **Agent sync** — `POST /api/v1/platform/retell/{orgId}/sync` (the *Connect* / *Re-sync* buttons in
-  the super admin console) creates or updates the tenant's Retell LLM (generated final prompt +
-  tools + greeting) and Agent (voice, language, webhook). Subsequent knowledge-base / service /
+  the super admin console) creates or updates the tenant's Retell LLM and Agent (voice, language,
+  webhook). The LLM is **multi-prompt**: a general prompt in force on every turn, plus four states
+  (`triage` → `scheduling` → `booking`, and `existing_booking`), each with its own short prompt and
+  only the tools that stage uses — so the model reads less and chooses between fewer tools on every
+  turn. The per-call clock is the last line of the general prompt, keeping everything before it
+  identical from call to call so the model provider can reuse its cached copy. Subsequent knowledge-base / service /
   product / settings changes re-sync automatically via a background worker. Tenants themselves get
   only `GET /api/v1/retell/status`, which is read-only.
 - **Live-call tools** — during calls the agent invokes `POST /api/v1/ai/tools/{orgId}/...`:

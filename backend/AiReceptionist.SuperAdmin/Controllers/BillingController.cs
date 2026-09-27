@@ -100,16 +100,4 @@ public class BillingController : PlatformControllerBase
         Report(ok, ok ? $"{organization.Name}: {message}" : message);
         return RedirectToAction("Details", "Organizations", new { id = input.OrganizationId });
     }
-
-    /// <summary>Runs the overdue sweep now instead of waiting for the timer.</summary>
-    [HttpPost("sweep")]
-    [ValidateAntiForgeryToken]
-    public async Task<IActionResult> Sweep()
-    {
-        var count = await _service.SuspendLapsedAsync();
-        Notify(count == 0
-            ? "No organizations are past their grace period."
-            : $"Disabled {count} organization(s) past their grace period.");
-        return RedirectToAction(nameof(Index));
-    }
 }

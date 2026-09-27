@@ -10,6 +10,19 @@ import {
 // thumb: the extra height only applies below sm, where the pointer is a finger.
 const rowAction = '!px-3 !py-2 !text-xs sm:!py-1.5'
 
+/**
+ * How closely the map placed a booking's address: 'street' or 'area' when it could not find the
+ * door itself, null for an exact match or a booking with no location stored. Read from the JSON the
+ * booking keeps beside the caller's own words; a row that cannot be read has nothing to add.
+ */
+function locationPrecision(appointment) {
+  try {
+    return JSON.parse(appointment.serviceLocationJson ?? 'null')?.Precision ?? null
+  } catch {
+    return null
+  }
+}
+
 function NewAppointmentForm({ onDone }) {
   const qc = useQueryClient()
   const { data: customers } = useQuery({
@@ -236,6 +249,14 @@ export default function Appointments() {
                   {/* The map could not be reached, so nothing was checked. Rare, and worth
                       knowing: the coverage rule quietly did not apply to this one. */}
                   {a.areaStatus === 'Unverified' && <Chip tone="cream">Address unchecked</Chip>}
+                  {/* Booked on an address the map has never heard of. Someone has to confirm
+                      where the job actually is before anyone drives out. */}
+                  {a.areaStatus === 'NotFound' && <Chip tone="red">Address not found</Chip>}
+                  {/* Covered, but judged on the town or plaza because the door itself is not on the
+                      map: the caller's words above are the address to go by, not the map's pin. */}
+                  {a.areaStatus === 'Covered' && locationPrecision(a) === 'area' && (
+                    <Chip tone="cream">Approx. location</Chip>
+                  )}
                   <Chip tone={statusTone(a.status)}>{a.status}</Chip>
                   <Chip tone={statusTone(a.paymentStatus)}>{a.paymentStatus}</Chip>
                 </div>

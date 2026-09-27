@@ -515,7 +515,7 @@ const asKm = (miles) => Math.round(miles * 1.609344)
 
 /** Describes one branch's reach in a single phrase, the way the AI will put it to a caller. */
 const describeCoverage = (l) =>
-  l.coversEntireCity ? `All of ${l.city}` : `${Math.round(l.coverageRadiusMiles)} mi (${asKm(l.coverageRadiusMiles)} km) around ${l.city}`
+  l.coversEntireCity ? `All of ${l.placeName}` : `${Math.round(l.coverageRadiusMiles)} mi (${asKm(l.coverageRadiusMiles)} km) around ${l.placeName}`
 
 /** Settles a fast-changing value once typing stops, so the city search runs on a pause rather
  *  than on every keystroke — one request instead of a dozen, and no flicker between them. */
@@ -544,7 +544,7 @@ const MIN_CITY_QUERY = 4
  * later be measured against — and picking one is what captures the city's boundary, which is what
  * "cover the whole city" is judged on.
  */
-function CityPicker({ countryCode, value, onChange, id }) {
+function CityPicker({ countryCode, value, region, onChange, id }) {
   const [open, setOpen] = useState(false)
   const typed = value.trim()
   const query = useDebounced(typed)
@@ -571,7 +571,7 @@ function CityPicker({ countryCode, value, onChange, id }) {
         autoComplete="off"
         disabled={!countryCode}
         placeholder={countryCode ? 'Type the full city name…' : 'Pick a country first'}
-        onChange={(e) => { onChange(e.target.value); setOpen(true) }}
+        onChange={(e) => { onChange(e.target.value, ''); setOpen(true) }}
         onFocus={() => setOpen(true)}
         // A blur that fires before the click lands would close the list out from under the
         // pointer, so the close waits a frame for the selection to register.
@@ -584,9 +584,9 @@ function CityPicker({ countryCode, value, onChange, id }) {
               <button
                 type="button"
                 className="block w-full px-4 py-2 text-left text-sm hover:bg-panel"
-                // The whole suggestion is kept, not just its name: the server re-resolves it on
-                // save, and this is the spelling that finds it again.
-                onClick={() => { onChange(c.city); setOpen(false) }}
+                // The region travels with the name: it is what tells the server which of the
+                // same-named cities was meant when it re-resolves the pick on save.
+                onClick={() => { onChange(c.city, c.region ?? ''); setOpen(false) }}
               >
                 {c.city}
                 {c.region && <span className="text-muted"> · {c.region}</span>}
@@ -609,6 +609,7 @@ function CityPicker({ countryCode, value, onChange, id }) {
           )}
         </ul>
       )}
+      {region && <p className="mt-1 px-1 text-xs text-muted">{value}, {region}</p>}
     </div>
   )
 }
@@ -665,7 +666,7 @@ function LocationRow({ location, onSave, onRemove, busy }) {
     <div className="rounded-2xl bg-panel px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="min-w-0 flex-1 truncate text-sm font-semibold">{location.name}</span>
-        <Chip tone="cream">{location.city}, {location.countryName}</Chip>
+        <Chip tone="cream">{location.placeName}</Chip>
         <button
           onClick={() => onRemove(location.id)}
           disabled={busy}
@@ -693,7 +694,7 @@ function LocationRow({ location, onSave, onRemove, busy }) {
   )
 }
 
-const blankLocation = { countryCode: '', city: '', name: '', coverageRadiusMiles: 10, coversEntireCity: false }
+const blankLocation = { countryCode: '', city: '', region: '', name: '', coverageRadiusMiles: 10, coversEntireCity: false }
 
 /**
  * The branches the business works out of, and how far each one travels.
@@ -701,8 +702,9 @@ const blankLocation = { countryCode: '', city: '', name: '', coverageRadiusMiles
  * This is what an address given on a call is checked against: the AI looks it up on
  * OpenStreetMap the moment the caller says it, and either books it, books it with a warning that
  * someone will ring back, or explains that it is outside the area — rather than everyone finding
- * out on the day. With no branches here nothing is checked and every address is accepted, which
- * is how every business starts.
+ * out on the day. An address the map only knows roughly is booked on its street or area; one it
+ * cannot find at all is booked and flagged for someone to confirm. With no branches here nothing
+ * is checked and every address is accepted, which is how every business starts.
  */
 function LocationsCard() {
   const qc = useQueryClient()
@@ -750,7 +752,7 @@ function LocationsCard() {
   return (
     <SettingsCard
       title="Locations & coverage"
-      subtitle="Where you work from, and how far you travel. The AI checks every address a caller gives against these before it books — an address it cannot find, or one outside every area, is caught on the phone. Leave this empty and no address is ever checked."
+      subtitle="Where you work from, and how far you travel. The AI checks every address a caller gives against these before it books. If the map only knows the street or the area, it books on that; if it cannot find the address at all, it books it and flags it for you to confirm. Only an address clearly outside every area is turned away. Leave this empty and no address is ever checked."
     >
       <form
         className="grid gap-3 sm:grid-cols-2"
@@ -761,7 +763,7 @@ function LocationsCard() {
           <LocationSelect
             id="loc-country"
             value={form.countryCode}
-            onChange={(e) => setForm({ ...form, countryCode: e.target.value, city: '' })}
+            onChange={(e) => setForm({ ...form, countryCode: e.target.value, city: '', region: '' })}
           >
             <option value="">Choose a country…</option>
             {(countries ?? []).map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
@@ -774,7 +776,8 @@ function LocationsCard() {
             id="loc-city"
             countryCode={form.countryCode}
             value={form.city}
-            onChange={(city) => setForm({ ...form, city })}
+            region={form.region}
+            onChange={(city, region) => setForm({ ...form, city, region })}
           />
         </div>
 

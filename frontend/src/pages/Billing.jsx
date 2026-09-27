@@ -6,7 +6,7 @@ import { useUsage } from '../api/usage'
 import { useAuthStore } from '../store/auth'
 import { Card, CardTitle, PillButton, Chip, EmptyState } from '../components/ui'
 import { GaugeMeter, BarMeter } from '../components/charts'
-import { currencySymbol, minutes as fmtMinutes } from '../lib/format'
+import { currencySymbol, minutes as fmtMinutes, talkTime } from '../lib/format'
 
 /**
  * What this account is being charged, and why.
@@ -536,6 +536,9 @@ export default function Billing() {
   const live = usage?.hasSubscription ? usage : null
   const metered = live?.metered ?? s.metered
   const minutesUsed = live?.minutesUsed ?? s.minutesUsed ?? 0
+  // From the same read as minutesUsed, never mixed with the other — the two are only guaranteed to
+  // agree when they were measured together. Null against a server too old to report seconds.
+  const secondsUsed = live ? live.secondsUsed ?? null : s.secondsUsed ?? null
   const minutesOver = live?.minutesOver ?? s.minutesOver ?? 0
   const includedMinutes = live?.includedMinutes ?? s.includedMinutes ?? 0
   const projectedOverage = live?.projectedOverageAmount ?? s.projectedOverageAmount ?? 0
@@ -742,6 +745,12 @@ export default function Billing() {
                   <dt className="text-muted">Used</dt>
                   <dd className="font-semibold tabular-nums">{fmtMinutes(minutesUsed)}</dd>
                 </div>
+                {secondsUsed != null && (
+                  <div className="flex justify-between">
+                    <dt className="text-muted">Talk time</dt>
+                    <dd className="font-semibold tabular-nums">{talkTime(secondsUsed)}</dd>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <dt className="text-muted">Included in {s.planName}</dt>
                   <dd className="font-semibold tabular-nums">{fmtMinutes(includedMinutes)}</dd>
@@ -764,16 +773,20 @@ export default function Billing() {
                 }
                 className="mt-3"
               />
-              {/* Stated, because it is the single most common thing a customer queries: their call
-                  log shows a handful of seconds and their bill shows a minute. The rule has always
-                  been per-call round-up; only saying so is new. */}
+              {/* Stated, because it is the single most common thing a customer queries: how the
+                  minutes relate to the call log. They are the call log's seconds added up and
+                  rounded up once for the period — never each call rounded up on its own. */}
               <p className="mt-3 text-xs text-muted">
-                Each call is rounded up to the next whole minute, so a 20-second call counts as one.
+                Minutes are the exact talk time of all your calls this period, added up to the second
+                and rounded up to a whole minute once.
               </p>
             </>
           ) : (
             <div className="py-4">
               <p className="text-3xl font-bold tabular-nums">{fmtMinutes(minutesUsed)}</p>
+              {secondsUsed != null && (
+                <p className="mt-0.5 text-sm tabular-nums text-muted">{talkTime(secondsUsed)} of talk time</p>
+              )}
               <p className="mt-1 text-sm text-muted">
                 Your {s.planName} plan is a flat {exact(s.planAmount, cur)} per{' '}
                 {String(s.billingCycle).toLowerCase() === 'yearly' ? 'year' : 'month'}, however much the

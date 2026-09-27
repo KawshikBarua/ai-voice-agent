@@ -175,8 +175,9 @@ public class Appointment
     /// electrical, HVAC, locksmith, cleaning) whose technician travels to the caller.</summary>
     public string? ServiceAddress { get; set; }
     /// <summary>How <see cref="ServiceAddress"/> fared against the branches' coverage areas
-    /// (see <see cref="BusinessLocation"/>): "Covered", or "OutOfArea" for a booking taken outside
-    /// the radius that staff still have to ring back and confirm. Null when the organization has
+    /// (see <see cref="BusinessLocation"/>): "Covered"; "OutOfArea" for a booking taken outside the
+    /// radius, or "NotFound" for one on an address the map does not know, both of which staff have to
+    /// ring back and confirm; "Unverified" when the map could not be reached. Null when the organization has
     /// configured no coverage areas, or when no address was given — the ordinary case, and the
     /// reason nothing about existing bookings changes.</summary>
     public string? AreaStatus { get; set; }
@@ -274,6 +275,11 @@ public class BusinessLocation
     public string CountryCode { get; set; } = "";
     public string CountryName { get; set; } = "";
     public string City { get; set; } = "";
+    /// <summary>State or county, as the city picker showed it. The only thing telling Brooklyn,
+    /// Ohio from Brooklyn, New York, so it is part of how the city is resolved and how it is named.</summary>
+    public string? Region { get; set; }
+    /// <summary>"Brooklyn, Ohio, United States" — how the branch is named everywhere a person or the agent reads it.</summary>
+    public string PlaceName => string.Join(", ", new[] { City, Region, CountryName }.Where(p => !string.IsNullOrWhiteSpace(p)));
     /// <summary>The branch's centre, resolved server-side from the city as it is saved. Never
     /// taken from the browser: it is what every coverage decision is measured from, so a client
     /// that could set it could put itself inside anyone's area.</summary>
@@ -538,8 +544,8 @@ public class RetellConnection
     public int? ModifiedByUserId { get; set; }
 }
 
-/// <summary>Platform-wide wording of the system prompt — the sections that are the same for every
-/// tenant (how the agent speaks, the rules, the shape of a call, when it may call a tool). Edited
+/// <summary>Platform-wide wording of the prompt — the sections that are the same for every tenant:
+/// the general prompt (how the agent speaks, the rules) and one prompt per call state. Edited
 /// by SuperAdmin and stored as a single row, so one change re-tunes every tenant's agent.
 /// A blank section falls back to <see cref="Services.PromptDefaults"/>: that is what makes
 /// "restore the platform default" a matter of clearing the box rather than pasting text back.</summary>
@@ -548,11 +554,13 @@ public class PromptTemplate
     public int Id { get; set; }
     public string? Persona { get; set; }
     public string? CoreRules { get; set; }
-    /// <summary>Call shape for businesses the customer comes to (clinics, salons, workshops).</summary>
-    public string? ConversationGuide { get; set; }
-    /// <summary>Call shape for trades that travel to the customer (plumbers, electricians, HVAC).</summary>
-    public string? FieldServiceGuide { get; set; }
-    public string? ToolPolicy { get; set; }
+    public string? TriageState { get; set; }
+    /// <summary>Finding a time, for businesses the customer comes to (clinics, salons, workshops).</summary>
+    public string? SchedulingState { get; set; }
+    /// <summary>Finding a time, for trades that travel to the customer (plumbers, electricians, HVAC).</summary>
+    public string? FieldSchedulingState { get; set; }
+    public string? BookingState { get; set; }
+    public string? ExistingBookingState { get; set; }
     public DateTime? ModifiedAt { get; set; }
     public int? ModifiedByUserId { get; set; }
 }

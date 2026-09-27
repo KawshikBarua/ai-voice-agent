@@ -270,7 +270,15 @@ public class NotificationService : INotificationService
             Title = $"{lead} — {when}",
             Body = $"{customerName} · {serviceName}" +
                    (assignedTo is null ? "" : $" · with {assignedTo}") +
-                   (string.IsNullOrWhiteSpace(appointment.ServiceAddress) ? "" : $" · {appointment.ServiceAddress}"),
+                   (string.IsNullOrWhiteSpace(appointment.ServiceAddress) ? "" : $" · {appointment.ServiceAddress}") +
+                   // Said in the alert because it is work for whoever reads it: somebody has to ring
+                   // the customer before the visit, and the dashboard may not be opened in time.
+                   appointment.AreaStatus switch
+                   {
+                       AreaStatuses.NotFound => " · Address not found on the map — confirm it with the customer",
+                       AreaStatuses.OutOfArea => " · Outside the usual area — ring back to confirm",
+                       _ => "",
+                   },
             Url = "/appointments",
             AppointmentId = appointment.Id,
         };

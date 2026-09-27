@@ -26,15 +26,17 @@ public enum CallBlock
     /// has used it — which is what both the log and the customer's own billing page should say.</summary>
     TrialExpired,
 
-    /// <summary>On a plan, but past the paid-through date plus the grace period — or Stripe says the
-    /// subscription is cancelled or unpaid.</summary>
+    /// <summary>On a plan, but past the paid-through date plus the grace days the operator set (with
+    /// auto-stop on) — or Stripe says the subscription is cancelled or unpaid.</summary>
     Unpaid,
 }
 
 /// <summary>
 /// Whether an organization is entitled to have its AI agent answer calls, and what to say if not.
+/// <see cref="Detail"/> is for the operator and the log; <see cref="CustomerMessage"/> is what the
+/// account's own billing page may show, and is set only for the reasons the customer can act on.
 /// </summary>
-public sealed record CallEntitlement(CallBlock Block, string? Detail)
+public sealed record CallEntitlement(CallBlock Block, string? Detail, string? CustomerMessage = null)
 {
     public static readonly CallEntitlement Allowed = new(CallBlock.None, null);
 
@@ -110,7 +112,10 @@ public class CallEntitlementService : ICallEntitlementService
 
     public async Task<CallEntitlement> EvaluateAsync(int orgId, CancellationToken ct = default)
     {
-        var org = await _settings.GetOrganizationAsync(orgId);
+        // Read fresh, not from the cache: the console suspends accounts, stops agents and grants
+        // trials by writing the row directly, and it cannot clear this API's cache — a cached copy
+        // would keep answering a switched-off account's calls for up to five minutes.
+        var org = await _settings.GetOrganizationFreshAsync(orgId);
         if (org is null)
             return new CallEntitlement(CallBlock.AccountDisabled, "no such organization");
 
@@ -118,7 +123,8 @@ public class CallEntitlementService : ICallEntitlementService
             return new CallEntitlement(CallBlock.AccountDisabled, org.SuspendedReason);
 
         if (org.AgentRestricted)
-            return new CallEntitlement(CallBlock.AgentStopped, org.AgentRestrictedReason);
+            return new CallEntitlement(CallBlock.AgentStopped, org.AgentRestrictedReason,
+                org.AgentRestrictedReason);
 
         // A trial the operator granted is the platform giving the service away deliberately, so it
         // answers on its own terms: no plan is needed, nothing is collected, and the bill is not
@@ -139,14 +145,19 @@ public class CallEntitlementService : ICallEntitlementService
                 : new CallEntitlement(CallBlock.NoPlan, null);
 
         if (sub.StripeStatus is { } status && DeadStripeStatuses.Contains(status))
-            return new CallEntitlement(CallBlock.Unpaid, $"Stripe reports the subscription as {status}");
+            return new CallEntitlement(CallBlock.Unpaid, $"Stripe reports the subscription as {status}",
+                "Your subscription is no longer active.");
 
-        // The same paid-through line the billing page shows the customer and the overdue sweep
-        // suspends on, so an account is never cut off before its own dashboard says it is at risk.
+        // Running past the allowance never stops calls: the extra minutes are totalled when the
+        // period closes and charged on the next invoice with the plan. What stops them is that
+        // invoice going unpaid past the grace days the operator set — the same paid-through line
+        // the billing page shows, so an account is never cut off before its own page says it is at
+        // risk. AutoSuspend off is the operator choosing to carry this customer anyway.
         var paidThrough = sub.CurrentPeriodEnd.AddDays(sub.GraceDays);
-        if (DateTime.UtcNow > paidThrough)
+        if (sub.AutoSuspend && DateTime.UtcNow > paidThrough)
             return new CallEntitlement(CallBlock.Unpaid,
-                $"paid through {paidThrough:d MMM yyyy}, including {sub.GraceDays} day(s) of grace");
+                $"paid through {paidThrough:d MMM yyyy}, including {sub.GraceDays} day(s) of grace",
+                $"Your payment is overdue: the grace period ended on {paidThrough:d MMM yyyy}.");
 
         return CallEntitlement.Allowed;
     }

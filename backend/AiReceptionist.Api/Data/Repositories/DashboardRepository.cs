@@ -29,10 +29,15 @@ public class DashboardStats
     // ---- talk time / plan ----
     /// <summary>All the AI has ever talked for, in minutes.</summary>
     public int MinutesUsedTotal { get; set; }
+    /// <summary>The exact talk time behind <see cref="MinutesUsedTotal"/>.</summary>
+    public long SecondsUsedTotal { get; set; }
     /// <summary>Minutes inside the current billing period (or the current calendar month
     /// when no subscription is on file).</summary>
     public int MinutesUsedThisPeriod { get; set; }
+    /// <summary>The exact talk time behind <see cref="MinutesUsedThisPeriod"/>.</summary>
+    public long SecondsUsedThisPeriod { get; set; }
     public int MinutesUsedToday { get; set; }
+    public long SecondsUsedToday { get; set; }
     /// <summary>Minutes the plan includes per period. 0 = the plan is not metered on minutes,
     /// so the dashboard shows usage without a balance.</summary>
     public int MinutesIncluded { get; set; }
@@ -158,7 +163,7 @@ public class DashboardRepository : IDashboardRepository
         // 30 tenant-local days ending with today.
         var since30Utc = w.TodayEndUtc.AddDays(-30);
 
-        var stats = await conn.QuerySingleAsync<DashboardStats>(@"
+        var stats = await conn.QuerySingleAsync<DashboardStats>($@"
             SELECT
               (SELECT COUNT(*) FROM Appointments WHERE OrganizationId=@orgId AND IsDeleted=0
                  AND StartAt >= @todayStartUtc AND StartAt < @todayEndUtc AND Status NOT IN ('Cancelled')) AS TodaysAppointments,
@@ -184,12 +189,18 @@ public class DashboardRepository : IDashboardRepository
               (SELECT ISNULL(AVG(CAST(DurationSeconds AS FLOAT)),0) FROM CallLogs
                  WHERE OrganizationId=@orgId AND IsDeleted=0 AND DurationSeconds > 0) AS AvgCallSeconds,
 
-              -- Talk time is billed per started minute, so a 61-second call costs two.
-              (SELECT ISNULL(SUM(CEILING(DurationSeconds / 60.0)),0) FROM CallLogs
+              -- Exact talk time rounded up once, through the invoice's own expression, so no tile
+              -- on this page can count a minute differently from the bill.
+              (SELECT {BillingSchema.MinutesExpression} FROM CallLogs
                  WHERE OrganizationId=@orgId AND IsDeleted=0) AS MinutesUsedTotal,
-              (SELECT ISNULL(SUM(CEILING(DurationSeconds / 60.0)),0) FROM CallLogs
+              (SELECT {BillingSchema.SecondsExpression} FROM CallLogs
+                 WHERE OrganizationId=@orgId AND IsDeleted=0) AS SecondsUsedTotal,
+              (SELECT {BillingSchema.MinutesExpression} FROM CallLogs
                  WHERE OrganizationId=@orgId AND IsDeleted=0
                    AND StartedAt >= @todayStartUtc AND StartedAt < @todayEndUtc) AS MinutesUsedToday,
+              (SELECT {BillingSchema.SecondsExpression} FROM CallLogs
+                 WHERE OrganizationId=@orgId AND IsDeleted=0
+                   AND StartedAt >= @todayStartUtc AND StartedAt < @todayEndUtc) AS SecondsUsedToday,
 
               (SELECT ISNULL(SUM(Amount),0) FROM Appointments WHERE OrganizationId=@orgId AND IsDeleted=0
                  AND PaymentStatus='Paid' AND StartAt >= @monthStartUtc AND StartAt < @monthEndUtc) AS RevenueThisMonth,
@@ -239,12 +250,12 @@ public class DashboardRepository : IDashboardRepository
             GROUP BY MONTH(DATEADD(minute, @offset, StartedAt)) ORDER BY Month",
             new { orgId, offset = w.OffsetMinutes, yearStartUtc = w.YearStartUtc, yearEndUtc = w.YearEndUtc });
 
-        stats.CallsPerDay = await conn.QueryAsync<DailyCallPoint>(@"
+        stats.CallsPerDay = await conn.QueryAsync<DailyCallPoint>($@"
             SELECT CAST(DATEADD(minute, @offset, StartedAt) AS DATE) AS [Date],
                    SUM(CASE WHEN Status='Completed'   THEN 1 ELSE 0 END) AS Handled,
                    SUM(CASE WHEN Status='Transferred' THEN 1 ELSE 0 END) AS Transferred,
                    SUM(CASE WHEN Status='Missed'      THEN 1 ELSE 0 END) AS Missed,
-                   ISNULL(SUM(CEILING(DurationSeconds / 60.0)),0) AS Minutes
+                   {BillingSchema.MinutesExpression} AS Minutes
             FROM CallLogs
             WHERE OrganizationId=@orgId AND IsDeleted=0 AND StartedAt >= @since30Utc AND StartedAt < @todayEndUtc
             GROUP BY CAST(DATEADD(minute, @offset, StartedAt) AS DATE)
@@ -344,11 +355,13 @@ public class DashboardRepository : IDashboardRepository
         // plan it is left unbounded, because that is exactly what the next invoice will charge.
         var countFrom = plan is null ? periodStart : (DateTime?)null;
 
-        stats.MinutesUsedThisPeriod = await conn.ExecuteScalarAsync<int>($@"
-            SELECT {BillingSchema.MinutesExpression} FROM CallLogs
-            WHERE OrganizationId=@orgId AND {BillingSchema.UnbilledPredicate}
-              AND (@countFrom IS NULL OR StartedAt >= @countFrom)",
+        var usage = await conn.QuerySingleAsync<(int Minutes, long Seconds)>($@"
+            SELECT {BillingSchema.MinutesExpression} AS Minutes, {BillingSchema.SecondsExpression} AS Seconds
+            FROM CallLogs
+            WHERE OrganizationId=@orgId AND {BillingSchema.UsagePredicate("@countFrom")}",
             new { orgId, countFrom });
+        stats.MinutesUsedThisPeriod = usage.Minutes;
+        stats.SecondsUsedThisPeriod = usage.Seconds;
     }
 
     private class PlanRow

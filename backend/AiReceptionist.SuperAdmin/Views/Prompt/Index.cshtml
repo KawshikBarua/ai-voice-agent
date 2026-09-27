@@ -19,8 +19,8 @@
     <div>
         <h1>AI prompt</h1>
         <p>
-            The words every tenant's receptionist is built from — how it talks, what it must never
-            do, how a call runs and when it may use a tool. One text for the whole platform.
+            The words every tenant's receptionist is built from — how it talks and what it must never
+            do on every turn, then what it does at each stage of a call. One text for the whole platform.
             Saving stores it; a live agent only picks it up the next time that organization is
             synced from the Retell AI screen.
         </p>
@@ -96,8 +96,8 @@ else
                         }
                     </select>
                     <div class="help">
-                        Industry decides which call shape a tenant gets: on-site trades follow the
-                        field-service guide, everyone else the standard one.
+                        Industry decides how a tenant finds a time: on-site trades get the version for
+                        trades that travel to the customer, everyone else the standard one.
                     </div>
                 </div>
                 <button class="btn" type="submit" disabled="@(organizations.Count == 0)">Show prompt</button>
@@ -139,50 +139,30 @@ else
             </div>
         </div>
 
-        <div class="card">
-            <h2>How a call runs — businesses the customer comes to</h2>
-            <p class="sub">Clinics, salons, workshops, offices.</p>
-            <div class="field">
-                <textarea name="ConversationGuide" rows="14">@Model.ConversationGuide</textarea>
-                <div class="help">
-                    A shape, not a script — a numbered checklist here is what makes the agent march
-                    a caller through steps instead of talking to them.
+        @* One card per call state. Only one state's text is in front of the agent at a time, appended
+           to the two sections above, together with only the tools that stage of the call uses. *@
+        @foreach (var (name, title, sub, current, platformDefault) in new[]
+        {
+            ("TriageState", "Finding out what they need", "Where every call starts: what they want, urgency first, questions answered on the spot.", Model.TriageState, Model.Defaults.TriageState),
+            ("SchedulingState", "Finding a time — businesses the customer comes to", "Clinics, salons, workshops, offices. Tools: availability, plus the address check where a coverage area is drawn.", Model.SchedulingState, Model.Defaults.SchedulingState),
+            ("FieldSchedulingState", "Finding a time — trades that travel to the customer", "Plumbing, electrical, HVAC, locksmiths, cleaning. Tools: availability, customer lookup, plus the address check where a coverage area is drawn.", Model.FieldSchedulingState, Model.Defaults.FieldSchedulingState),
+            ("BookingState", "Taking the booking", "A time is agreed. Tools: customer lookup, booking.", Model.BookingState, Model.Defaults.BookingState),
+            ("ExistingBookingState", "An appointment they already have", "Checking, moving or cancelling. Tools: appointment lookup, reschedule, cancel, availability.", Model.ExistingBookingState, Model.Defaults.ExistingBookingState),
+        })
+        {
+            <div class="card">
+                <h2>@title</h2>
+                <p class="sub">@sub</p>
+                <div class="field">
+                    <textarea name="@name" rows="10">@current</textarea>
+                    @if (ReplacedDefault(current, platformDefault) is { } stateDefault)
+                    {
+                        <partial name="_PlatformDefault" model="stateDefault" />
+                    }
                 </div>
-                @if (ReplacedDefault(Model.ConversationGuide, Model.Defaults.ConversationGuide) is { } guideDefault)
-                {
-                    <partial name="_PlatformDefault" model="guideDefault" />
-                }
             </div>
-        </div>
+        }
 
-        <div class="card">
-            <h2>How a call runs — trades that travel to the customer</h2>
-            <p class="sub">Plumbing, electrical, HVAC, locksmiths, cleaning.</p>
-            <div class="field">
-                <textarea name="FieldServiceGuide" rows="14">@Model.FieldServiceGuide</textarea>
-                <div class="help">These calls need urgency triage and a full service address before anything is booked.</div>
-                @if (ReplacedDefault(Model.FieldServiceGuide, Model.Defaults.FieldServiceGuide) is { } fieldGuideDefault)
-                {
-                    <partial name="_PlatformDefault" model="fieldGuideDefault" />
-                }
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>Working with the tools</h2>
-            <p class="sub">When the agent may look something up — and when it must not.</p>
-            <div class="field">
-                <textarea name="ToolPolicy" rows="18">@Model.ToolPolicy</textarea>
-                <div class="help">
-                    The availability rule is the one that matters most: check a date once, keep the
-                    times, and do not look the same day up again.
-                </div>
-                @if (ReplacedDefault(Model.ToolPolicy, Model.Defaults.ToolPolicy) is { } toolPolicyDefault)
-                {
-                    <partial name="_PlatformDefault" model="toolPolicyDefault" />
-                }
-            </div>
-            <button class="btn" type="submit">Save prompt</button>
-        </div>
+        <button class="btn" type="submit">Save prompt</button>
     </form>
 }

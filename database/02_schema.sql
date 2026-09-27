@@ -412,10 +412,18 @@ CREATE TABLE PromptTemplate (
     Id INT IDENTITY PRIMARY KEY,
     Persona NVARCHAR(MAX) NULL,
     CoreRules NVARCHAR(MAX) NULL,
-    ConversationGuide NVARCHAR(MAX) NULL,      -- businesses the customer comes to
-    FieldServiceGuide NVARCHAR(MAX) NULL,      -- trades that travel to the customer
-    ToolPolicy NVARCHAR(MAX) NULL,
+    TriageState NVARCHAR(MAX) NULL,
+    SchedulingState NVARCHAR(MAX) NULL,        -- businesses the customer comes to
+    FieldSchedulingState NVARCHAR(MAX) NULL,   -- trades that travel to the customer
+    BookingState NVARCHAR(MAX) NULL,
+    ExistingBookingState NVARCHAR(MAX) NULL,
     ModifiedAt DATETIME2 NULL,
     ModifiedByUserId INT NULL
 );
+GO
+
+-- Upgrade path from the single-prompt agent; the old section columns are kept, unread.
+IF COL_LENGTH('PromptTemplate','TriageState') IS NULL
+ALTER TABLE PromptTemplate ADD TriageState NVARCHAR(MAX) NULL, SchedulingState NVARCHAR(MAX) NULL,
+    FieldSchedulingState NVARCHAR(MAX) NULL, BookingState NVARCHAR(MAX) NULL, ExistingBookingState NVARCHAR(MAX) NULL;
 GO

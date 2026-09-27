@@ -19,7 +19,6 @@ builder.Services.AddScoped<IUserAccountRepository, UserAccountRepository>();
 builder.Services.AddScoped<IBillingRepository, BillingRepository>();
 builder.Services.AddScoped<ILandingContentRepository, LandingContentRepository>();
 builder.Services.AddScoped<IBillingService, BillingService>();
-builder.Services.AddHostedService<AutoSuspendWorker>();
 
 // The public marketing site is a separate React app on its own origin, so its browser needs
 // permission to read /api/landing-content. Origins are listed in configuration rather than

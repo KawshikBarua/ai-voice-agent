@@ -19,18 +19,15 @@
         <p>
             Stripe collects from the organizations linked to it; the rest are recorded by hand. An
             organization counts as paid while its current period — plus the grace days on its
-            subscription — has not run out. Minutes past a plan's allowance are totalled when the
-            period closes and added to that customer's next invoice.
+            subscription — has not run out; past that, their voice agent stops answering while
+            their dashboard stays open so they can pay. Minutes past a plan's allowance are totalled
+            when the period closes and added to that customer's next invoice.
         </p>
     </div>
     <div class="actions">
         <form method="post" asp-controller="Pricing" asp-action="ClosePeriods" style="display:inline;">
             @Html.AntiForgeryToken()
             <button class="btn outline" type="submit">Close elapsed periods</button>
-        </form>
-        <form method="post" asp-action="Sweep" style="display:inline;">
-            @Html.AntiForgeryToken()
-            <button class="btn outline" type="submit">Run overdue sweep now</button>
         </form>
     </div>
 </div>
@@ -44,7 +41,7 @@
     <div class="stat @(overdue > 0 ? "alert" : "")">
         <div class="label">Overdue</div>
         <div class="value">@overdue</div>
-        <div class="hint">@runningUnpaid still enabled</div>
+        <div class="hint">@runningUnpaid still answering calls</div>
     </div>
     <div class="stat">
         <div class="label">In grace</div>
@@ -86,8 +83,8 @@
 @if (runningUnpaid > 0)
 {
     <div class="banner problem">
-        @runningUnpaid organization(s) are overdue but still enabled. Run the sweep, or disable them
-        individually from their page.
+        @runningUnpaid organization(s) are overdue with auto-stop switched off, so their voice agent is
+        still answering. Stop the agent from their page, or turn auto-stop back on.
     </div>
 }
 
@@ -174,7 +171,7 @@
                     <td>
                         @Display.Day(org.CurrentPeriodEnd)
                         <small style="display:block;color:var(--muted);font-size:11.5px;">
-                            @(org.AutoSuspend == true ? "auto-disable on" : org.HasSubscription ? "auto-disable off" : "")
+                            @(org.AutoSuspend == true ? "auto-stop on" : org.HasSubscription ? "auto-stop off" : "")
                         </small>
                     </td>
                     <td>

@@ -71,6 +71,9 @@ public class CallBackfillWorker : BackgroundService
         // exactly when a webhook is most likely to have been missed.
         do
         {
+            // The timer fires one interval after the previous tick, not after the previous pass
+            // finished — so the next run is due an interval from when this one *started*.
+            var startedAt = DateTime.UtcNow;
             try
             {
                 await RunPassAsync(stoppingToken);
@@ -89,8 +92,14 @@ public class CallBackfillWorker : BackgroundService
                 // Recorded even for a pass that threw: the timer is still running, so the next
                 // one really is due then, and a dashboard counting down to it is telling the
                 // truth about when this will next be attempted.
-                _status.LastRunAt = DateTime.UtcNow;
-                _status.NextRunAt = DateTime.UtcNow + _interval;
+                //
+                // Booked from the start of the pass: counting from its end made every countdown
+                // reach zero a pass-length late, after the import it announced had already begun.
+                // A pass that overran the interval has a tick waiting, which fires straight away.
+                var now = DateTime.UtcNow;
+                var next = startedAt + _interval;
+                _status.LastRunAt = now;
+                _status.NextRunAt = next > now ? next : now;
             }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
@@ -110,7 +119,9 @@ public class CallBackfillWorker : BackgroundService
             ct.ThrowIfCancellationRequested();
             try
             {
-                imported += await retell.BackfillCallsAsync(orgId, ct);
+                // Also corrects any recorded call whose length disagrees with Retell's — see
+                // IRetellService.BackfillCallsAsync. Those are logged there, per call.
+                imported += (await retell.BackfillCallsAsync(orgId, deep: false, ct)).Imported;
             }
             catch (Exception ex)
             {

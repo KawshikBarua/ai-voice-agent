@@ -1,3 +1,4 @@
+using AiReceptionist.Api.Common;
 using Dapper;
 
 namespace AiReceptionist.Api.Data.Repositories;
@@ -38,6 +39,10 @@ public interface IBillingRepository
     /// window on screen. An account on a plan passes null and gets the exact billable total.
     /// </summary>
     Task<int> UnbilledMinutesAsync(int orgId, DateTime? startedOnOrAfter = null);
+
+    /// <summary>The same set of calls as <see cref="UnbilledMinutesAsync"/>, read in one query as
+    /// both the billed minutes and the exact talk time they were rounded from.</summary>
+    Task<(int Minutes, long Seconds)> UnbilledUsageAsync(int orgId, DateTime? startedOnOrAfter = null);
 
     /// <summary>
     /// Marks every unbilled call that started before <paramref name="periodEndUtc"/> as belonging to
@@ -199,7 +204,13 @@ public class StuckWebhookEvent
 public class BillingRepository : IBillingRepository
 {
     private readonly IDbConnectionFactory _db;
-    public BillingRepository(IDbConnectionFactory db) => _db = db;
+    private readonly ICache _cache;
+
+    public BillingRepository(IDbConnectionFactory db, ICache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
 
     private const string SubscriptionColumns = @"
         Id, OrganizationId, PlanName, BillingCycle, Amount, Currency, StartedAt,
@@ -301,13 +312,17 @@ public class BillingRepository : IBillingRepository
 
     // ---------- usage ----------
 
-    public async Task<int> UnbilledMinutesAsync(int orgId, DateTime? startedOnOrAfter = null)
+    public async Task<int> UnbilledMinutesAsync(int orgId, DateTime? startedOnOrAfter = null) =>
+        (await UnbilledUsageAsync(orgId, startedOnOrAfter)).Minutes;
+
+    public async Task<(int Minutes, long Seconds)> UnbilledUsageAsync(
+        int orgId, DateTime? startedOnOrAfter = null)
     {
         using var conn = _db.Create();
-        return await conn.ExecuteScalarAsync<int>($@"
-            SELECT {BillingSchema.MinutesExpression} FROM CallLogs
-            WHERE OrganizationId = @orgId AND {BillingSchema.UnbilledPredicate}
-              AND (@startedOnOrAfter IS NULL OR StartedAt >= @startedOnOrAfter)",
+        return await conn.QuerySingleAsync<(int Minutes, long Seconds)>($@"
+            SELECT {BillingSchema.MinutesExpression} AS Minutes, {BillingSchema.SecondsExpression} AS Seconds
+            FROM CallLogs
+            WHERE OrganizationId = @orgId AND {BillingSchema.UsagePredicate("@startedOnOrAfter")}",
             new { orgId, startedOnOrAfter });
     }
 
@@ -320,10 +335,9 @@ public class BillingRepository : IBillingRepository
         // Claim first, total second, both inside one transaction. The other order leaves a window
         // in which a call recorded between the two is stamped as billed without ever being added
         // up — a minute the customer used, marked paid for, and charged to nobody.
-        await conn.ExecuteAsync(@"
+        await conn.ExecuteAsync($@"
             UPDATE CallLogs SET BilledPeriodEnd = @periodEndUtc
-            WHERE OrganizationId = @orgId
-              AND IsDeleted = 0 AND BilledPeriodEnd IS NULL
+            WHERE OrganizationId = @orgId AND {BillingSchema.UnbilledPredicate}
               AND StartedAt < @periodEndUtc",
             new { orgId, periodEndUtc }, tx);
 
@@ -761,6 +775,7 @@ public class BillingRepository : IBillingRepository
             SET IsActive = 1, SuspendedAt = NULL, SuspendedReason = NULL
             WHERE Id = @orgId AND IsActive = 0 AND SuspendedReason = @reason",
             new { orgId, reason = SuspensionReasons.Overdue });
+        if (updated > 0) await _cache.RemoveAsync(CacheKeys.Org(orgId));
         return updated > 0;
     }
 
@@ -773,6 +788,8 @@ public class BillingRepository : IBillingRepository
                 AgentRestrictedAt = CASE WHEN @restricted = 1 THEN ISNULL(AgentRestrictedAt, GETUTCDATE()) ELSE NULL END,
                 AgentRestrictedReason = CASE WHEN @restricted = 1 THEN @reason ELSE NULL END
             WHERE Id = @orgId", new { orgId, restricted, reason });
+        // The cached organization row carries this flag, and the billing page reads it from there.
+        await _cache.RemoveAsync(CacheKeys.Org(orgId));
     }
 
     public async Task SetTrialAsync(int orgId, DateTime endsAtUtc)
@@ -784,6 +801,7 @@ public class BillingRepository : IBillingRepository
                                       ELSE GETUTCDATE() END,
                 TrialEndsAt = @endsAtUtc
             WHERE Id = @orgId", new { orgId, endsAtUtc });
+        await _cache.RemoveAsync(CacheKeys.Org(orgId));
     }
 
     // ---------- webhook idempotency ----------

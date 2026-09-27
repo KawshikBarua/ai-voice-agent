@@ -7,7 +7,7 @@ import {
 } from '../components/ui'
 import { StackedColumns, AreaTrend, GaugeMeter, BarMeter, Sparkline, HourHeat, Legend } from '../components/charts'
 import {
-  MONTHS, compact, money, moneyExact, minutes as fmtMinutes, duration, pctChange, whenLabel,
+  MONTHS, compact, money, moneyExact, minutes as fmtMinutes, duration, talkTime, pctChange, whenLabel,
 } from '../lib/format'
 import { useUsage } from '../api/usage'
 import { AttentionCard } from '../components/alerts'
@@ -121,6 +121,9 @@ function StatTile({ label, value, unit, footnote, delta, featured, to, children 
 
 const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
+/** How long after a pass starts to wait before re-reading the figures it changes. */
+const PASS_GRACE_MS = 4000
+
 const agoLabel = (iso) => {
   if (!iso) return 'not yet'
   const seconds = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000))
@@ -143,16 +146,25 @@ const agoLabel = (iso) => {
  *  - reaching zero refreshes the figures it was counting down for, a few seconds later, once the
  *    pass has had time to finish. A countdown that ends and changes nothing on screen is worse
  *    than no countdown.
+ *
+ * The deadline is anchored to when the server's answer was *received*, not to when this hook
+ * mounted. The dashboard unmounts whenever the reader opens another page, and on the way back
+ * React Query hands over the same cached answer; counting "seconds from now" off it restarted the
+ * countdown from wherever it stood at fetch time, so it sat still while the reader was away and
+ * picked up again on return — while the server's own timer had kept running the whole time.
  */
 function useCallSync() {
   const queryClient = useQueryClient()
   const [remaining, setRemaining] = useState(null)
 
-  const { data, isFetching } = useQuery({
+  const { data, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ['call-sync-status'],
     queryFn: () => api.get('/calls/sync/status').then(unwrap),
-    // The schedule only changes when the API restarts; the countdown itself runs locally.
-    refetchInterval: 10 * 60_000,
+    // The schedule only changes when the API restarts, so a long interval is enough — except
+    // while a pass is running. The server reports zero seconds until the pass finishes and books
+    // the next one, and waiting ten minutes to hear that would leave "Importing…" on screen for
+    // a pass that took five seconds.
+    refetchInterval: (query) => (query.state.data?.secondsUntilNext === 0 ? 3000 : 10 * 60_000),
     // One attempt. The only realistic failure is an API that does not serve this route yet,
     // and retrying that produces nothing but a longer wait before the reader is told so.
     retry: false,
@@ -165,8 +177,30 @@ function useCallSync() {
     // Counted against a deadline rather than by decrementing: a background tab's timers are
     // throttled to about once a minute, and a counter that only knows how many ticks it has
     // had comes back minutes behind.
-    const deadline = Date.now() + seconds * 1000
+    //
+    // dataUpdatedAt is when this answer arrived, on this machine's clock — the same clock as
+    // Date.now() — so a reader whose clock is wrong still counts the server's interval exactly,
+    // and one who comes back from another page sees the time that has really gone by.
+    let deadline = (dataUpdatedAt || Date.now()) + seconds * 1000
     let refreshed = false
+
+    const refresh = () => {
+      for (const key of [['call-sync-status'], ['dashboard'], ['billing-usage'], ['calls']])
+        queryClient.invalidateQueries({ queryKey: key })
+    }
+
+    // Back on the dashboard after the pass it was counting down to has already run (the reader
+    // was on another page when it hit zero). This answer is spent: ask for the next schedule
+    // and the figures that pass changed now, rather than announce an import that finished a
+    // while ago and then wait for it.
+    if (seconds > 0 && Date.now() > deadline + PASS_GRACE_MS) {
+      refreshed = true
+      refresh()
+      // Until the new schedule arrives, count to the pass after. The server's timer keeps a fixed
+      // beat, so that is where it is — and the reader never sees a countdown stuck on "now".
+      const interval = (data.intervalSeconds ?? 0) * 1000
+      if (interval > 0) deadline += Math.ceil((Date.now() - deadline) / interval) * interval
+    }
 
     const read = () => {
       const left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
@@ -174,17 +208,16 @@ function useCallSync() {
 
       if (left === 0 && seconds > 0 && !refreshed) {
         refreshed = true
-        setTimeout(() => {
-          for (const key of [['call-sync-status'], ['dashboard'], ['billing-usage'], ['calls']])
-            queryClient.invalidateQueries({ queryKey: key })
-        }, 4000)
+        // Not cleared on unmount on purpose: if the reader leaves just as it fires, the figures
+        // still get refreshed for when they come back.
+        setTimeout(refresh, PASS_GRACE_MS)
       }
     }
 
     read()
     const id = setInterval(read, 1000)
     return () => clearInterval(id)
-  }, [data, queryClient])
+  }, [data, dataUpdatedAt, queryClient])
 
   const due = Boolean(data) && remaining === 0
   const every = data?.intervalSeconds ? Math.round(data.intervalSeconds / 60) : null
@@ -373,6 +406,8 @@ export default function Dashboard() {
   // and for a deployment where billing is not reachable.
   const included = usage?.includedMinutes ?? s.minutesIncluded ?? 0
   const usedPeriod = usage?.minutesUsed ?? s.minutesUsedThisPeriod ?? 0
+  // Seconds from the same read the minutes came from — the two only agree when measured together.
+  const secondsPeriod = usage?.minutesUsed != null ? usage.secondsUsed ?? null : s.secondsUsedThisPeriod ?? null
   const remaining = Math.max(0, included - usedPeriod)
   const overBy = Math.max(0, usedPeriod - included)
   const periodEndRaw = usage?.periodEnd ?? s.periodEnd
@@ -499,7 +534,7 @@ export default function Dashboard() {
           footnote={
             included === 0 ? 'No minute allowance on this plan'
               : overBy > 0 ? `${fmtMinutes(overBy)} over the allowance`
-                : `${fmtMinutes(remaining)} remaining${daysToRenew != null ? ` · renews in ${daysToRenew}d` : ''}`
+                : `${fmtMinutes(remaining)} remaining`
           }
         >
           {included > 0 && (
@@ -628,6 +663,14 @@ export default function Dashboard() {
               <dt className="text-muted">{planName ? 'This period' : 'This month'}</dt>
               <dd className="font-semibold tabular-nums">{fmtMinutes(usedPeriod)}</dd>
             </div>
+            {/* The exact seconds behind the minutes, so they can be checked against the call list:
+                minutes are this rounded up once, not each call rounded up. */}
+            {secondsPeriod != null && (
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-muted">Talk time</dt>
+                <dd className="font-semibold tabular-nums">{talkTime(secondsPeriod)}</dd>
+              </div>
+            )}
             <div className="flex items-center justify-between gap-3">
               <dt className="text-muted">All time</dt>
               <dd className="font-semibold tabular-nums">{fmtMinutes(s.minutesUsedTotal ?? 0)}</dd>
@@ -646,7 +689,7 @@ export default function Dashboard() {
           </dl>
 
           <div className="mt-auto pt-4">
-            <Link to="/settings">
+            <Link to="/billing">
               <PillButton variant="outline" className="w-full py-2.5">Manage plan</PillButton>
             </Link>
           </div>

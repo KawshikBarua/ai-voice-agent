@@ -1,6 +1,7 @@
 using AiReceptionist.Api.Common;
 using AiReceptionist.Api.Domain;
 using Dapper;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace AiReceptionist.Api.Data.Repositories;
 
@@ -24,13 +25,20 @@ public class RetellConnectionRepository : IRetellConnectionRepository
 {
     private readonly IDbConnectionFactory _db;
     private readonly IConfiguration _config;
-    private readonly ICache _cache;
+    private readonly IMemoryCache _cache;
+    private readonly ILogger<RetellConnectionRepository> _logger;
 
-    public RetellConnectionRepository(IDbConnectionFactory db, IConfiguration config, ICache cache)
+    /// <summary>Set once the configuration/console key mismatch has been reported, so it is said
+    /// once per process rather than on every cache refill.</summary>
+    private static int _mismatchReported;
+
+    public RetellConnectionRepository(IDbConnectionFactory db, IConfiguration config, IMemoryCache cache,
+        ILogger<RetellConnectionRepository> logger)
     {
         _db = db;
         _config = config;
         _cache = cache;
+        _logger = logger;
     }
 
     public async Task<RetellConnection?> GetAsync()
@@ -44,17 +52,33 @@ public class RetellConnectionRepository : IRetellConnectionRepository
     /// Cached: one row, read before every outbound Retell request and on every inbound webhook
     /// (it carries the signing setting), and written only from the platform console.
     ///
-    /// The merge with appsettings is done before caching rather than after, because the fallback
-    /// is fixed for the life of the process — caching the merged view means a hit needs no work
-    /// at all, and configuration reload would drop the entry within its five minutes anyway.
+    /// Cached in this process's memory, not the shared cache: the row carries the platform's Retell
+    /// API key — the credential for every tenant's agent — and the shared cache is plain JSON in
+    /// Redis. The merge with appsettings is done before caching, so a hit needs no work at all.
     /// </summary>
     public async Task<RetellConnection> GetEffectiveAsync() =>
-        await _cache.GetOrSetAsync(CacheKeys.RetellConnection, CacheTtl.Config, LoadEffectiveAsync)
-        ?? await LoadEffectiveAsync();
+        await _cache.GetOrCreateAsync(CacheKeys.RetellConnection, entry =>
+        {
+            entry.AbsoluteExpirationRelativeToNow = CacheTtl.Secret;
+            return LoadEffectiveAsync();
+        }) ?? await LoadEffectiveAsync();
 
     private async Task<RetellConnection> LoadEffectiveAsync()
     {
         var row = await GetAsync();
+
+        // The console's key wins over appsettings. Editing appsettings after a key has been saved in
+        // the console therefore changes nothing, and does so silently — the platform keeps talking
+        // to the old Retell account. Said out loud, once, without either value.
+        var configuredKey = _config["Retell:ApiKey"]?.Trim();
+        if (!string.IsNullOrWhiteSpace(row?.ApiKey) && !string.IsNullOrWhiteSpace(configuredKey)
+            && row.ApiKey.Trim() != configuredKey
+            && Interlocked.Exchange(ref _mismatchReported, 1) == 0)
+            _logger.LogWarning(
+                "Retell:ApiKey in configuration differs from the key saved in the platform console, and the " +
+                "console's key is the one in use. To switch Retell accounts, save the new key in the super " +
+                "admin console under Retell connection.");
+
         return new RetellConnection
         {
             Id = row?.Id ?? 0,
@@ -96,7 +120,7 @@ public class RetellConnectionRepository : IRetellConnectionRepository
 
         // A rotated key or a changed webhook URL has to take effect at once — this is usually
         // being saved *because* the old value stopped working.
-        await _cache.RemoveAsync(CacheKeys.RetellConnection);
+        _cache.Remove(CacheKeys.RetellConnection);
     }
 
     private static string? Coalesce(string? primary, string? fallback) =>

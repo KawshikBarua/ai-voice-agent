@@ -5,8 +5,31 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace AiReceptionist.Api.Services;
 
-/// <summary>A place OpenStreetMap recognised, with the parts the coverage rules read.</summary>
-public record GeocodedPlace(string DisplayName, double Latitude, double Longitude, string? City, string? CountryCode);
+/// <summary>How closely a match pins down where the job is.</summary>
+public enum GeoPrecision
+{
+    /// <summary>The building, or a shop or house at that address.</summary>
+    Exact,
+    /// <summary>The right street, somewhere along it. What the map returns when it knows the
+    /// street but not the house number.</summary>
+    Street,
+    /// <summary>A plaza, neighbourhood or town — the area, not the door.</summary>
+    Area,
+}
+
+/// <summary>A place OpenStreetMap recognised, with the parts the coverage rules read.
+/// <paramref name="Rank"/> is Nominatim's place_rank: 30 a house or shop, 26 a street, 24 a plaza
+/// or neighbourhood, 16 a city, 12 a county, 8 a state.</summary>
+public record GeocodedPlace(string DisplayName, double Latitude, double Longitude, string? City, string? CountryCode,
+    int Rank = 30)
+{
+    public GeoPrecision Precision => Rank switch
+    {
+        >= 28 => GeoPrecision.Exact,
+        >= 26 => GeoPrecision.Street,
+        _ => GeoPrecision.Area,
+    };
+}
 
 /// <summary>Something worth naming near an address, and how far it is on foot.</summary>
 public record Landmark(string Name, int Meters);
@@ -33,8 +56,12 @@ public record GeocodeOutcome(GeocodedPlace? Place, bool Unavailable)
 
 public interface IGeocodingService
 {
-    /// <summary>Resolves free text to a place, restricted to the given ISO country codes.</summary>
-    Task<GeocodeOutcome> GeocodeAsync(string query, IReadOnlyCollection<string> countryCodes, CancellationToken ct = default);
+    /// <summary>Resolves free text to a place, restricted to the given ISO country codes.
+    ///
+    /// <paramref name="within"/> confines the search to one rectangle, which is how a street name
+    /// with no town attached gets resolved to the right one. Null searches the whole country.</summary>
+    Task<GeocodeOutcome> GeocodeAsync(string query, IReadOnlyCollection<string> countryCodes,
+        GeoBounds? within = null, CancellationToken ct = default);
 
     /// <summary>Cities and towns in one country matching what has been typed so far.</summary>
     Task<IReadOnlyList<CitySuggestion>> SearchCitiesAsync(string countryCode, string query, CancellationToken ct = default);
@@ -94,7 +121,8 @@ public class GeocodingService : IGeocodingService
     private string OverpassUrl => _config["Osm:OverpassUrl"] ?? "https://overpass-api.de/api/interpreter";
     private int WalkingMeters => Math.Clamp(_config.GetValue("Osm:LandmarkRadiusMeters", 800), 100, 2000);
 
-    public async Task<GeocodeOutcome> GeocodeAsync(string query, IReadOnlyCollection<string> countryCodes, CancellationToken ct = default)
+    public async Task<GeocodeOutcome> GeocodeAsync(string query, IReadOnlyCollection<string> countryCodes,
+        GeoBounds? within = null, CancellationToken ct = default)
     {
         var text = Clean(query, 300);
         if (text.Length < 3) return GeocodeOutcome.NoSuchPlace;
@@ -105,10 +133,19 @@ public class GeocodingService : IGeocodingService
             .Distinct()
             .Order());
 
-        return await CachedAsync($"addr|{countries}|{text.ToLowerInvariant()}", AddressTtl, async () =>
+        // viewbox is Nominatim's own "prefer results in this rectangle", and bounded=1 turns that
+        // preference into a rule. Without it a caller who says "1220 Grand" and nothing else is
+        // matched against every Grand in the country, and the one it picks is not usually theirs.
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        var box = within is null
+            ? ""
+            : $"&bounded=1&viewbox={within.West.ToString("F5", invariant)},{within.North.ToString("F5", invariant)}," +
+              $"{within.East.ToString("F5", invariant)},{within.South.ToString("F5", invariant)}";
+
+        return await CachedAsync($"addr|{countries}|{box}|{text.ToLowerInvariant()}", AddressTtl, async () =>
         {
             var url = $"{NominatimUrl}/search?format=jsonv2&addressdetails=1&limit=1&q={Uri.EscapeDataString(text)}" +
-                      (countries.Length > 0 ? $"&countrycodes={countries}" : "");
+                      (countries.Length > 0 ? $"&countrycodes={countries}" : "") + box;
 
             var root = await GetJsonAsync(url, ct);
             if (root is not { ValueKind: JsonValueKind.Array } array) return (GeocodeOutcome.Down, Cacheable: false);
@@ -276,7 +313,10 @@ public class GeocodingService : IGeocodingService
         return new GeocodedPlace(
             Text(element, "display_name") ?? city ?? "",
             lat.Value, lon.Value, city,
-            Text(element, "address", "country_code")?.ToUpperInvariant());
+            Text(element, "address", "country_code")?.ToUpperInvariant(),
+            // Missing only from a server that does not report it; treated as a house, which is how
+            // every match was read before the rank was.
+            (int)(Number(element, "place_rank") ?? 30));
     }
 
     private async Task<JsonElement?> GetJsonAsync(string url, CancellationToken ct)

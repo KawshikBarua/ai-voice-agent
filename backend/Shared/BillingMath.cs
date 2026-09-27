@@ -68,6 +68,17 @@ public static class UsageWindows
     }
 }
 
+/// <summary>
+/// Talk time to billed minutes, in C#. The same rule as <see cref="BillingSchema.MinutesExpression"/>:
+/// total the seconds first, then round up to a whole minute once. Used where a figure is built
+/// from seconds already in hand, so it can never be rounded differently from the invoice.
+/// </summary>
+public static class TalkTime
+{
+    public static int ToBilledMinutes(long totalSeconds) =>
+        totalSeconds <= 0 ? 0 : (int)((totalSeconds + 59) / 60);
+}
+
 /// <summary>Stripe works in a currency's smallest unit. Most currencies have two decimal places,
 /// but a handful have none at all — sending 1000 for ¥1,000 would otherwise charge ¥100,000.</summary>
 public static class StripeMoney

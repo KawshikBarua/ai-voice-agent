@@ -12,14 +12,16 @@ public record PlatformRetellConnectionRequest(
 /// inbound calls to this tenant's agent, and the number a cold transfer dials.</summary>
 public record PlatformNumbersRequest(string? TransferNumber, string? RetellPhoneNumber);
 
-/// <summary>The editable wording of the system prompt. A blank (or default-identical) section is
+/// <summary>The editable wording of the agent prompt. A blank (or default-identical) section is
 /// stored as null so it keeps tracking the built-in default rather than freezing today's text.</summary>
 public record PlatformPromptTemplateRequest(
     string? Persona,
     string? CoreRules,
-    string? ConversationGuide,
-    string? FieldServiceGuide,
-    string? ToolPolicy,
+    string? TriageState,
+    string? SchedulingState,
+    string? FieldSchedulingState,
+    string? BookingState,
+    string? ExistingBookingState,
     bool? ResetToDefaults);
 
 /// <summary>
@@ -74,26 +76,32 @@ public class PlatformController : ControllerBase
         var customised = new List<string>();
         if (!string.IsNullOrWhiteSpace(stored?.Persona)) customised.Add("How the agent talks");
         if (!string.IsNullOrWhiteSpace(stored?.CoreRules)) customised.Add("Rules it never breaks");
-        if (!string.IsNullOrWhiteSpace(stored?.ConversationGuide)) customised.Add("Call shape (on premises)");
-        if (!string.IsNullOrWhiteSpace(stored?.FieldServiceGuide)) customised.Add("Call shape (on site)");
-        if (!string.IsNullOrWhiteSpace(stored?.ToolPolicy)) customised.Add("Working with the tools");
+        if (!string.IsNullOrWhiteSpace(stored?.TriageState)) customised.Add("Finding out what they need");
+        if (!string.IsNullOrWhiteSpace(stored?.SchedulingState)) customised.Add("Finding a time (on premises)");
+        if (!string.IsNullOrWhiteSpace(stored?.FieldSchedulingState)) customised.Add("Finding a time (on site)");
+        if (!string.IsNullOrWhiteSpace(stored?.BookingState)) customised.Add("Taking the booking");
+        if (!string.IsNullOrWhiteSpace(stored?.ExistingBookingState)) customised.Add("An existing appointment");
 
         return Ok(ApiResponse<object>.Ok(new
         {
             effective.Persona,
             effective.CoreRules,
-            effective.ConversationGuide,
-            effective.FieldServiceGuide,
-            effective.ToolPolicy,
+            effective.TriageState,
+            effective.SchedulingState,
+            effective.FieldSchedulingState,
+            effective.BookingState,
+            effective.ExistingBookingState,
             effective.ModifiedAt,
             customisedSections = customised,
             defaults = new
             {
                 Persona = PromptDefaults.Persona,
                 CoreRules = PromptDefaults.CoreRules,
-                ConversationGuide = PromptDefaults.ConversationGuide,
-                FieldServiceGuide = PromptDefaults.FieldServiceGuide,
-                ToolPolicy = PromptDefaults.ToolPolicy,
+                TriageState = PromptDefaults.TriageState,
+                SchedulingState = PromptDefaults.SchedulingState,
+                FieldSchedulingState = PromptDefaults.FieldSchedulingState,
+                BookingState = PromptDefaults.BookingState,
+                ExistingBookingState = PromptDefaults.ExistingBookingState,
             },
         }));
     }
@@ -116,9 +124,11 @@ public class PlatformController : ControllerBase
         {
             Persona = reset ? null : Override(request.Persona, PromptDefaults.Persona),
             CoreRules = reset ? null : Override(request.CoreRules, PromptDefaults.CoreRules),
-            ConversationGuide = reset ? null : Override(request.ConversationGuide, PromptDefaults.ConversationGuide),
-            FieldServiceGuide = reset ? null : Override(request.FieldServiceGuide, PromptDefaults.FieldServiceGuide),
-            ToolPolicy = reset ? null : Override(request.ToolPolicy, PromptDefaults.ToolPolicy),
+            TriageState = reset ? null : Override(request.TriageState, PromptDefaults.TriageState),
+            SchedulingState = reset ? null : Override(request.SchedulingState, PromptDefaults.SchedulingState),
+            FieldSchedulingState = reset ? null : Override(request.FieldSchedulingState, PromptDefaults.FieldSchedulingState),
+            BookingState = reset ? null : Override(request.BookingState, PromptDefaults.BookingState),
+            ExistingBookingState = reset ? null : Override(request.ExistingBookingState, PromptDefaults.ExistingBookingState),
         };
 
         await _promptTemplate.UpsertAsync(template, userId: null);
@@ -143,9 +153,9 @@ public class PlatformController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { connectedAgents = connected.Count }, $"{what} {howMany}"));
     }
 
-    /// <summary>The final prompt one tenant's agent will actually receive — the platform wording with
-    /// that tenant's industry, hours, closures and numbers filled in. The console shows it read-only:
-    /// prompt changes are easy to get wrong in the abstract and obvious in the concrete.</summary>
+    /// <summary>The final prompt one tenant's agent will actually receive — the general prompt and every
+    /// state, with that tenant's industry, hours, closures and numbers filled in. The console shows it
+    /// read-only: prompt changes are easy to get wrong in the abstract and obvious in the concrete.</summary>
     [HttpGet("prompt-template/preview/{orgId:int}")]
     public async Task<IActionResult> PreviewPrompt(int orgId)
     {
@@ -156,7 +166,7 @@ public class PlatformController : ControllerBase
         {
             organizationId = orgId,
             organizationName = org.Name,
-            prompt = await _prompts.BuildSystemPromptAsync(orgId),
+            prompt = (await _prompts.BuildAgentPromptAsync(orgId)).Render(),
         }));
     }
 

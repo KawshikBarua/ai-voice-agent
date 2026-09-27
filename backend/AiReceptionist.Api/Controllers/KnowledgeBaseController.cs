@@ -33,13 +33,13 @@ public class KnowledgeBaseController : ControllerBase
         Ok(ApiResponse<IEnumerable<KnowledgeBaseEntry>>.Ok(await _knowledge.ListAsync(_tenant.OrganizationId)));
 
     /// <summary>Read-only preview of what the AI receives (SRS §13): the always-in-context
-    /// system prompt, plus the documents uploaded to Retell's knowledge base for on-demand
-    /// retrieval. Never editable by clients.</summary>
+    /// general prompt and each call state's prompt, plus the documents uploaded to Retell's
+    /// knowledge base for on-demand retrieval. Never editable by clients.</summary>
     [HttpGet("final-prompt")]
     public async Task<IActionResult> FinalPrompt()
     {
         var orgId = _tenant.OrganizationId;
-        var prompt = await _prompts.BuildSystemPromptAsync(orgId);
+        var prompt = (await _prompts.BuildAgentPromptAsync(orgId)).Render();
         var docs = await _prompts.BuildKnowledgeDocumentsAsync(orgId);
 
         return Ok(ApiResponse<object>.Ok(new

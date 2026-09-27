@@ -74,6 +74,9 @@ public class BillingSummary
     public DateTime CurrentPeriodStart { get; set; }
     public DateTime CurrentPeriodEnd { get; set; }
     public int MinutesUsed { get; set; }
+    /// <summary>The exact talk time <see cref="MinutesUsed"/> was rounded up from, so the page can
+    /// show both and the customer can check one against their call list.</summary>
+    public long SecondsUsed { get; set; }
     public int MinutesRemaining { get; set; }
     public int MinutesOver { get; set; }
     /// <summary>What the current overrun would cost if the period ended now. Not yet charged.</summary>
@@ -160,6 +163,8 @@ public class UsageSnapshot
     public bool Metered { get; set; }
     public int IncludedMinutes { get; set; }
     public int MinutesUsed { get; set; }
+    /// <summary>The exact talk time behind <see cref="MinutesUsed"/>.</summary>
+    public long SecondsUsed { get; set; }
     public int MinutesRemaining { get; set; }
     public int MinutesOver { get; set; }
     public decimal OverageRatePerMinute { get; set; }
@@ -272,15 +277,18 @@ public class BillingService : IBillingService
     private readonly IBillingRepository _billing;
     private readonly ISettingsRepository _settings;
     private readonly IStripeGateway _stripe;
+    private readonly ICallEntitlementService _entitlement;
     private readonly ICache _cache;
     private readonly ILogger<BillingService> _logger;
 
     public BillingService(IBillingRepository billing, ISettingsRepository settings,
-        IStripeGateway stripe, ICache cache, ILogger<BillingService> logger)
+        IStripeGateway stripe, ICallEntitlementService entitlement, ICache cache,
+        ILogger<BillingService> logger)
     {
         _billing = billing;
         _settings = settings;
         _stripe = stripe;
+        _entitlement = entitlement;
         _cache = cache;
         _logger = logger;
     }
@@ -986,11 +994,18 @@ public class BillingService : IBillingService
         var org = await _settings.GetOrganizationAsync(orgId);
         var sub = await _billing.GetSubscriptionAsync(orgId);
 
+        // Whether calls are being answered is the call gate's decision, not a flag on the row: an
+        // agent stopped automatically for an overdue bill is just as stopped as one an operator
+        // paused, and the customer needs to be told either way. Trial and no-plan have notices of
+        // their own on this page.
+        var gate = await _entitlement.EvaluateAsync(orgId, ct);
+        var stopped = gate.Block is CallBlock.AgentStopped or CallBlock.Unpaid;
+
         var summary = new BillingSummary
         {
             StripeAvailable = _stripe.IsConfigured,
-            AgentRestricted = org?.AgentRestricted ?? false,
-            AgentRestrictedReason = org?.AgentRestrictedReason,
+            AgentRestricted = stopped,
+            AgentRestrictedReason = stopped ? gate.CustomerMessage : null,
             OnTrial = org?.IsOnTrial ?? false,
             TrialEndsAt = org?.TrialEndsAt,
             TrialDaysRemaining = org?.TrialDaysRemaining ?? 0,
@@ -1038,7 +1053,7 @@ public class BillingService : IBillingService
 
         summary.CurrentPeriodStart = start;
         summary.CurrentPeriodEnd = end;
-        summary.MinutesUsed = await _billing.UnbilledMinutesAsync(orgId);
+        (summary.MinutesUsed, summary.SecondsUsed) = await _billing.UnbilledUsageAsync(orgId);
         summary.MinutesRemaining = sub.IsMetered
             ? Math.Max(0, sub.IncludedMinutes - summary.MinutesUsed) : 0;
         summary.MinutesOver = sub.IsMetered
@@ -1109,6 +1124,7 @@ public class BillingService : IBillingService
             // broken during exactly the window this platform is being evaluated in.
             var (openStart, openEnd) = UsageWindows.Current(
                 sub?.CurrentPeriodStart ?? DateTime.UtcNow, BillingCycles.Monthly, DateTime.UtcNow);
+            var openUsage = await _billing.UnbilledUsageAsync(orgId, openStart);
 
             return new UsageSnapshot
             {
@@ -1119,7 +1135,8 @@ public class BillingService : IBillingService
                 // Bounded to the window shown. With no plan nothing has ever been closed, so every
                 // call ever made is technically unbilled — reporting that against a one-month
                 // window would be a number the page cannot justify.
-                MinutesUsed = await _billing.UnbilledMinutesAsync(orgId, openStart),
+                MinutesUsed = openUsage.Minutes,
+                SecondsUsed = openUsage.Seconds,
             };
         }
 
@@ -1129,7 +1146,7 @@ public class BillingService : IBillingService
         var anchor = await _billing.LastClosedPeriodEndAsync(orgId) ?? sub.CurrentPeriodStart;
         var (start, end) = UsageWindows.Current(anchor, sub.BillingCycle, DateTime.UtcNow);
 
-        var used = await _billing.UnbilledMinutesAsync(orgId);
+        var (used, usedSeconds) = await _billing.UnbilledUsageAsync(orgId);
         var over = sub.IsMetered ? Math.Max(0, used - sub.IncludedMinutes) : 0;
 
         return new UsageSnapshot
@@ -1140,6 +1157,7 @@ public class BillingService : IBillingService
             Metered = sub.IsMetered,
             IncludedMinutes = sub.IncludedMinutes,
             MinutesUsed = used,
+            SecondsUsed = usedSeconds,
             MinutesRemaining = sub.IsMetered ? Math.Max(0, sub.IncludedMinutes - used) : 0,
             MinutesOver = over,
             OverageRatePerMinute = sub.OverageRatePerMinute,

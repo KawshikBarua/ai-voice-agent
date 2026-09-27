@@ -82,22 +82,16 @@ public class RetellWebhookController : ControllerBase
 
         switch (evt)
         {
+            // Both carry the whole call object, finished. call_analyzed usually lands second and
+            // adds the summary, but either can be the first this server hears of a call — the
+            // other may have been lost — so each records the call or corrects the record it finds.
             case "call_ended":
-                await StoreCallAsync(orgId, call, retellCallId);
-                break;
-
             case "call_analyzed":
-                var summary = call.TryGetProperty("call_analysis", out var analysis)
-                    ? GetString(analysis, "call_summary")
-                    : null;
-                if (retellCallId is not null && summary is not null)
-                {
-                    var updated = await _calls.UpdateAnalysisAsync(orgId, retellCallId, summary);
-                    if (!updated) await StoreCallAsync(orgId, call, retellCallId, summary);
-                }
+                await RecordCallAsync(orgId, RetellCallReading.From(call));
                 break;
 
-            // call_started: nothing to persist yet
+            // call_started: nothing to persist yet. Recording a call before it ends is exactly how
+            // one used to be filed at zero seconds.
         }
 
         return Ok();
@@ -195,24 +189,25 @@ public class RetellWebhookController : ControllerBase
         });
     }
 
-    private async Task StoreCallAsync(int orgId, JsonElement call, string? retellCallId, string? summary = null)
+    /// <summary>
+    /// Records a finished call, or — when it is already on record — makes the record agree with it.
+    ///
+    /// "Already on record" used to mean "ignore this delivery". But the row may have been written by
+    /// the call import while the call was still in progress, with no end time and so zero seconds;
+    /// discarding the finished call then left it at zero minutes for good. The existing row is now
+    /// corrected from the final reading instead. A retry of an identical delivery changes nothing.
+    /// </summary>
+    private async Task RecordCallAsync(int orgId, RetellCallReading reading)
     {
-        // Retell retries webhooks — don't store the same call twice.
-        if (retellCallId is not null && await _calls.ExistsByRetellIdAsync(orgId, retellCallId))
+        if (reading.CallId is not null && await _calls.ExistsByRetellIdAsync(orgId, reading.CallId))
         {
-            _logger.LogInformation("Skipping duplicate Retell webhook for call {CallId}", retellCallId);
+            await CorrectRecordedCallAsync(orgId, reading);
             return;
         }
 
-        var from = PhoneUtil.Normalize(GetString(call, "from_number"));
-        if (from.Length == 0) from = "unknown";
-        var startedMs = GetLong(call, "start_timestamp");
-        var endedMs = GetLong(call, "end_timestamp");
-        var durationSec = CallDuration.Resolve(startedMs, endedMs, GetLong(call, "duration_ms"));
-        var disconnection = GetString(call, "disconnection_reason");
-        var status = disconnection is "dial_no_answer" or "dial_busy" or "dial_failed" ? "Missed"
-            : disconnection == "call_transfer" ? "Transferred"
-            : "Completed";
+        var from = reading.FromNumber.Length == 0 ? "unknown" : reading.FromNumber;
+        var status = reading.Status ?? "Completed";
+        var durationSec = reading.DurationSeconds;
 
         // Returning-customer detection by phone (SRS §7)
         var customer = await _customers.FindReturningAsync(orgId, from, null, null);
@@ -221,24 +216,25 @@ public class RetellWebhookController : ControllerBase
         {
             OrganizationId = orgId,
             CustomerId = customer?.Id,
-            RetellCallId = retellCallId,
+            RetellCallId = reading.CallId,
             FromNumber = from,
             Status = status,
             DurationSeconds = durationSec,
-            Transcript = GetString(call, "transcript"),
-            RecordingUrl = GetString(call, "recording_url"),
-            Summary = summary ?? (call.TryGetProperty("call_analysis", out var a) ? GetString(a, "call_summary") : null),
-            StartedAt = startedMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(startedMs).UtcDateTime : DateTime.UtcNow,
+            Transcript = reading.Transcript,
+            RecordingUrl = reading.RecordingUrl,
+            Summary = reading.Summary,
+            StartedAt = reading.StartedAtUtc,
         });
 
-        // Lost the race to a concurrent delivery of this same webhook. The check at the top of this
-        // method is a read, so both deliveries can pass it; the unique index is what decides. The
-        // call is on record either way, and the timeline entry below belongs to whoever won.
+        // Lost the race to a concurrent delivery (or the import) recording this same call. The
+        // existence check above is a read, so both can pass it; the unique index is what decides.
+        // The row that won may be the one written mid-call, so it is corrected rather than trusted.
         if (callLogId == 0)
         {
             _logger.LogInformation(
-                "A concurrent delivery recorded Retell call {CallId} first; this one added nothing.",
-                retellCallId);
+                "Retell call {CallId} was recorded concurrently; reconciling the existing record.",
+                reading.CallId);
+            await CorrectRecordedCallAsync(orgId, reading);
             return;
         }
 
@@ -249,7 +245,7 @@ public class RetellWebhookController : ControllerBase
             _logger.LogWarning(
                 "Retell call {CallId} for org {OrgId} completed but carried no usable duration " +
                 "(start={Start}, end={End}, duration_ms absent or zero). Recorded as zero minutes.",
-                retellCallId, orgId, startedMs, endedMs);
+                reading.CallId, orgId, reading.StartTimestampMs, reading.EndTimestampMs);
 
         if (customer is not null)
         {
@@ -259,14 +255,33 @@ public class RetellWebhookController : ControllerBase
                 CustomerId = customer.Id,
                 EventType = "AiCall",
                 Source = "AI",
-                Notes = summary ?? $"Inbound call ({status.ToLowerInvariant()}), {durationSec}s",
+                Notes = reading.Summary ?? $"Inbound call ({status.ToLowerInvariant()}), {durationSec}s",
             });
+        }
+    }
+
+    private async Task CorrectRecordedCallAsync(int orgId, RetellCallReading reading)
+    {
+        var correction = await _calls.ReconcileAsync(orgId, reading);
+        if (correction is null) return;
+
+        if (correction.DurationChanged)
+        {
+            _logger.LogWarning(
+                "Corrected the length of Retell call {CallId} for org {OrgId} from {Before}s to {After}s " +
+                "(it had been recorded before it finished).",
+                reading.CallId, orgId, correction.PreviousSeconds, correction.CurrentSeconds);
+        }
+        else if (correction.LockedByInvoice && reading.IsFinished
+                 && reading.DurationSeconds > 0 && reading.DurationSeconds != correction.CurrentSeconds)
+        {
+            _logger.LogWarning(
+                "Retell call {CallId} for org {OrgId} was invoiced at {Recorded}s but Retell reports {Actual}s. " +
+                "The closed period ending {PeriodEnd:u} was left as issued; credit the difference by hand if needed.",
+                reading.CallId, orgId, correction.CurrentSeconds, reading.DurationSeconds, correction.BilledPeriodEnd);
         }
     }
 
     private static string? GetString(JsonElement el, string name) =>
         el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static long GetLong(JsonElement el, string name) =>
-        el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
 }

@@ -13,14 +13,30 @@ namespace AiReceptionist.Shared;
 /// </summary>
 public static class BillingSchema
 {
-    /// <summary>The number of AI minutes a call consumes. Each call is rounded up to a whole
-    /// minute, which is how the tenant dashboard has always counted talk time — billing and the
-    /// dashboard must never disagree about a number the customer is charged for.</summary>
-    public const string MinutesExpression = "ISNULL(SUM(CEILING(DurationSeconds / 60.0)), 0)";
+    /// <summary>
+    /// The number of AI minutes a set of calls consumes: their exact talk time, added up in
+    /// seconds, and rounded up to a whole minute once — for the whole set, never per call.
+    ///
+    /// It used to round every call up before adding (<c>SUM(CEILING(seconds / 60))</c>), so a
+    /// 10-second call cost a full minute and a 61-second call cost two. The call list shows real
+    /// seconds, so the minutes figure could never be reconciled with it and looked random. Now the
+    /// minutes are the talk time the customer can see, to within one minute.
+    ///
+    /// Every screen and the invoice read this one expression. A copy of the arithmetic anywhere
+    /// else is a second answer to "how many minutes have I used", and two answers to a number the
+    /// customer is charged for is the one thing this must never produce.
+    /// </summary>
+    public const string MinutesExpression =
+        "CAST(CEILING(ISNULL(SUM(CAST(DurationSeconds AS BIGINT)), 0) / 60.0) AS INT)";
+
+    /// <summary>The exact talk time behind <see cref="MinutesExpression"/>, in seconds, for showing
+    /// next to the minutes so the two can be checked against each other.</summary>
+    public const string SecondsExpression = "ISNULL(SUM(CAST(DurationSeconds AS BIGINT)), 0)";
 
     /// <summary>
-    /// The calls whose minutes are still owed to a bill: not deleted, and not yet claimed by a
-    /// period close (<c>CallLogs.BilledPeriodEnd</c>).
+    /// The calls whose minutes are still owed to a bill: not deleted, not answered during a free
+    /// trial (<c>CallLogs.IsTrial</c>), and not yet claimed by a period close
+    /// (<c>CallLogs.BilledPeriodEnd</c>).
     ///
     /// This, rather than a date window, is what "used this period" means. A window answers "when
     /// did it happen"; the question a bill asks is "has this been charged for yet", and the two
@@ -28,7 +44,21 @@ public static class BillingSchema
     /// the marker means the live figure a customer watches and the total the close charges are
     /// read from the same set of rows, so they cannot drift.
     /// </summary>
-    public const string UnbilledPredicate = "IsDeleted = 0 AND BilledPeriodEnd IS NULL";
+    public const string UnbilledPredicate = "IsDeleted = 0 AND BilledPeriodEnd IS NULL AND IsTrial = 0";
+
+    /// <summary>
+    /// The calls counted as "used this period" on every screen, given <paramref name="countFrom"/>
+    /// — a SQL expression that is NULL for an account on a plan and a start date for one without.
+    ///
+    /// On a plan: exactly what the next bill charges (<see cref="UnbilledPredicate"/>). Without one
+    /// nothing is ever billed, so the figure is informational — every call since the start of the
+    /// month-long window, trial calls included, so a customer on a free trial can see what they
+    /// are using before choosing a plan. One definition, so the dashboard, the billing page and the
+    /// console cannot count it differently.
+    /// </summary>
+    public static string UsagePredicate(string countFrom) =>
+        $"IsDeleted = 0 AND BilledPeriodEnd IS NULL " +
+        $"AND (({countFrom} IS NULL AND IsTrial = 0) OR StartedAt >= {countFrom})";
 
     /// <summary>Each statement runs as its own batch: a column added by an earlier statement is
     /// not visible to a later one within the same batch.</summary>

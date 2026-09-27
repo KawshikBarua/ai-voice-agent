@@ -15,6 +15,43 @@ public class RetellApiException : InvalidOperationException
         StatusCode = statusCode;
 
     public HttpStatusCode StatusCode { get; }
+
+    /// <summary>Retell is saying the resource does not exist for this API key.</summary>
+    public bool IsMissingAsset => IsMissing(StatusCode, Message);
+
+    /// <summary>
+    /// Whether a Retell response means "no such resource under this key".
+    ///
+    /// Retell answers that with 422 ("Cannot find requested asset under given api key"), not only
+    /// 404 — and 422 is exactly what every stored id returns after the platform moves to a new
+    /// Retell account. Reading only 404 made every sync after a key change PATCH ids from the old
+    /// account and fail, so nothing was ever created on the new one. A 422 for any other reason
+    /// (an invalid payload) is not a missing resource and is still reported as a failure, so this
+    /// can never turn a bad request into a duplicate agent.
+    /// </summary>
+    public static bool IsMissing(HttpStatusCode status, string? body) =>
+        status == HttpStatusCode.NotFound
+        || (status == HttpStatusCode.UnprocessableEntity && body is not null
+            && (body.Contains("cannot find", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("not found", StringComparison.OrdinalIgnoreCase)));
+}
+
+/// <summary>What one pass of the call import found and did.</summary>
+public class CallSyncResult
+{
+    /// <summary>Finished calls that were not on record and now are.</summary>
+    public int Imported { get; set; }
+
+    /// <summary>Recorded calls whose length was wrong and has been corrected from Retell.</summary>
+    public int Corrected { get; set; }
+
+    /// <summary>Calls still in progress, left for the webhook or the next pass to record once they
+    /// have a final length.</summary>
+    public int InProgress { get; set; }
+
+    /// <summary>Calls already invoiced at a length Retell does not agree with. Left as issued —
+    /// a closed period is never re-billed — and logged so the difference can be credited.</summary>
+    public int InvoicedMismatches { get; set; }
 }
 
 public class RetellSyncResult
@@ -57,7 +94,12 @@ public interface IRetellService
     Task<bool> IsConfiguredAsync();
     Task<RetellSyncResult> SyncAgentAsync(int orgId, RetellSyncMode mode = RetellSyncMode.Update,
         CancellationToken ct = default);
-    Task<int> BackfillCallsAsync(int orgId, CancellationToken ct = default);
+    /// <summary>
+    /// Records finished calls the webhook did not deliver, and corrects any recorded call whose
+    /// length disagrees with Retell's. <paramref name="deep"/> walks back through the whole call
+    /// history (the Sync button); otherwise only the newest page is read (the timer).
+    /// </summary>
+    Task<CallSyncResult> BackfillCallsAsync(int orgId, bool deep = false, CancellationToken ct = default);
 
     /// <summary>Detaches this tenant's number from their agent, or points it back. Refusing the
     /// agent's tools stops it doing anything useful but the call is still answered and still costs
@@ -69,7 +111,8 @@ public interface IRetellService
 
 /// <summary>
 /// Pushes each tenant's AI configuration to Retell AI (SRS §14, §15):
-/// creates/updates a Retell LLM (prompt + custom tools) and the Agent bound to it.
+/// creates/updates a multi-prompt Retell LLM (general prompt, per-state prompts and tools) and the
+/// Agent bound to it.
 /// The custom tools point back at this API's /api/v1/ai/tools endpoints so the
 /// agent retrieves live data instead of hallucinating (SRS §19).
 /// </summary>
@@ -180,7 +223,7 @@ public class RetellService : IRetellService
         if (org is null) return new RetellSyncResult { Error = "Organization not found." };
 
         var agent = await _settings.GetAgentConfigAsync(orgId) ?? new Domain.AgentConfig { OrganizationId = orgId };
-        var prompt = await _prompts.BuildSystemPromptAsync(orgId);
+        var prompt = await _prompts.BuildAgentPromptAsync(orgId);
 
         // Only fill in a greeting the tenant never set — a custom one must reach Retell
         // exactly as written. The default is resolved here (not just on save) so a brand-new
@@ -208,14 +251,20 @@ public class RetellService : IRetellService
                 orgId, org.Name, previousKbId, forceCreate: mode == RetellSyncMode.Fresh, ct);
             if (kbId is not null) agent.RetellKnowledgeBaseId = kbId;
 
-            // 2) Create or update the Retell LLM (prompt + tools + knowledge base)
+            // 2) Create or update the Retell LLM: a multi-prompt LLM whose general prompt holds what
+            //    applies on every turn, with one state per stage of the call (see BuildCallFlow).
+            var hasServiceArea = (await _locations.ListActiveAsync(orgId)).Count > 0;
+            var (generalTools, states) = BuildCallFlow(orgId, agent.TransferNumber,
+                IndustryTemplates.Resolve(org.Industry), hasServiceArea, prompt);
             var llmPayload = new
             {
                 model = LlmModel,
-                general_prompt = prompt,
+                start_speaker = "agent",
+                general_prompt = prompt.General,
                 begin_message = string.IsNullOrWhiteSpace(agent.Greeting) ? null : agent.Greeting,
-                general_tools = BuildTools(orgId, agent.TransferNumber, IndustryTemplates.Resolve(org.Industry),
-                    hasServiceArea: (await _locations.ListActiveAsync(orgId)).Count > 0),
+                general_tools = generalTools,
+                states,
+                starting_state = AgentStates.Triage,
                 knowledge_base_ids = string.IsNullOrWhiteSpace(agent.RetellKnowledgeBaseId)
                     ? Array.Empty<string>()
                     : new[] { agent.RetellKnowledgeBaseId },
@@ -322,25 +371,79 @@ public class RetellService : IRetellService
     }
 
     /// <summary>
-    /// Pulls recent calls for this tenant's agent from Retell and stores any that are missing.
-    /// Webhooks are fire-and-forget: if the API or tunnel is down when a call ends, that call
-    /// log is lost forever. This reconciles from Retell's own record, so history is complete
-    /// regardless of what the webhook delivered. Returns how many calls were imported.
+    /// Reconciles this tenant's calls against Retell's own record of them.
+    ///
+    /// Webhooks are fire-and-forget: if the API or tunnel is down when a call ends, that call is
+    /// never delivered. This reads Retell's list and records what is missing, so history — and
+    /// the minutes summed from it — is complete regardless of what the webhook delivered.
+    ///
+    /// Two rules keep it from ever writing a wrong length:
+    /// <list type="bullet">
+    /// <item>A call still in progress is skipped. It has a start but no end, so recording it then
+    /// filed it at zero seconds — and the finished call arriving later was thrown away as a
+    /// duplicate, leaving it at zero minutes for good.</item>
+    /// <item>A call already on record is compared with Retell's finished reading and corrected when
+    /// its length differs, which is what repairs any row written that way before this fix. A call
+    /// whose minutes are already on a closed, invoiced period is left exactly as billed and
+    /// reported instead.</item>
+    /// </list>
     /// </summary>
-    public async Task<int> BackfillCallsAsync(int orgId, CancellationToken ct = default)
+    public async Task<CallSyncResult> BackfillCallsAsync(int orgId, bool deep = false, CancellationToken ct = default)
     {
+        var result = new CallSyncResult();
+
         await LoadConnectionAsync();
-        if (string.IsNullOrWhiteSpace(_apiKey)) return 0;
+        if (string.IsNullOrWhiteSpace(_apiKey)) return result;
 
         var agent = await _settings.GetAgentConfigAsync(orgId);
-        if (string.IsNullOrWhiteSpace(agent?.RetellAgentId)) return 0;
+        if (string.IsNullOrWhiteSpace(agent?.RetellAgentId)) return result;
 
-        var payload = new
+        // The timer reads the newest page every few minutes, which is all a missed webhook needs.
+        // A deep pass walks back through the history so every recorded call is checked; it is
+        // bounded, so an account with an enormous history cannot turn one click into a runaway.
+        var pageSize = deep ? 1000 : 100;
+        var maxPages = deep ? 20 : 1;
+        string? paginationKey = null;
+
+        for (var page = 0; page < maxPages; page++)
         {
-            filter_criteria = new { agent_id = new[] { agent.RetellAgentId } },
-            limit = 100,
-            sort_order = "descending",
+            ct.ThrowIfCancellationRequested();
+
+            var listed = await ListCallsPageAsync(agent.RetellAgentId, pageSize, paginationKey, ct);
+            if (listed is null) break;   // the failure is logged; a partial pass is still useful
+
+            var readings = listed.Where(r => r.CallId is not null).ToList();
+            if (readings.Count == 0) break;
+
+            await ReconcilePageAsync(orgId, readings, deep, result, ct);
+
+            if (listed.Count < pageSize) break;
+            paginationKey = readings[^1].CallId;
+        }
+
+        if (result.Imported > 0 || result.Corrected > 0)
+            _logger.LogInformation(
+                "Call import for org {OrgId}: {Imported} recorded, {Corrected} corrected from Retell.",
+                orgId, result.Imported, result.Corrected);
+        if (result.InvoicedMismatches > 0 && deep)
+            _logger.LogWarning(
+                "Call import for org {OrgId}: {Count} call(s) were invoiced at a length Retell disagrees " +
+                "with. Their closed periods were left as issued.", orgId, result.InvoicedMismatches);
+
+        return result;
+    }
+
+    /// <summary>One page of <c>/v2/list-calls</c> for an agent, newest first. Null on failure.</summary>
+    private async Task<List<RetellCallReading>?> ListCallsPageAsync(
+        string agentId, int limit, string? paginationKey, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            ["filter_criteria"] = new { agent_id = new[] { agentId } },
+            ["limit"] = limit,
+            ["sort_order"] = "descending",
         };
+        if (paginationKey is not null) payload["pagination_key"] = paginationKey;
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v2/list-calls")
         {
@@ -351,67 +454,91 @@ public class RetellService : IRetellService
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("Retell list-calls failed ({Status}): {Body}", (int)response.StatusCode, body);
-            return 0;
+            return null;
         }
 
         using var doc = JsonDocument.Parse(body);
         var calls = doc.RootElement.ValueKind == JsonValueKind.Array
             ? doc.RootElement
             : doc.RootElement.TryGetProperty("calls", out var c) ? c : default;
-        if (calls.ValueKind != JsonValueKind.Array) return 0;
+        if (calls.ValueKind != JsonValueKind.Array) return null;
 
-        var imported = 0;
-        foreach (var call in calls.EnumerateArray())
+        // Read while the document is alive; the readings hold no reference to it.
+        return calls.EnumerateArray().Select(RetellCallReading.From).ToList();
+    }
+
+    private async Task ReconcilePageAsync(int orgId, List<RetellCallReading> readings, bool deep,
+        CallSyncResult result, CancellationToken ct)
+    {
+        // One read for the whole page rather than one per call.
+        var recorded = await _calls.GetRecordedAsync(orgId, readings.Select(r => r.CallId!).ToList());
+
+        foreach (var reading in readings)
         {
-            var callId = GetStr(call, "call_id");
-            if (callId is null || await _calls.ExistsByRetellIdAsync(orgId, callId)) continue;
+            ct.ThrowIfCancellationRequested();
 
-            var startedMs = GetNum(call, "start_timestamp");
-            var endedMs = GetNum(call, "end_timestamp");
-            var from = PhoneUtil.Normalize(GetStr(call, "from_number"));
-            if (from.Length == 0) from = "web-call";
+            if (!reading.IsFinished)
+            {
+                result.InProgress++;
+                continue;
+            }
 
-            var disconnect = GetStr(call, "disconnection_reason");
-            var status = disconnect is "dial_no_answer" or "dial_busy" or "dial_failed" ? "Missed"
-                : disconnect == "call_transfer" ? "Transferred"
-                : "Completed";
+            if (recorded.TryGetValue(reading.CallId!, out var onRecord))
+            {
+                if (onRecord.InvoicedAtWrongLength(reading))
+                {
+                    result.InvoicedMismatches++;
+                    if (deep)
+                        _logger.LogWarning(
+                            "Retell call {CallId} for org {OrgId} was invoiced at {Recorded}s but Retell reports " +
+                            "{Actual}s; the closed period ending {PeriodEnd:u} was left as issued.",
+                            reading.CallId, orgId, onRecord.DurationSeconds, reading.DurationSeconds,
+                            onRecord.BilledPeriodEnd);
+                }
 
-            string? summary = null;
-            if (call.TryGetProperty("call_analysis", out var analysis))
-                summary = GetStr(analysis, "call_summary");
+                if (!onRecord.DiffersFrom(reading)) continue;
 
+                var correction = await _calls.ReconcileAsync(orgId, reading);
+                if (correction is { DurationChanged: true })
+                {
+                    result.Corrected++;
+                    _logger.LogWarning(
+                        "Corrected the length of Retell call {CallId} for org {OrgId} from {Before}s to {After}s.",
+                        reading.CallId, orgId, correction.PreviousSeconds, correction.CurrentSeconds);
+                }
+                continue;
+            }
+
+            var from = reading.FromNumber.Length == 0 ? "web-call" : reading.FromNumber;
             var customer = await _customers.FindReturningAsync(orgId, from, null, null);
 
-            await _calls.CreateAsync(new Domain.CallLog
+            var created = await _calls.CreateAsync(new Domain.CallLog
             {
                 OrganizationId = orgId,
                 CustomerId = customer?.Id,
-                RetellCallId = callId,
+                RetellCallId = reading.CallId,
                 FromNumber = from,
-                Status = status,
-                // The same reading the live webhook takes, so a call re-imported here is never
-                // billed differently from the one that arrived by itself.
-                DurationSeconds = CallDuration.Resolve(startedMs, endedMs, GetNum(call, "duration_ms")),
-                Transcript = GetStr(call, "transcript"),
-                RecordingUrl = GetStr(call, "recording_url"),
-                Summary = summary,
-                StartedAt = startedMs > 0
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(startedMs).UtcDateTime
-                    : DateTime.UtcNow,
+                Status = reading.Status ?? "Completed",
+                // The same reading the live webhook takes, so a call recorded here is never
+                // billed differently from one that arrived by itself.
+                DurationSeconds = reading.DurationSeconds,
+                Transcript = reading.Transcript,
+                RecordingUrl = reading.RecordingUrl,
+                Summary = reading.Summary,
+                StartedAt = reading.StartedAtUtc,
             });
-            imported++;
-        }
 
-        if (imported > 0)
-            _logger.LogInformation("Backfilled {Count} call(s) from Retell for org {OrgId}", imported, orgId);
-        return imported;
+            if (created > 0)
+                result.Imported++;
+            else
+                // The webhook recorded it between the read above and this insert. Its reading is
+                // final too, but make sure the two agree rather than assume it.
+                await _calls.ReconcileAsync(orgId, reading);
+        }
     }
 
     private static string? GetStr(JsonElement el, string name) =>
         el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static long GetNum(JsonElement el, string name) =>
-        el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
 
     public async Task<string?> SetInboundRoutingAsync(int orgId, bool enabled, CancellationToken ct = default)
     {
@@ -622,7 +749,7 @@ public class RetellService : IRetellService
                     existingId, orgId, docs.Count);
                 return (existingId, false);
             }
-            catch (RetellApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            catch (RetellApiException ex) when (ex.IsMissingAsset)
             {
                 // The only failure that justifies a second base: this one has been deleted in the
                 // Retell dashboard or lost with a replaced key, so there is nothing left to update.
@@ -648,7 +775,7 @@ public class RetellService : IRetellService
             // Tagged with the organization id, not stamped with the time: the tag is what lets a
             // later sync recognise a base as this tenant's own and clear away the superseded ones,
             // and a name that never changes stops the dashboard reading as a row of copies.
-            { new StringContent($"{orgName} — reference {OrgTag(orgId)}"), "knowledge_base_name" },
+            { new StringContent(KnowledgeBaseName(orgName, orgId)), "knowledge_base_name" },
             { KnowledgeTextsContent(docs), "knowledge_base_texts" },
         };
 
@@ -665,16 +792,18 @@ public class RetellService : IRetellService
         return (id, id is not null);
     }
 
-    /// <summary>Swaps the contents of an existing knowledge base for the current documents. Adds
-    /// before it removes: a base that briefly holds the old and new copies of a document answers
-    /// callers with a duplicate, while one that briefly holds nothing answers them with nothing.</summary>
+    /// <summary>Swaps the contents of an existing knowledge base for the current documents, so the
+    /// base ends the sync holding exactly one "Services and pricing", one "Product catalogue" and
+    /// so on. Adds before it removes: a base that briefly holds the old and new copies of a document
+    /// answers callers with a duplicate, while one that briefly holds nothing answers them with
+    /// nothing.</summary>
     private async Task ReplaceKnowledgeBaseSourcesAsync(
         string knowledgeBaseId, List<KnowledgeDocument> docs, CancellationToken ct)
     {
         // Reading the base first also settles whether it still exists — a stale id has to surface
         // here as a 404 so the caller can fall back to creating a replacement — and whether it is
         // ready to be written to at all.
-        var stale = await WaitForKnowledgeBaseReadyAsync(knowledgeBaseId, ct);
+        var before = await WaitForKnowledgeBaseReadyAsync(knowledgeBaseId, ct);
 
         using var form = new MultipartFormDataContent
         {
@@ -682,21 +811,90 @@ public class RetellService : IRetellService
         };
 
         var response = await _http.PostAsync($"/add-knowledge-base-sources/{knowledgeBaseId}", form, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync(ct);
             throw new RetellApiException(response.StatusCode,
                 $"Retell API POST /add-knowledge-base-sources/{knowledgeBaseId} failed " +
                 $"({(int)response.StatusCode}): {body}");
+
+        // Retell answers the add with the base as it now stands, so anything in that listing which
+        // was not just written is a previous copy of a document — including copies an earlier sync
+        // failed to clear. Keeping only what we wrote is what makes this self-correcting: a base
+        // carrying five "Services and pricing" comes out of one sync carrying one.
+        var reported = ParseSourceIds(body);
+        var kept = reported.Except(before).ToHashSet(StringComparer.Ordinal);
+        if (kept.Count > 0)
+        {
+            await PruneKnowledgeBaseSourcesAsync(knowledgeBaseId, kept, ct);
+            return;
         }
 
-        foreach (var sourceId in stale)
+        if (reported.Count > 0)
+        {
+            // The reply listed sources and every one of them was already there: Retell recognised
+            // this upload as the content it is already holding and created nothing. There is no new
+            // copy to keep, so there is nothing superseded to remove — and clearing the old ids here
+            // would empty the base of the very documents the agent answers from.
+            _logger.LogInformation(
+                "Retell knowledge base {KbId} already held this content — nothing to add or remove.",
+                knowledgeBaseId);
+            return;
+        }
+
+        // The reply told us nothing we could read. The add succeeded, so the new sources are in
+        // there; we simply cannot name them. Remove the ones seen before it instead — never a
+        // listing we cannot tell new from old in, which would delete what was just uploaded.
+        _logger.LogWarning(
+            "Retell did not report the sources added to knowledge base {KbId}; removing only the " +
+            "{Count} source(s) seen before this sync.", knowledgeBaseId, before.Count);
+        await WaitForKnowledgeBaseReadyAsync(knowledgeBaseId, ct, maxAttempts: 20);
+        await DeleteKnowledgeBaseSourcesAsync(knowledgeBaseId, before, ct);
+    }
+
+    /// <summary>Removes every source in the base except the ones just written.
+    ///
+    /// The wait is the point. Adding sources puts the base back into indexing, and Retell refuses to
+    /// change a base while it is working — so the removal that used to run straight after the add
+    /// failed every single time, leaving the previous copy of every document in place. One more full
+    /// set per sync, and a sync runs on every tenant edit and on every API restart, which is how a
+    /// base ends up holding the same catalogue a dozen times over.</summary>
+    private async Task PruneKnowledgeBaseSourcesAsync(
+        string knowledgeBaseId, IReadOnlySet<string> keep, CancellationToken ct)
+    {
+        for (var pass = 1; pass <= 2; pass++)
+        {
+            var current = await WaitForKnowledgeBaseReadyAsync(knowledgeBaseId, ct, maxAttempts: 20);
+            var superseded = current.Where(id => !keep.Contains(id)).ToList();
+            if (superseded.Count == 0)
+            {
+                if (pass > 1)
+                    _logger.LogInformation(
+                        "Retell knowledge base {KbId} now holds only the {Count} current document(s).",
+                        knowledgeBaseId, keep.Count);
+                return;
+            }
+
+            await DeleteKnowledgeBaseSourcesAsync(knowledgeBaseId, superseded, ct);
+        }
+
+        // Still not clean: the base is answering from the right content plus an older copy of it.
+        // Stale, not broken — and the next sync runs this same pass again.
+        _logger.LogWarning(
+            "Retell knowledge base {KbId} still holds superseded sources after two passes; the next sync will retry.",
+            knowledgeBaseId);
+    }
+
+    private async Task DeleteKnowledgeBaseSourcesAsync(
+        string knowledgeBaseId, IEnumerable<string> sourceIds, CancellationToken ct)
+    {
+        foreach (var sourceId in sourceIds)
         {
             try
             {
                 var deleted = await _http.DeleteAsync(
                     $"/delete-knowledge-base-source/{knowledgeBaseId}/{sourceId}", ct);
-                if (!deleted.IsSuccessStatusCode)
+                if (!deleted.IsSuccessStatusCode && !RetellApiException.IsMissing(
+                        deleted.StatusCode, await deleted.Content.ReadAsStringAsync(ct)))
                     _logger.LogWarning(
                         "Could not remove superseded source {SourceId} from Retell knowledge base {KbId}: {Status}",
                         sourceId, knowledgeBaseId, deleted.StatusCode);
@@ -713,14 +911,18 @@ public class RetellService : IRetellService
     }
 
     /// <summary>Waits for the base to finish indexing, then returns the sources it holds. Retell
-    /// refuses new sources while a base is still working through the last batch, and syncs arrive
+    /// refuses to change a base while it is still working through the last batch, and syncs arrive
     /// in bursts — one per tenant edit, and one per connected tenant on every restart — so an edit
     /// made moments after another used to fail and take a replacement base with it. Gives up
-    /// waiting after a few seconds and tries the write anyway: the worst case is the failure that
-    /// would have happened immediately otherwise, and that no longer costs a duplicate.</summary>
-    private async Task<List<string>> WaitForKnowledgeBaseReadyAsync(string knowledgeBaseId, CancellationToken ct)
+    /// waiting eventually and tries the write anyway: the worst case is the failure that
+    /// would have happened immediately otherwise, and that no longer costs a duplicate.
+    ///
+    /// The caller says how long it is worth waiting. Before an add, not long: failing there just
+    /// leaves the base one sync behind. Before clearing superseded sources, longer — that wait
+    /// running out is what leaves a second copy of every document in the base.</summary>
+    private async Task<List<string>> WaitForKnowledgeBaseReadyAsync(
+        string knowledgeBaseId, CancellationToken ct, int maxAttempts = 6)
     {
-        const int maxAttempts = 6;
         for (var attempt = 1; ; attempt++)
         {
             var (sourceIds, status) = await ReadKnowledgeBaseAsync(knowledgeBaseId, ct);
@@ -756,17 +958,37 @@ public class RetellService : IRetellService
         // Retell has carried the indexing state under both names; either one answers the question,
         // and a base that reports neither is treated as ready rather than waited on pointlessly.
         var status = GetStr(root, "status") ?? GetStr(root, "knowledge_base_status");
+        return (ParseSourceIds(root), status);
+    }
 
-        if (!root.TryGetProperty("knowledge_base_sources", out var sources) ||
+    /// <summary>The source ids a knowledge base payload lists. Both the read and the add reply carry
+    /// the base in the same shape, and telling which sources an add created — so the copies it
+    /// superseded can go — depends on reading that reply the same way.</summary>
+    private static List<string> ParseSourceIds(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return ParseSourceIds(doc.RootElement);
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static List<string> ParseSourceIds(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("knowledge_base_sources", out var sources) ||
             sources.ValueKind != JsonValueKind.Array)
-            return ([], status);
+            return [];
 
-        var sourceIds = sources.EnumerateArray()
+        return sources.EnumerateArray()
             .Select(s => GetStr(s, "source_id"))
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => id!)
             .ToList();
-        return (sourceIds, status);
     }
 
     /// <summary>Deletes every knowledge base on the account that belongs to this organization apart
@@ -946,13 +1168,13 @@ public class RetellService : IRetellService
             try
             {
                 var response = await _http.DeleteAsync(path, ct);
-                if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound)
+                var body = await response.Content.ReadAsStringAsync(ct);
+                if (response.IsSuccessStatusCode || RetellApiException.IsMissing(response.StatusCode, body))
                 {
                     _logger.LogInformation("Deleted Retell {Resource} {Id} for org {OrgId}.", resource, id, orgId);
                     return;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning("Could not delete Retell {Resource} {Id} for org {OrgId} ({Status}): {Body}",
                     resource, id, orgId, response.StatusCode, body);
                 failures.Add($"{resource} {id} could not be deleted ({(int)response.StatusCode})");
@@ -979,10 +1201,11 @@ public class RetellService : IRetellService
             var id = GetStr(llm, "llm_id");
             if (id is null) continue;
 
-            // Matched against the raw JSON of the tool list so the shape of a tool never matters,
-            // only the address it points at.
-            var tools = llm.TryGetProperty("general_tools", out var t) ? t.GetRawText() : "";
-            if (!tools.Contains(toolPath, StringComparison.Ordinal)) continue;
+            // Matched against the raw JSON of the tool lists so the shape of a tool never matters,
+            // only the address it points at. Tools sit in general_tools on a single-prompt LLM and in
+            // each state on a multi-prompt one; only tool lists are read, never a prompt, because a
+            // prompt carries tenant-written text that could name another organization's path.
+            if (!ToolLists(llm).Any(tools => tools.Contains(toolPath, StringComparison.Ordinal))) continue;
 
             llmIds.Add(id);
             if (llm.TryGetProperty("knowledge_base_ids", out var kbs) && kbs.ValueKind == JsonValueKind.Array)
@@ -1031,6 +1254,16 @@ public class RetellService : IRetellService
                     id, orgId);
             }
         }
+    }
+
+    /// <summary>The raw JSON of every tool list on a Retell LLM, whichever shape it was built in.</summary>
+    private static IEnumerable<string> ToolLists(JsonElement llm)
+    {
+        if (llm.TryGetProperty("general_tools", out var general)) yield return general.GetRawText();
+        if (llm.TryGetProperty("states", out var states) && states.ValueKind == JsonValueKind.Array)
+            foreach (var state in states.EnumerateArray())
+                if (state.ValueKind == JsonValueKind.Object && state.TryGetProperty("tools", out var tools))
+                    yield return tools.GetRawText();
     }
 
     /// <summary>Reads every page of a Retell list endpoint. Falls back to the unversioned path so a
@@ -1102,6 +1335,26 @@ public class RetellService : IRetellService
     /// LLM behind an agent is gone. Organization ids are stable; names are not.</summary>
     private static string OrgTag(int orgId) => $"[org {orgId}]";
 
+    /// <summary>Retell refuses a knowledge base name of 40 characters or more.</summary>
+    private const int MaxKnowledgeBaseNameLength = 39;
+
+    /// <summary>"&lt;org name&gt; - KB [org 12]", with the org name shortened to fit Retell's limit.
+    /// The tag is never cut: it is what later syncs match on to find this tenant's bases.</summary>
+    private static string KnowledgeBaseName(string? orgName, int orgId)
+    {
+        // Plain ASCII, so the limit holds whether Retell counts characters or UTF-8 bytes.
+        var suffix = $" - KB {OrgTag(orgId)}";
+        var room = MaxKnowledgeBaseNameLength - suffix.Length;
+        var name = (orgName ?? "").Trim();
+        if (name.Length > room)
+        {
+            var cut = Math.Max(0, room - 1);
+            if (cut > 0 && char.IsHighSurrogate(name[cut - 1])) cut--;
+            name = name[..cut].TrimEnd() + ".";
+        }
+        return name.Length == 0 ? OrgTag(orgId) : name + suffix;
+    }
+
     /// <summary>Removes a knowledge base we no longer want, reporting whether it is gone. A base
     /// Retell has already forgotten counts as gone — that is the state being asked for. A refusal
     /// is never thrown: the sync that called this has already succeeded, and the pruning pass will
@@ -1111,7 +1364,8 @@ public class RetellService : IRetellService
         try
         {
             var response = await _http.DeleteAsync($"/delete-knowledge-base/{knowledgeBaseId}", ct);
-            if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound)
+            if (response.IsSuccessStatusCode || RetellApiException.IsMissing(
+                    response.StatusCode, await response.Content.ReadAsStringAsync(ct)))
                 return true;
 
             _logger.LogWarning("Could not delete old Retell knowledge base {KbId}: {Status}",
@@ -1127,9 +1381,10 @@ public class RetellService : IRetellService
 
     /// <summary>Updates the stored Retell resource, or creates a fresh one when the stored id no
     /// longer resolves. Resources can disappear behind our back — deleted in the Retell dashboard,
-    /// wiped with an expired trial, or created under a since-replaced API key. Because a create is
-    /// only attempted when the id is blank, a stale id would otherwise make every future sync PATCH
-    /// something that does not exist and fail with the same 404 forever, with no way back.</summary>
+    /// wiped with an expired trial, or created under a since-replaced API key (see
+    /// <see cref="RetellApiException.IsMissing"/>). Because a create is only attempted when the id is
+    /// blank, a stale id would otherwise make every future sync PATCH something that does not exist
+    /// and fail the same way forever, with no way back.</summary>
     private async Task<string> UpsertRemoteAsync(string? existingId, string updatePath, string createPath,
         object payload, string idField, int orgId, string resource, CancellationToken ct)
     {
@@ -1139,10 +1394,10 @@ public class RetellService : IRetellService
             {
                 return await PatchAsync($"{updatePath}/{existingId}", payload, idField, ct);
             }
-            catch (RetellApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            catch (RetellApiException ex) when (ex.IsMissingAsset)
             {
-                _logger.LogWarning("Retell {Resource} {Id} for org {OrgId} no longer exists — recreating it.",
-                    resource, existingId, orgId);
+                _logger.LogWarning("Retell {Resource} {Id} for org {OrgId} does not exist on the connected " +
+                    "Retell account — creating it there.", resource, existingId, orgId);
             }
         }
 
@@ -1180,7 +1435,17 @@ public class RetellService : IRetellService
     /// other provider would take it away without saying so.</summary>
     private string MapVoice(string? voice) => RetellVoices.Resolve(voice, _defaultVoiceId);
 
-    private List<object> BuildTools(int orgId, string? transferNumber, IndustryProfile profile, bool hasServiceArea)
+    /// <summary>
+    /// The call as Retell runs it: the tools every state may use, and the states themselves — each
+    /// with its own prompt, only the tools that stage of the call needs, and the edges it may leave
+    /// by. Fewer tools in front of the model on a turn means fewer wrong calls and a faster reply.
+    ///
+    /// Edges carry no parameters on purpose. Retell would substitute them into later state prompts
+    /// as dynamic variables, which puts words the caller chose into the instructions the agent
+    /// obeys. The conversation already holds the time they picked; nothing needs copying out of it.
+    /// </summary>
+    private (List<object> GeneralTools, List<object> States) BuildCallFlow(int orgId, string? transferNumber,
+        IndustryProfile profile, bool hasServiceArea, AgentPrompt prompt)
     {
         // On-site trades cannot dispatch without an address, so Retell must collect it.
         string[] requiredBookingFields = profile.IsFieldService
@@ -1210,114 +1475,102 @@ public class RetellService : IRetellService
 
         var str = (string desc) => new { type = "string", description = desc };
 
-        var tools = new List<object>
+        var identifyCustomer = Custom("identify_customer",
+            "Look up whether the caller has been here before, by phone number. Call this near the END of the call, " +
+            "once you are taking their details for a booking — never open the call by asking for a number. " +
+            "The one exception: if they say the job is at the same place as last time, call it straight away, " +
+            "because it returns the address on file and that is what they are referring to. " +
+            "Call it at most once per call.",
+            new { phone = str("Caller phone number in international format") },
+            ["phone"]);
+
+        var checkAvailability = Custom("check_availability",
+            "Open appointment slots on ONE date. Call this once, after the caller has named the day they want, " +
+            "then keep the times it returns and work from them for the rest of the call. Do NOT call it again for " +
+            "a date you have already checked, do NOT call it before the caller has named a day, and do NOT call it " +
+            "to re-confirm a time you have already offered. Call it again only for a different date, or after a " +
+            "booking failed because the slot was taken. Respects the business's working hours and closed days, and " +
+            "counts the staff actually on duty — a time comes back only while someone is free to take it, which is " +
+            "why the same time can still be free after you have just booked it for someone else.",
+            new
+            {
+                date = str("The date to check: YYYY-MM-DD, or a relative day the caller used such as 'today', 'tomorrow' or 'friday'"),
+                service = str("Optional service name to size the slot"),
+            },
+            ["date"],
+            whileWaiting: "Say something short and natural like 'let me have a look' — one short phrase only, never mention checking a system.");
+
+        var bookAppointment = Custom("book_appointment",
+            "Book an appointment once the caller has confirmed a date, time and service. Never book without explicit caller confirmation. " +
+            "If this business travels to the customer, the full service address is mandatory.",
+            new
+            {
+                name = str("Caller full name"),
+                phone = str("Caller phone number"),
+                service = str("Requested service name"),
+                date = str("The day being booked, exactly as the caller put it ('tomorrow', 'next Friday') " +
+                           "or the date check_availability returned. Always send this — it decides the day, " +
+                           "so you never have to work one out yourself."),
+                start_time = str("Confirmed start date-time in ISO 8601 format, e.g. 2026-07-20T14:00:00. " +
+                                 "Only the time of day is taken from this when 'date' is given."),
+                service_address = str("Full address where the work will be carried out, including city and any access details (apartment, gate code). Required for on-site trades."),
+                is_emergency = str("'true' if the caller describes an urgent or emergency situation, otherwise 'false'"),
+                notes = str("Description of the problem or any other relevant detail"),
+            },
+            requiredBookingFields,
+            whileWaiting: "Say something short like 'right, let me get that booked in' — one short phrase only.");
+
+        var cancelAppointment = Custom("cancel_appointment",
+            "Cancel the caller's upcoming appointment after they confirm they want to cancel. Always collect the caller's full name to verify identity. If they have several appointments, ask which service or date they mean.",
+            new
+            {
+                phone = str("Caller phone number"),
+                name = str("Caller full name, used to verify identity"),
+                date = str("Optional appointment date YYYY-MM-DD if the caller has several"),
+                service = str("Optional service name if the caller has several appointments"),
+            },
+            ["phone", "name"]);
+
+        var rescheduleAppointment = Custom("reschedule_appointment",
+            "Move the caller's upcoming appointment to a new confirmed time. Always collect the caller's full name to verify identity.",
+            new
+            {
+                phone = str("Caller phone number"),
+                name = str("Caller full name, used to verify identity"),
+                new_date = str("The day they are moving to, exactly as the caller put it ('tomorrow', " +
+                               "'next Friday') or the date check_availability returned. Always send this — " +
+                               "it decides the day, so you never have to work one out yourself."),
+                new_time = str("New start date-time in ISO 8601 format. Only the time of day is taken " +
+                               "from this when 'new_date' is given."),
+                date = str("Optional CURRENT appointment date YYYY-MM-DD, only to tell apart several bookings"),
+                service = str("Optional service name if the caller has several appointments"),
+            },
+            ["phone", "name", "new_time"]);
+
+        var checkAppointment = Custom("check_appointment",
+            "Check the caller's next appointment, its status and payment status.",
+            new
+            {
+                phone = str("Caller phone number"),
+                date = str("Optional appointment date YYYY-MM-DD"),
+                service = str("Optional service name"),
+            },
+            ["phone"]);
+
+        // No pricing tool: the service and product catalogues go up as knowledge-base documents
+        // on this same sync, so the agent can answer a price question from context. A tool call
+        // for something already in front of it only put a silence in the middle of the answer.
+
+        var generalTools = new List<object>
         {
-            Custom("identify_customer",
-                "Look up whether the caller has been here before, by phone number. Call this near the END of the call, " +
-                "once you are taking their details for a booking — never open the call by asking for a number. " +
-                "Call it at most once per call.",
-                new { phone = str("Caller phone number in international format") },
-                ["phone"]),
-
-            Custom("check_availability",
-                "Open appointment slots on ONE date. Call this once, after the caller has named the day they want, " +
-                "then keep the times it returns and work from them for the rest of the call. Do NOT call it again for " +
-                "a date you have already checked, do NOT call it before the caller has named a day, and do NOT call it " +
-                "to re-confirm a time you have already offered. Call it again only for a different date, or after a " +
-                "booking failed because the slot was taken. Respects the business's working hours and closed days, and " +
-                "counts the staff actually on duty — a time comes back only while someone is free to take it, which is " +
-                "why the same time can still be free after you have just booked it for someone else.",
-                new
-                {
-                    date = str("The date to check: YYYY-MM-DD, or a relative day the caller used such as 'today', 'tomorrow' or 'friday'"),
-                    service = str("Optional service name to size the slot"),
-                },
-                ["date"],
-                whileWaiting: "Say something short and natural like 'let me have a look' — one short phrase only, never mention checking a system."),
-
-            Custom("book_appointment",
-                "Book an appointment once the caller has confirmed a date, time and service. Never book without explicit caller confirmation. " +
-                "If this business travels to the customer, the full service address is mandatory.",
-                new
-                {
-                    name = str("Caller full name"),
-                    phone = str("Caller phone number"),
-                    service = str("Requested service name"),
-                    date = str("The day being booked, exactly as the caller put it ('tomorrow', 'next Friday') " +
-                               "or the date check_availability returned. Always send this — it decides the day, " +
-                               "so you never have to work one out yourself."),
-                    start_time = str("Confirmed start date-time in ISO 8601 format, e.g. 2026-07-20T14:00:00. " +
-                                     "Only the time of day is taken from this when 'date' is given."),
-                    service_address = str("Full address where the work will be carried out, including city and any access details (apartment, gate code). Required for on-site trades."),
-                    is_emergency = str("'true' if the caller describes an urgent or emergency situation, otherwise 'false'"),
-                    notes = str("Description of the problem or any other relevant detail"),
-                },
-                requiredBookingFields,
-                whileWaiting: "Say something short like 'right, let me get that booked in' — one short phrase only."),
-
-            Custom("cancel_appointment",
-                "Cancel the caller's upcoming appointment after they confirm they want to cancel. Always collect the caller's full name to verify identity. If they have several appointments, ask which service or date they mean.",
-                new
-                {
-                    phone = str("Caller phone number"),
-                    name = str("Caller full name, used to verify identity"),
-                    date = str("Optional appointment date YYYY-MM-DD if the caller has several"),
-                    service = str("Optional service name if the caller has several appointments"),
-                },
-                ["phone", "name"]),
-
-            Custom("reschedule_appointment",
-                "Move the caller's upcoming appointment to a new confirmed time. Always collect the caller's full name to verify identity.",
-                new
-                {
-                    phone = str("Caller phone number"),
-                    name = str("Caller full name, used to verify identity"),
-                    new_date = str("The day they are moving to, exactly as the caller put it ('tomorrow', " +
-                                   "'next Friday') or the date check_availability returned. Always send this — " +
-                                   "it decides the day, so you never have to work one out yourself."),
-                    new_time = str("New start date-time in ISO 8601 format. Only the time of day is taken " +
-                                   "from this when 'new_date' is given."),
-                    date = str("Optional CURRENT appointment date YYYY-MM-DD, only to tell apart several bookings"),
-                    service = str("Optional service name if the caller has several appointments"),
-                },
-                ["phone", "name", "new_time"]),
-
-            Custom("check_appointment",
-                "Check the caller's next appointment, its status and payment status.",
-                new
-                {
-                    phone = str("Caller phone number"),
-                    date = str("Optional appointment date YYYY-MM-DD"),
-                    service = str("Optional service name"),
-                },
-                ["phone"]),
-
-            // No pricing tool: the service and product catalogues go up as knowledge-base documents
-            // on this same sync, so the agent can answer a price question from context. A tool call
-            // for something already in front of it only put a silence in the middle of the answer.
-
             new { type = "end_call", name = "end_call", description = "End the call politely once the caller has no further requests." },
         };
-
-        // Only offered to businesses that have drawn a coverage area. Everyone else keeps the tool
-        // list they had, so nothing about their agent changes.
-        if (hasServiceArea)
-        {
-            tools.Insert(0, Custom("check_service_area",
-                "Check an address is real and within the area this business covers. Call this the moment the caller " +
-                "gives you an address — before you agree a time, and before you book. It answers whether the address " +
-                "was found, whether it is covered, and often names a landmark beside it you can use to confirm you " +
-                "heard the street correctly. Call it once per address; call it again only if the caller corrects it.",
-                new { address = str("The address exactly as the caller gave it, including the town or city") },
-                ["address"],
-                whileWaiting: "Say something short and natural like 'let me just check we come out that way' — one short phrase only."));
-        }
 
         // Retell requires strict E.164 (no spaces/dashes) — normalize before sending.
         var transferE164 = PhoneUtil.Normalize(transferNumber);
         if (transferE164.Length > 0)
         {
-            tools.Add(new
+            generalTools.Add(new
             {
                 type = "transfer_call",
                 name = "transfer_to_human",
@@ -1327,6 +1580,67 @@ public class RetellService : IRetellService
             });
         }
 
-        return tools;
+        // Finding a time is where an address is taken, so the area check lives there — offered only
+        // to businesses that have drawn a coverage area, so nobody else's agent changes — along with
+        // the customer lookup wherever "the same place as last time" can come up.
+        var schedulingTools = new List<object> { checkAvailability };
+        if (hasServiceArea)
+            schedulingTools.Add(Custom("check_service_area",
+                "Check an address is real and within the area this business covers. Call this the moment the caller " +
+                "gives you an address — before you agree a time, and before you book. Send whatever they gave you, " +
+                "even just a street and a number with no town: it searches this business's own area first, so a bare " +
+                "street usually resolves. Never withhold the address waiting for a town or a postcode. It answers " +
+                "whether the address was found, whether it is covered, and often names a landmark beside it you can " +
+                "use to confirm you heard the street correctly; when a street matches several towns this business " +
+                "covers, it says which to ask about. Call it once per address, and again only when the caller adds " +
+                "or corrects part of it.",
+                new { address = str("The address exactly as the caller said it, however partial — a street and number " +
+                                    "alone is fine, as is a landmark or cross street. Include the town only if they gave one.") },
+                ["address"],
+                whileWaiting: "Say something short and natural like 'let me just check we come out that way' — one short phrase only."));
+        if (hasServiceArea || profile.IsFieldService)
+            schedulingTools.Add(identifyCustomer);
+
+        // Retell rejects a state machine it cannot resolve with a flat 4xx on the sync, naming
+        // nothing. These two say which edge or which state is at fault, so a wrong name here is a
+        // line number rather than an afternoon.
+        object Edge(string to, string when) => AgentStates.All.Contains(to)
+            ? new { destination_state_name = to, description = when }
+            : throw new InvalidOperationException($"Retell edge points at unknown state '{to}'.");
+
+        object State(string name, object[] stateTools, params object[] edges) => new
+        {
+            name,
+            state_prompt = prompt.States.TryGetValue(name, out var statePrompt) ? statePrompt
+                : throw new InvalidOperationException($"No prompt was built for Retell state '{name}'."),
+            tools = stateTools,
+            edges,
+        };
+
+        var states = new List<object>
+        {
+            State(AgentStates.Triage, [],
+                Edge(AgentStates.Scheduling, "The caller wants to book a new appointment or visit."),
+                Edge(AgentStates.ExistingBooking,
+                    "The caller wants to check, move or cancel an appointment they already have.")),
+
+            State(AgentStates.Scheduling, schedulingTools.ToArray(),
+                Edge(AgentStates.Booking, profile.IsFieldService
+                    ? "The caller has agreed an arrival window from the ones check_availability returned, and the address is taken."
+                    : "The caller has agreed a time from the ones check_availability returned."),
+                Edge(AgentStates.ExistingBooking, "The caller actually means an appointment they already have.")),
+
+            State(AgentStates.Booking, [identifyCustomer, bookAppointment],
+                Edge(AgentStates.Scheduling,
+                    "The agreed time was taken before it could be booked, the caller wants a different time, " +
+                    "or, once this booking is done, they want another new one."),
+                Edge(AgentStates.ExistingBooking,
+                    "The caller wants to check, move or cancel an appointment they already have.")),
+
+            State(AgentStates.ExistingBooking, [checkAppointment, rescheduleAppointment, cancelAppointment, checkAvailability],
+                Edge(AgentStates.Scheduling, "The caller wants to book a new appointment as well.")),
+        };
+
+        return (generalTools, states);
     }
 }

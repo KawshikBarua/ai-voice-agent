@@ -352,6 +352,34 @@ public static class DbInitializer
         ON CallLogs (OrganizationId, BilledPeriodEnd, StartedAt)
         INCLUDE (DurationSeconds, IsDeleted);
         """,
+
+        // A call answered during a free trial, which is never billed.
+        //
+        // The trial promises "answering at no charge", but its calls used to be left unbilled like
+        // any other — so the first period closed after the customer took out a plan claimed them
+        // all, spending the allowance they had just bought (or charging overage) on minutes that
+        // were meant to be free. The flag is set when the call is recorded (CallRepository), from
+        // the trial window at that moment, because the window itself is not history: granting a
+        // new trial overwrites it.
+        //
+        // The backfill runs once, with the column, over calls not yet on any bill that fall inside
+        // each organization's recorded trial. Billed calls are left alone — a closed period is a
+        // historical fact.
+        """
+        IF COL_LENGTH('CallLogs','IsTrial') IS NULL
+        BEGIN
+            ALTER TABLE CallLogs ADD IsTrial BIT NOT NULL DEFAULT 0;
+
+            EXEC('
+                UPDATE cl SET cl.IsTrial = 1
+                FROM CallLogs cl
+                JOIN Organizations o ON o.Id = cl.OrganizationId
+                WHERE cl.BilledPeriodEnd IS NULL
+                  AND o.TrialEndsAt IS NOT NULL
+                  AND cl.StartedAt < o.TrialEndsAt
+                  AND cl.StartedAt >= ISNULL(o.TrialStartedAt, cl.StartedAt);');
+        END
+        """,
     ];
 
     private const string Schema = @"
@@ -566,6 +594,9 @@ CREATE TABLE BusinessLocations (
 -- written before this existed fall back to comparing names.
 IF COL_LENGTH('BusinessLocations','BoundsSouth') IS NULL
 ALTER TABLE BusinessLocations ADD BoundsSouth FLOAT NULL, BoundsNorth FLOAT NULL, BoundsWest FLOAT NULL, BoundsEast FLOAT NULL;
+-- State or county: the only thing telling two identically named cities apart.
+IF COL_LENGTH('BusinessLocations','Region') IS NULL
+ALTER TABLE BusinessLocations ADD Region NVARCHAR(150) NULL;
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_BusinessLocations_Org')
 CREATE INDEX IX_BusinessLocations_Org ON BusinessLocations(OrganizationId) INCLUDE (IsActive);
@@ -762,11 +793,19 @@ CREATE TABLE PromptTemplate (
     Id INT IDENTITY PRIMARY KEY,
     Persona NVARCHAR(MAX) NULL,
     CoreRules NVARCHAR(MAX) NULL,
-    ConversationGuide NVARCHAR(MAX) NULL,
-    FieldServiceGuide NVARCHAR(MAX) NULL,
-    ToolPolicy NVARCHAR(MAX) NULL,
+    TriageState NVARCHAR(MAX) NULL,
+    SchedulingState NVARCHAR(MAX) NULL,
+    FieldSchedulingState NVARCHAR(MAX) NULL,
+    BookingState NVARCHAR(MAX) NULL,
+    ExistingBookingState NVARCHAR(MAX) NULL,
     ModifiedAt DATETIME2 NULL,
     ModifiedByUserId INT NULL
 );
+
+-- Upgrade path from the single-prompt agent. The old call-shape and tool-policy columns are left in
+-- place, unread, rather than dropped: an operator's saved wording is kept to copy from, not lost.
+IF COL_LENGTH('PromptTemplate','TriageState') IS NULL
+ALTER TABLE PromptTemplate ADD TriageState NVARCHAR(MAX) NULL, SchedulingState NVARCHAR(MAX) NULL,
+    FieldSchedulingState NVARCHAR(MAX) NULL, BookingState NVARCHAR(MAX) NULL, ExistingBookingState NVARCHAR(MAX) NULL;
 ";
 }

@@ -199,10 +199,21 @@ public class AiToolsController : ControllerBase
         if (customer is null)
             return Speak(new { result = "No existing customer found — treat the caller as a new customer." }, ctx);
 
+        // The address on file is what answers "same as last time" — the thing repeat customers
+        // actually say instead of giving an address. Without it the agent has to make them read
+        // out a street it already knows, which is the one part of the call they expected to skip.
+        var onFile = (customer.Address ?? "").Trim();
+
         return Speak(new
         {
-            result = $"Returning customer: {customer.Name}, {customer.TotalVisits} previous visits.",
+            result = $"Returning customer: {customer.Name}, {customer.TotalVisits} previous visits." +
+                     (onFile.Length > 0
+                         ? $" Last address on file: '{onFile}'. If they say 'same as last time' or similar, read " +
+                           "this back to confirm it is still right and use it as the service address — do not make " +
+                           "them dictate it again. If they name anywhere different, use what they say instead."
+                         : " No address on file, so ask for one if the job needs it."),
             customer = new { customer.Name, customer.Phone, customer.TotalVisits, lastVisit = customer.LastVisit?.ToString("yyyy-MM-dd") },
+            last_address = onFile.Length > 0 ? onFile : null,
         }, ctx);
     }
 
@@ -371,7 +382,8 @@ public class AiToolsController : ControllerBase
 
         var address = Str(ctx.Args, "address");
         if (string.IsNullOrWhiteSpace(address))
-            return Speak(new { result = "Ask for the full address first — street and number, and the town or city." }, ctx);
+            return Speak(new { result = "Ask where the work is — a street and number is enough to start with, and " +
+                                        "this will work out the town. Never ask for a postcode or ZIP." }, ctx);
 
         var area = await _serviceArea.EvaluateAsync(orgId, address, HttpContext.RequestAborted);
         return Speak(AreaReply(area), ctx);
@@ -392,32 +404,56 @@ public class AiToolsController : ControllerBase
             ServiceAreaStatus.Covered =>
                 $"'{area.Place!.DisplayName}' is inside the area covered from {area.Branch!.Name}" +
                 (area.NearestLandmark is { } near ? $", near {near}" : "") +
-                ". Confirm the address back to the caller in their own words and carry on with the booking.",
+                ". Confirm the address back to the caller in their own words and carry on with the booking." +
+                PrecisionNote(area),
 
             ServiceAreaStatus.OutOfRange =>
                 $"'{area.Place!.DisplayName}' is in {area.Place.City}, where {area.Branch!.Name} works, but about " +
                 $"{Miles(area.DistanceMiles)} out — beyond the {Miles(area.Branch.CoverageRadiusMiles)} it normally " +
                 "travels. Take the booking anyway, and tell them plainly that it is outside the usual area so a " +
-                "colleague will ring back to confirm it. Do not promise it is definitely going ahead.",
+                "colleague will ring back to confirm it. Do not promise it is definitely going ahead." +
+                PrecisionNote(area),
 
             ServiceAreaStatus.Outside =>
                 $"'{area.Place!.DisplayName}' is not in any area this business covers — the nearest branch is " +
-                $"{area.Branch?.Name} in {area.Branch?.City}, about {Miles(area.DistanceMiles)} away. Check you have " +
+                $"{area.Branch?.Name} in {area.Branch?.PlaceName}, about {Miles(area.DistanceMiles)} away. Check you have " +
                 "the right town in case you misheard. If it is right, apologise, say plainly that it is outside " +
                 "the area served, and suggest they find someone local. Do not book anything.",
 
+            ServiceAreaStatus.Ambiguous =>
+                $"That street exists in more than one place this business covers: {string.Join(", ", area.CandidateTowns)}. " +
+                "Ask which of those towns they are in — just the town, nothing else — and check again with it added. " +
+                "Do not guess, and do not tell them the address was not found: it was, more than once.",
+
             ServiceAreaStatus.NotFound =>
-                "That address could not be found on the map. Read back what you heard, ask them to confirm the " +
-                "street name, number and town, and check again. Do not book on an address you cannot find.",
+                "Neither that address nor the area it is in could be found on the map. Read back what you heard and " +
+                "ask them to confirm the street, the number and the town, then check again. If it still cannot be " +
+                "found, book it anyway: it will be flagged for a colleague to confirm the address before anyone " +
+                "travels, so tell the caller someone will ring to confirm it. Never ask for a postcode or ZIP.",
 
             // Nothing to check against, or nothing to check with. Either way the call carries on
             // exactly as it did before coverage areas existed.
             _ => "No coverage check applies. Carry on with the booking.",
         },
-        covered = area.Bookable,
+        // "Covered" as the agent has always read it: found, and somewhere this business goes. An
+        // unfound address can be booked, but it is not covered.
+        covered = area.Bookable && area.Status != ServiceAreaStatus.NotFound,
         needs_confirmation = area.NeedsConfirmation,
         resolved_address = area.Place?.DisplayName,
         landmark = area.NearestLandmark,
+    };
+
+    /// <summary>What the agent needs to know when the map placed the address only roughly; nothing
+    /// for an exact match.</summary>
+    private static string PrecisionNote(ServiceAreaResult area) => area.Precision switch
+    {
+        GeoPrecision.Street =>
+            " The map has the street but not that house number, which is common and no reason to doubt it. " +
+            "Read the number back once to be sure you heard it right.",
+        GeoPrecision.Area =>
+            " The exact address is not on the map, so this was judged on the area they gave, which is enough to " +
+            "book on. If they have not given a street and number yet, ask for them so the technician can find the place.",
+        _ => "",
     };
 
     [HttpPost("book_appointment")]
@@ -447,8 +483,10 @@ public class AiToolsController : ControllerBase
         if (profile.IsFieldService && string.IsNullOrWhiteSpace(serviceAddress))
             return Speak(new
             {
-                result = "A service address is required before booking. Ask for the full street " +
-                         "address, city, and any access details such as apartment number or gate code.",
+                result = "A service address is required before booking. Ask where the work is — a street and number " +
+                         "is enough, and the coverage check will work out the town. Never ask for a postcode or ZIP. " +
+                         "Include any access detail they have already mentioned (flat or suite number, gate code, " +
+                         "which door to use) in the address you send.",
             }, ctx);
 
 
@@ -542,10 +580,16 @@ public class AiToolsController : ControllerBase
                      $" Confirmation number {appointmentId}." +
                      // Said last so it is the part the caller is left with. The booking is
                      // real either way; what is not settled is whether anyone can get there.
-                     (area.NeedsConfirmation
-                         ? " That address is outside the area normally covered, so tell them the booking is " +
-                           "down but a colleague will ring back to confirm it — do not say it is guaranteed."
-                         : ""),
+                     area.Status switch
+                     {
+                         ServiceAreaStatus.OutOfRange =>
+                             " That address is outside the area normally covered, so tell them the booking is " +
+                             "down but a colleague will ring back to confirm it — do not say it is guaranteed.",
+                         ServiceAreaStatus.NotFound =>
+                             " The address could not be found on the map, so tell them the booking is down and a " +
+                             "colleague will ring to confirm the address before the visit.",
+                         _ => "",
+                     },
             appointmentId,
             staff = assignedTo,
             needs_confirmation = area.NeedsConfirmation,

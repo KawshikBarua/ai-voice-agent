@@ -82,6 +82,8 @@ else
     });
 }
 builder.Services.AddSingleton<ICache, Cache>();
+// In-process only, for credentials that must never reach the shared cache (see CacheTtl.Secret).
+builder.Services.AddMemoryCache();
 
 builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 builder.Services.AddScoped<ITenantProvider, TenantProvider>();

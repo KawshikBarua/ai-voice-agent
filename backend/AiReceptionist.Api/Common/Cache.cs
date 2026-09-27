@@ -14,6 +14,10 @@ namespace AiReceptionist.Api.Common;
 /// swallows its own failures and falls through to the loader. A cache that can take the API down
 /// when Redis blinks is worse than no cache at all, and Redis blinking is a routine event —
 /// failover, a restart, a network hiccup. Losing the cache should cost latency, never requests.
+///
+/// Never put a secret through this. Entries are stored as plain JSON in a shared Redis, where
+/// anything that can read the cache can read them. Credentials are cached in-process instead
+/// (see <see cref="CacheTtl.Secret"/>).
 /// </summary>
 public interface ICache
 {
@@ -104,8 +108,12 @@ public static class CacheKeys
     /// <summary>Retell agent linkage — read by every webhook and every sync pass.</summary>
     public static string Agent(int orgId) => $"{Prefix}agent:{orgId}";
 
-    /// <summary>The platform-wide Retell connection. One row, read on every outbound call.</summary>
+    /// <summary>The platform-wide Retell connection. One row, read on every outbound call. Holds
+    /// the API key, so it lives in the process-local cache only — never in <see cref="ICache"/>.</summary>
     public const string RetellConnection = Prefix + "retell:connection";
+
+    /// <summary>The platform-wide prompt wording. One row, read by every agent sync.</summary>
+    public const string PromptTemplate = Prefix + "prompt-template";
 
     /// <summary>Minutes, as the billing page polls them.</summary>
     public static string Usage(int orgId) => $"{Prefix}usage:{orgId}";
@@ -134,6 +142,13 @@ public static class CacheTtl
     /// <summary>Counters behind a poll. Long enough to collapse several open tabs into one
     /// query, short enough that nobody notices the lag.</summary>
     public static readonly TimeSpan Counters = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Credentials, held in this process's memory only. Shorter than <see cref="Config"/> because
+    /// a save can only clear the copy on the instance that handled it: this is how long any other
+    /// instance keeps using a key that has just been rotated.
+    /// </summary>
+    public static readonly TimeSpan Secret = TimeSpan.FromSeconds(60);
 
     /// <summary>Minutes used. The page polls this every 15 seconds and a call has to end before
     /// its minutes exist at all, so ten seconds costs nothing and removes most of the traffic.</summary>
