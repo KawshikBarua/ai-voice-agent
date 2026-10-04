@@ -38,7 +38,13 @@ if (args.Length > 0 && args[0].Equals("vapid", StringComparison.OrdinalIgnoreCas
 // bare word it cannot read as a setting.
 var seedTenants = args.Length > 0 && args[0].Equals("seed-tenants", StringComparison.OrdinalIgnoreCase);
 
-var builder = WebApplication.CreateBuilder(seedTenants ? args[1..] : args);
+// `-- seed-scenario <name>` puts a test tenant into a fixed billing state (see ScenarioSeeder).
+// Same reasoning as seed-tenants: it needs the initialized schema, and both words are stripped.
+var seedScenario = args.Length > 0 && args[0].Equals("seed-scenario", StringComparison.OrdinalIgnoreCase);
+var scenarioName = seedScenario && args.Length > 1 ? args[1] : null;
+
+var builder = WebApplication.CreateBuilder(
+    seedTenants ? args[1..] : seedScenario ? args[Math.Min(2, args.Length)..] : args);
 
 // Git-ignored local secrets (e.g. Retell API key) — see appsettings.Local.json
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
@@ -265,6 +271,12 @@ catch (Exception ex)
 if (seedTenants)
 {
     await TenantSeeder.RunAsync(app.Services, app.Configuration, app.Logger);
+    return;
+}
+
+if (seedScenario)
+{
+    Environment.ExitCode = await ScenarioSeeder.RunAsync(scenarioName, app.Configuration, app.Logger);
     return;
 }
 
