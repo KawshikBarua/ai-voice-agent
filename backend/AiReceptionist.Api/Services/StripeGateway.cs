@@ -124,6 +124,12 @@ public interface IStripeGateway
     /// the fast path never ran.</summary>
     Task<IReadOnlyList<Invoice>> ListPaidInvoicesSinceAsync(DateTime since, CancellationToken ct = default);
 
+    /// <summary>One customer's most recent invoices, whatever their status — newest first. Lets a
+    /// billing page catch up on its own when the webhook that should have reported them never
+    /// arrived: an open renewal the customer needs to pay, or one they have just paid.</summary>
+    Task<IReadOnlyList<Invoice>> ListRecentInvoicesAsync(string customerId, int limit,
+        CancellationToken ct = default);
+
     /// <summary>Verifies the signature and parses the event. Throws <see cref="StripeException"/>
     /// on a bad signature, which the controller turns into a 400.</summary>
     Event ConstructEvent(string payload, string signatureHeader);
@@ -540,6 +546,26 @@ public class StripeGateway : IStripeGateway
         // customer actually paid rather than jumping to the newest invoice and back.
         found.Reverse();
         return found;
+    }
+
+    public async Task<IReadOnlyList<Invoice>> ListRecentInvoicesAsync(string customerId, int limit,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var page = await new InvoiceService(Client).ListAsync(new InvoiceListOptions
+            {
+                Customer = customerId,
+                Limit = Math.Clamp(limit, 1, 100),
+            }, cancellationToken: ct);
+            return page?.Data ?? [];
+        }
+        catch (StripeException ex)
+        {
+            // A catch-up read: the page still renders from what is recorded here without it.
+            _logger.LogWarning(ex, "Could not list Stripe invoices for customer {CustomerId}.", customerId);
+            return [];
+        }
     }
 
     public Event ConstructEvent(string payload, string signatureHeader)

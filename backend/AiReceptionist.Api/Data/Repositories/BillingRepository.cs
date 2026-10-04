@@ -27,6 +27,9 @@ public interface IBillingRepository
     /// Usage windows are separate and move on their own (see <see cref="UsageWindows"/>).</summary>
     Task AdvanceAccessPeriodAsync(int orgId, DateTime newPeriodStart, DateTime newPeriodEnd);
 
+    /// <summary>Records the Stripe billing cycle anchor minute periods are counted on from now on.</summary>
+    Task SetUsageCycleAnchorAsync(int orgId, DateTime? anchor);
+
     // ---------- usage ----------
     /// <summary>
     /// Minutes run up but not yet charged for — what the next close will bill. This is the live
@@ -78,6 +81,10 @@ public interface IBillingRepository
     /// off, so running this twice for the same period cannot drive the carry-over negative.
     /// </summary>
     Task SettleUsagePeriodAsync(int usagePeriodId, string stripeInvoiceId);
+
+    /// <summary>Names the invoice a period handed to Stripe for "the next invoice" ended up on.
+    /// Only ever replaces that placeholder, so a period already tied to an invoice stays tied.</summary>
+    Task SetUsagePeriodInvoiceAsync(int usagePeriodId, string stripeInvoiceId);
 
     // ---------- invoices ----------
     Task UpsertInvoiceAsync(OrganizationInvoice invoice, IReadOnlyList<OrganizationInvoiceLine> lines);
@@ -217,7 +224,7 @@ public class BillingRepository : IBillingRepository
         CurrentPeriodStart, CurrentPeriodEnd, GraceDays, AutoSuspend, IncludedMinutes, Notes,
         ModifiedAt, ModifiedByUserId, PlanId, OverageRatePerMinute, StripeCustomerId,
         StripeSubscriptionId, StripeStatus, PendingOverageMinutes, PendingOverageAmount,
-        PendingPlanId";
+        PendingPlanId, UsageCycleAnchor";
 
     // ---------- subscription ----------
 
@@ -308,6 +315,16 @@ public class BillingRepository : IBillingRepository
             SET CurrentPeriodStart = @newPeriodStart, CurrentPeriodEnd = @newPeriodEnd, ModifiedAt = GETUTCDATE()
             WHERE OrganizationId = @orgId",
             new { orgId, newPeriodStart, newPeriodEnd });
+    }
+
+    public async Task SetUsageCycleAnchorAsync(int orgId, DateTime? anchor)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(@"
+            UPDATE OrganizationSubscriptions
+            SET UsageCycleAnchor = @anchor, ModifiedAt = GETUTCDATE()
+            WHERE OrganizationId = @orgId",
+            new { orgId, anchor });
     }
 
     // ---------- usage ----------
@@ -433,6 +450,15 @@ public class BillingRepository : IBillingRepository
             JOIN OrganizationUsagePeriods p ON p.OrganizationId = s.OrganizationId
             WHERE p.Id = @usagePeriodId;",
             new { usagePeriodId, stripeInvoiceId });
+    }
+
+    public async Task SetUsagePeriodInvoiceAsync(int usagePeriodId, string stripeInvoiceId)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(@"
+            UPDATE OrganizationUsagePeriods SET StripeInvoiceId = @stripeInvoiceId
+            WHERE Id = @usagePeriodId AND StripeInvoiceId = @placeholder",
+            new { usagePeriodId, stripeInvoiceId, placeholder = UsagePeriod.AwaitingNextInvoice });
     }
 
     // ---------- invoices ----------

@@ -144,7 +144,12 @@ public class CallEntitlementService : ICallEntitlementService
                     $"it ended on {org.TrialEndsAt:d MMM yyyy} and no plan was taken out")
                 : new CallEntitlement(CallBlock.NoPlan, null);
 
-        if (sub.StripeStatus is { } status && DeadStripeStatuses.Contains(status))
+        // Only while Stripe is still the one collecting. Once the subscription has ended its link
+        // is dropped, and the status left behind ("canceled") used to block the account for good:
+        // through the days it had already paid for, and even after the operator recorded a payment
+        // by hand in the console. From then on the paid-through date below decides, exactly as for
+        // any customer billed by hand.
+        if (sub.IsStripeLinked && sub.StripeStatus is { } status && DeadStripeStatuses.Contains(status))
             return new CallEntitlement(CallBlock.Unpaid, $"Stripe reports the subscription as {status}",
                 "Your subscription is no longer active.");
 

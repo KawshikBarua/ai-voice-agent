@@ -57,6 +57,13 @@ public class SubscriptionRecord
     public int? PendingPlanId { get; set; }
 
     /// <summary>
+    /// Stripe's billing cycle anchor, once Stripe is collecting: minute periods end on its renewal
+    /// dates (see <see cref="UsageWindows"/>), so the allowance resets on the day the card is
+    /// charged. Null for an account billed by hand, whose periods simply run one cycle each.
+    /// </summary>
+    public DateTime? UsageCycleAnchor { get; set; }
+
+    /// <summary>
     /// True once this organization is actually on something — a catalogue tier, a price, or an
     /// allowance.
     ///
@@ -227,6 +234,17 @@ public class UsagePeriod
     public DateTime ClosedAt { get; set; }
 
     public bool IsBilled => string.Equals(Status, UsagePeriodStatus.Billed, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Written as <see cref="StripeInvoiceId"/> when the overrun was handed to Stripe as a pending
+    /// item rather than put on a named invoice: Stripe will charge it on the customer's next
+    /// invoice, whose id is not known yet. Replaced by that invoice's id once it is seen, and until
+    /// then the period is still shown as part of the next bill.
+    /// </summary>
+    public const string AwaitingNextInvoice = "next-invoice";
+
+    public bool IsAwaitingNextInvoice => IsBilled &&
+        string.Equals(StripeInvoiceId, AwaitingNextInvoice, StringComparison.Ordinal);
 }
 
 public static class UsagePeriodStatus

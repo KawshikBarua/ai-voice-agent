@@ -127,7 +127,12 @@ public class StripeWebhookController : ControllerBase
                     // an item at all — Stripe refuses, which used to fail the delivery and have it
                     // retried forever over a charge that belongs on the next invoice anyway.
                     if (orgId is not null && CanTakeAnotherLine(created))
+                    {
+                        // The period this renewal ends is closed first, so its overrun is on this
+                        // invoice rather than the next one.
+                        await _billing.PrepareForRenewalInvoiceAsync(orgId.Value, created, ct);
                         await _billing.AttachPendingOverageAsync(orgId.Value, created.Id, ct);
+                    }
 
                     // Read it back: the totals changed if a line was just added.
                     var refreshed = await _stripe.GetInvoiceAsync(created.Id, ct) ?? created;
@@ -198,10 +203,20 @@ public class StripeWebhookController : ControllerBase
                 if (e.Data.Object is Subscription sub)
                 {
                     var orgId = await ResolveSubscriptionOwnerAsync(sub);
-                    if (orgId is not null)
+                    if (orgId is not null && await IsCurrentSubscriptionAsync(orgId.Value, sub))
                     {
+                        // Nothing is aligned or applied for a subscription whose first payment has
+                        // not gone through: it has not started, and putting the account on its tier
+                        // now handed out a plan — and a month of access — that nobody had paid for.
+                        if (!StripeSubscriptionStatus.IsUnstarted(sub.Status))
+                            // Before the tier sync, which may change the allowance: the minutes
+                            // already used are measured against the plan they were used under.
+                            await _billing.AlignToStripeCycleAsync(orgId.Value, sub.BillingCycleAnchor, ct);
+
                         await _repo.SetStripeSubscriptionAsync(orgId.Value, sub.Id, sub.Status);
-                        await SyncTierFromPriceAsync(orgId.Value, sub);
+
+                        if (!StripeSubscriptionStatus.IsUnstarted(sub.Status))
+                            await SyncTierFromPriceAsync(orgId.Value, sub);
                     }
                 }
                 break;
@@ -210,7 +225,7 @@ public class StripeWebhookController : ControllerBase
                 if (e.Data.Object is Subscription ended)
                 {
                     var orgId = await ResolveSubscriptionOwnerAsync(ended);
-                    if (orgId is not null)
+                    if (orgId is not null && await IsCurrentSubscriptionAsync(orgId.Value, ended))
                     {
                         // The link is dropped, not the history: invoices and closed periods stay,
                         // and the console can put the organization back on a tier later.
@@ -279,6 +294,27 @@ public class StripeWebhookController : ControllerBase
             "Organization {OrgId} is now on tier {Plan} ({Minutes} minutes, {Rate} {Currency}/extra min), " +
             "following Stripe price {PriceId}.",
             orgId, plan.Name, plan.IncludedMinutes, plan.OverageRatePerMinute, plan.Currency, priceId);
+    }
+
+    /// <summary>
+    /// Whether an event is about the subscription this organization is actually on.
+    ///
+    /// Stripe does not order its deliveries, and a customer who cancels and subscribes again has
+    /// two subscriptions in play. A late update for the old one used to overwrite the link with
+    /// the old id and its "canceled" status — stopping a paying customer's agent — and a late
+    /// deletion of the old one cut the new one loose. Only the linked subscription, or any
+    /// subscription while none is linked, is allowed to change what is stored.
+    /// </summary>
+    private async Task<bool> IsCurrentSubscriptionAsync(int orgId, Subscription sub)
+    {
+        var linked = (await _repo.GetSubscriptionAsync(orgId))?.StripeSubscriptionId;
+        if (string.IsNullOrWhiteSpace(linked) || string.Equals(linked, sub.Id, StringComparison.Ordinal))
+            return true;
+
+        _logger.LogWarning(
+            "Ignoring an event for Stripe subscription {SubscriptionId} ({Status}): organization {OrgId} " +
+            "is on {Linked}.", sub.Id, sub.Status, orgId, linked);
+        return false;
     }
 
     private async Task<int?> ResolveSubscriptionOwnerAsync(Subscription sub)

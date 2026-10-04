@@ -196,6 +196,10 @@ public static class BillingSchema
         // spent and wipe out an overrun the customer has genuinely incurred.
         "IF COL_LENGTH('OrganizationSubscriptions','PendingPlanId') IS NULL ALTER TABLE OrganizationSubscriptions ADD PendingPlanId INT NULL;",
 
+        // Stripe's billing cycle anchor. Minute periods end on its renewal dates once Stripe is
+        // collecting, so the allowance resets on the day the card is charged (see UsageWindows).
+        "IF COL_LENGTH('OrganizationSubscriptions','UsageCycleAnchor') IS NULL ALTER TABLE OrganizationSubscriptions ADD UsageCycleAnchor DATETIME2 NULL;",
+
         // -------------------------------------------------------------------
         // One row per billing period that has closed: what the plan allowed, what was used, and
         // what the overrun came to. This is the evidence behind every charge — the tenant's

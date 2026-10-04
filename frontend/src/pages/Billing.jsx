@@ -405,6 +405,15 @@ function InvoiceRow({ inv }) {
               PDF
             </a>
           )}
+          {/* A renewal the card did not cover is paid on Stripe's own invoice page. Without this the
+              only way to settle it was to find it inside the payment-method portal. */}
+          {inv.amountOutstanding > 0 && inv.hostedInvoiceUrl
+            && String(inv.status).toLowerCase() === 'open' && (
+            <a href={inv.hostedInvoiceUrl} target="_blank" rel="noreferrer"
+              className="rounded-pill bg-ink px-3 py-1 text-xs font-semibold text-on-ink transition hover:opacity-90">
+              Pay now
+            </a>
+          )}
         </div>
       </div>
 
@@ -696,7 +705,9 @@ export default function Billing() {
         <Card>
           <CardTitle
             title="Your next bill"
-            subtitle={`Covering ${dayShort(s.currentPeriodStart)} – ${day(s.currentPeriodEnd)}`}
+            subtitle={s.autoCollecting
+              ? `Charged automatically on ${day(s.currentPeriodEnd)}`
+              : `Covering ${dayShort(s.currentPeriodStart)} – ${day(s.currentPeriodEnd)}`}
           />
           <div>
             {s.upcomingCharges?.map((line, i) => (
@@ -707,9 +718,11 @@ export default function Billing() {
             <div>
               <p className="text-base font-bold">Estimated total</p>
               <p className="mt-0.5 text-xs text-muted">
-                {s.minutesOver > 0
-                  ? 'The extra-minutes line keeps moving until the period ends.'
-                  : 'Final unless you go past your included minutes.'}
+                {s.agentRestricted
+                  ? 'Calls are paused, so no more minutes are being added.'
+                  : s.minutesOver > 0
+                    ? 'The extra-minutes line keeps moving until the period ends.'
+                    : 'Final unless you go past your included minutes.'}
               </p>
             </div>
             <p className="text-xl font-bold tabular-nums">{exact(s.estimatedNextInvoice, cur)}</p>

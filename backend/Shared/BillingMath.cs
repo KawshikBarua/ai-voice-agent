@@ -32,6 +32,12 @@ public static class BillingCycles
 ///
 /// The anchor is therefore the end of the last period already closed (or, before any have been,
 /// the subscription's current period start), and windows are one cycle each from there.
+///
+/// When Stripe is collecting, its billing cycle anchor is passed as <c>cycleAnchor</c> and every
+/// window ends on one of Stripe's renewal dates instead, so the minutes reset on the day the card
+/// is charged and each period's overrun is on that day's invoice. Those dates are counted from the
+/// anchor itself, not chained from the last one: a subscription started on the 31st renews on
+/// 28 Feb and then on 31 Mar, and chaining would have drifted to the 28th for good.
 /// </summary>
 public static class UsageWindows
 {
@@ -42,12 +48,12 @@ public static class UsageWindows
     /// <summary>Every whole window between the anchor and now, oldest first. These are the periods
     /// that are ready to be totalled and charged.</summary>
     public static IEnumerable<(DateTime Start, DateTime End)> Elapsed(
-        DateTime anchor, string? cycle, DateTime utcNow)
+        DateTime anchor, string? cycle, DateTime utcNow, DateTime? cycleAnchor = null)
     {
         var start = anchor;
         for (var i = 0; i < MaxWindows; i++)
         {
-            var end = BillingCycles.Advance(start, cycle);
+            var end = NextBoundary(start, cycle, cycleAnchor);
             if (end > utcNow) yield break;
             yield return (start, end);
             start = end;
@@ -55,16 +61,42 @@ public static class UsageWindows
     }
 
     /// <summary>The window now falls inside — the one the customer is currently running up.</summary>
-    public static (DateTime Start, DateTime End) Current(DateTime anchor, string? cycle, DateTime utcNow)
+    public static (DateTime Start, DateTime End) Current(DateTime anchor, string? cycle, DateTime utcNow,
+        DateTime? cycleAnchor = null)
     {
         var start = anchor;
         for (var i = 0; i < MaxWindows; i++)
         {
-            var end = BillingCycles.Advance(start, cycle);
+            var end = NextBoundary(start, cycle, cycleAnchor);
             if (end > utcNow) return (start, end);
             start = end;
         }
-        return (start, BillingCycles.Advance(start, cycle));
+        return (start, NextBoundary(start, cycle, cycleAnchor));
+    }
+
+    /// <summary>
+    /// Where the window starting at <paramref name="start"/> ends: one cycle on, or — given a
+    /// <paramref name="cycleAnchor"/> — the first renewal of that anchor strictly after it. A start
+    /// before the anchor ends at the anchor itself, which is how a period still running when Stripe
+    /// starts collecting is cut off on the day Stripe's own cycle begins.
+    /// </summary>
+    public static DateTime NextBoundary(DateTime start, string? cycle, DateTime? cycleAnchor)
+    {
+        if (cycleAnchor is not { } anchor) return BillingCycles.Advance(start, cycle);
+        if (anchor > start) return anchor;
+
+        var yearly = BillingCycles.IsYearly(cycle);
+        DateTime Renewal(int n) => yearly ? anchor.AddYears(n) : anchor.AddMonths(n);
+
+        // A first guess from the calendar, then corrected either way: month-end clamping and the
+        // time of day can each put the true boundary one step off the guess.
+        var n = yearly
+            ? start.Year - anchor.Year
+            : (start.Year - anchor.Year) * 12 + start.Month - anchor.Month;
+        n = Math.Max(n, 0);
+        while (n > 0 && Renewal(n - 1) > start) n--;
+        while (Renewal(n) <= start) n++;
+        return Renewal(n);
     }
 }
 

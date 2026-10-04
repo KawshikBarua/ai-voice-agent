@@ -162,6 +162,17 @@ IF COL_LENGTH('OrganizationSubscriptions', 'PendingOverageAmount') IS NULL
     ALTER TABLE OrganizationSubscriptions ADD PendingOverageAmount DECIMAL(18,2) NOT NULL DEFAULT 0;
 GO
 
+-- A tier the customer has chosen to move to once the period they are in has closed.
+IF COL_LENGTH('OrganizationSubscriptions', 'PendingPlanId') IS NULL
+    ALTER TABLE OrganizationSubscriptions ADD PendingPlanId INT NULL;
+GO
+
+-- Stripe's billing cycle anchor. Minute periods end on its renewal dates once Stripe is
+-- collecting, so the allowance resets on the day the card is charged.
+IF COL_LENGTH('OrganizationSubscriptions', 'UsageCycleAnchor') IS NULL
+    ALTER TABLE OrganizationSubscriptions ADD UsageCycleAnchor DATETIME2 NULL;
+GO
+
 -- ---------------------------------------------------------------------------
 -- One row per billing period that has closed: what the plan allowed, what was
 -- used, and what the overrun came to. This is the evidence behind every charge.

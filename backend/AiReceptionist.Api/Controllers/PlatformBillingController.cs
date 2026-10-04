@@ -232,6 +232,14 @@ public class PlatformBillingController : ControllerBase
             var carried = await _billing.AttachPendingOverageAsync(orgId, null, ct);
 
             var created = await _stripe.CreateSubscriptionAsync(orgId, customerId, plan.StripePriceId, ct);
+
+            // Minutes follow Stripe's cycle from here, so they reset on the day the card is
+            // charged. The period running until now closes on the tier it was used under, and its
+            // overrun goes on the next invoice. A subscription still waiting on its first payment
+            // is aligned when that payment goes through instead.
+            if (!StripeSubscriptionStatus.IsUnstarted(created.Status))
+                await _billing.AlignToStripeCycleAsync(orgId, created.BillingCycleAnchor, ct);
+
             await _repo.SetStripeSubscriptionAsync(orgId, created.Id, created.Status);
 
             await _audit.LogAsync(orgId, null, "StripeSubscriptionCreated",
