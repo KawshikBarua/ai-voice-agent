@@ -95,6 +95,7 @@ builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 builder.Services.AddScoped<ITenantProvider, TenantProvider>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IPromptBuilderService, PromptBuilderService>();
+builder.Services.AddScoped<IKnowledgeLookupService, KnowledgeLookupService>();
 
 // Retell AI integration (SRS §14–15): agent sync + background re-sync worker
 builder.Services.AddHttpClient<IRetellService, RetellService>();

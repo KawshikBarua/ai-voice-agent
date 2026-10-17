@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using AiReceptionist.Api.Common;
 using AiReceptionist.Api.Data.Repositories;
@@ -30,6 +29,7 @@ public class AiToolsController : ControllerBase
     private readonly IRetellConnectionRepository _connection;
     private readonly ICallEntitlementService _entitlement;
     private readonly IServiceAreaService _serviceArea;
+    private readonly IKnowledgeLookupService _lookup;
     private readonly IHostEnvironment _env;
     private readonly ILogger<AiToolsController> _logger;
 
@@ -37,10 +37,11 @@ public class AiToolsController : ControllerBase
         IAppointmentRepository appointments, IEmployeeRepository employees,
         INotificationService notifications, ISettingsRepository settings, IHolidayRepository holidays,
         IRetellConnectionRepository connection, ICallEntitlementService entitlement, IServiceAreaService serviceArea,
-        IHostEnvironment env, ILogger<AiToolsController> logger)
+        IKnowledgeLookupService lookup, IHostEnvironment env, ILogger<AiToolsController> logger)
     {
         _entitlement = entitlement;
         _serviceArea = serviceArea;
+        _lookup = lookup;
         _ai = ai;
         _customers = customers;
         _appointments = appointments;
@@ -55,7 +56,12 @@ public class AiToolsController : ControllerBase
 
     // ---------- plumbing ----------
 
-    private sealed record ToolContext(JsonElement Args, Organization Org, TimeZoneInfo Tz);
+    /// <param name="CallerNumber">The caller ID the phone network delivered for this call, in E.164 —
+    /// the one number on the call that did not come out of the model. Null on a web call or when
+    /// the caller withheld it.</param>
+    /// <param name="DialedNumber">The number they rang, which is this business's own.</param>
+    private sealed record ToolContext(JsonElement Args, Organization Org, TimeZoneInfo Tz,
+        string? CallerNumber, string? DialedNumber);
 
     private async Task<(ToolContext? ctx, IActionResult? error)> ReadAsync(int orgId)
     {
@@ -103,7 +109,71 @@ public class AiToolsController : ControllerBase
         var root = JsonDocument.Parse(string.IsNullOrWhiteSpace(raw) ? "{}" : raw).RootElement;
         // Retell wraps parameters in "args"; accept a bare object too for manual testing.
         var args = root.TryGetProperty("args", out var a) ? a : root;
-        return (new ToolContext(args, org, TenantTime.Resolve(org.Timezone)), null);
+
+        // Retell sends the call itself beside the arguments. Its numbers are read here, on the
+        // server, because the model has no way to know the caller's number — asked to use "the one
+        // I'm calling from", it used to read out whatever number it could see in its prompt.
+        // ToE164 leaves nothing but '+' and digits, so neither can carry anything else along.
+        var call = root.TryGetProperty("call", out var c) && c.ValueKind == JsonValueKind.Object ? c : default;
+        var caller = call.ValueKind == JsonValueKind.Object ? PhoneUtil.ToE164(Str(call, "from_number")) : null;
+        var dialed = call.ValueKind == JsonValueKind.Object ? PhoneUtil.ToE164(Str(call, "to_number")) : null;
+
+        return (new ToolContext(args, org, TenantTime.Resolve(org.Timezone), caller, dialed), null);
+    }
+
+    private static bool IsYes(string? value) =>
+        value is not null && (value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                              value.Equals("yes", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The last four digits of a number, spaced for the agent to say one at a time.</summary>
+    private static string Ending(string e164) => string.Join(" ", e164[^4..].ToCharArray());
+
+    /// <summary>
+    /// The number the caller wants to be reached on: the one they are calling from, read from the
+    /// call rather than from the model, or one they gave. When there is none to use, the second
+    /// value is what the agent should do about it.
+    ///
+    /// A number that belongs to this business — the one they dialled, its listed phone, its
+    /// transfer line — is refused outright. None of those can be the caller's, and one of them
+    /// standing in for it is exactly how a booking ended up filed under the transfer number and,
+    /// from then on, under whoever had been booked against that number first.
+    /// </summary>
+    private async Task<(string? Phone, string? Problem)> ResolvePhoneAsync(ToolContext ctx)
+    {
+        string? phone;
+        if (IsYes(Str(ctx.Args, "use_caller_number")))
+        {
+            if (ctx.CallerNumber is null)
+                return (null, "The number they are calling from is not available on this call — it is withheld, " +
+                              "or this is a web call. Say you can't see it and ask for the best number to reach them on.");
+            phone = ctx.CallerNumber;
+        }
+        else
+        {
+            phone = Str(ctx.Args, "phone");
+            if (PhoneUtil.Normalize(phone).TrimStart('+').Length < 7)
+                return (null, "Ask whether to use the number they are calling from, or a different one. If they want " +
+                              "the one they are calling from, send use_caller_number as 'true' and leave phone out.");
+        }
+
+        var agent = await _settings.GetAgentConfigAsync(ctx.Org.Id);
+        if (SameNumber(phone, ctx.DialedNumber) || SameNumber(phone, ctx.Org.Phone) ||
+            SameNumber(phone, agent?.TransferNumber) || SameNumber(phone, agent?.RetellPhoneNumber))
+            return (null, "That is this business's own number, not the caller's. Never use it for them. Ask whether to " +
+                          "use the number they are calling from (send use_caller_number 'true'), or which number to use.");
+
+        return (phone, null);
+    }
+
+    /// <summary>Two ways of writing one number, compared on the trailing digits so a missing
+    /// country code on either side still matches.</summary>
+    private static bool SameNumber(string? a, string? b)
+    {
+        var x = PhoneUtil.Normalize(a).TrimStart('+');
+        var y = PhoneUtil.Normalize(b).TrimStart('+');
+        if (x.Length < 7 || y.Length < 7) return false;
+        var n = Math.Min(Math.Min(x.Length, y.Length), 10);
+        return x[^n..] == y[^n..];
     }
 
     private static string? Str(JsonElement args, string name) =>
@@ -186,6 +256,34 @@ public class AiToolsController : ControllerBase
             .Any(t => t.Length >= 3 && storedLower.Contains(t));
     }
 
+    /// <summary>
+    /// Whether the name given on a call is the person a record belongs to: the first names agree,
+    /// and so do the surnames when both have one. Deliberately stricter than <see cref="NameMatches"/>
+    /// — "John Hunter" sharing a household number with "Lucy Hunter" is a different customer, and
+    /// filing his booking under her is the mistake this exists to stop. Getting it wrong the other
+    /// way costs a duplicate record somebody can merge; getting it wrong this way books a stranger.
+    /// </summary>
+    private static bool SamePerson(string? provided, string stored)
+    {
+        var a = NameTokens(provided);
+        var b = NameTokens(stored);
+        if (a.Length == 0 || b.Length == 0 || a[0] != b[0]) return false;
+        return a.Length == 1 || b.Length == 1 || a[^1] == b[^1];
+
+        static string[] NameTokens(string? name) => (name ?? "").ToLowerInvariant()
+            .Split([' ', '-', '.', ','], StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => new string(t.Where(char.IsLetter).ToArray()))
+            .Where(t => t.Length > 0)
+            .ToArray();
+    }
+
+    /// <summary>The record for this name under this number, or null when the number has nobody
+    /// by that name — including when it has somebody else.</summary>
+    private async Task<Customer?> FindCustomerAsync(int orgId, string phone, string? name) =>
+        string.IsNullOrWhiteSpace(name)
+            ? null
+            : (await _customers.ListByPhoneAsync(orgId, phone)).FirstOrDefault(c => SamePerson(name, c.Name));
+
     // ---------- tools ----------
 
     [HttpPost("identify_customer")]
@@ -194,10 +292,28 @@ public class AiToolsController : ControllerBase
         var (ctx, error) = await ReadAsync(orgId);
         if (ctx is null) return error!;
 
-        var customer = await _customers.FindReturningAsync(orgId,
-            Str(ctx.Args, "phone"), Str(ctx.Args, "email"), Str(ctx.Args, "name"));
+        var (phone, problem) = await ResolvePhoneAsync(ctx);
+        if (phone is null) return Speak(new { result = problem }, ctx);
+
+        // Said back so the caller can hear it is the right number — the last four digits only.
+        var numberNote = ctx.CallerNumber is not null && SameNumber(phone, ctx.CallerNumber)
+            ? $" The number they are calling from ends {Ending(ctx.CallerNumber)}; confirm those four digits with them."
+            : "";
+
+        // A record is only ever matched on the number AND the name. Anyone can say a number, so a
+        // number alone must never read somebody's name or address out to whoever is on the line —
+        // and it must never let one person's booking be filed under another who shares it.
+        var name = Str(ctx.Args, "name");
+        if (string.IsNullOrWhiteSpace(name))
+            return Speak(new { result = "Ask for their name first, then look them up with both." }, ctx);
+
+        var customer = await FindCustomerAsync(orgId, phone, name);
         if (customer is null)
-            return Speak(new { result = "No existing customer found — treat the caller as a new customer." }, ctx);
+            return Speak(new
+            {
+                result = "No existing customer under that name and number — treat them as a new customer and " +
+                         "never suggest anyone else is on file." + numberNote,
+            }, ctx);
 
         // The address on file is what answers "same as last time" — the thing repeat customers
         // actually say instead of giving an address. Without it the agent has to make them read
@@ -211,8 +327,9 @@ public class AiToolsController : ControllerBase
                          ? $" Last address on file: '{onFile}'. If they say 'same as last time' or similar, read " +
                            "this back to confirm it is still right and use it as the service address — do not make " +
                            "them dictate it again. If they name anywhere different, use what they say instead."
-                         : " No address on file, so ask for one if the job needs it."),
-            customer = new { customer.Name, customer.Phone, customer.TotalVisits, lastVisit = customer.LastVisit?.ToString("yyyy-MM-dd") },
+                         : " No address on file, so ask for one if the job needs it.") +
+                     numberNote,
+            customer = new { customer.Name, customer.TotalVisits, lastVisit = customer.LastVisit?.ToString("yyyy-MM-dd") },
             last_address = onFile.Length > 0 ? onFile : null,
         }, ctx);
     }
@@ -309,7 +426,9 @@ public class AiToolsController : ControllerBase
     /// </summary>
     private static DateTime? ResolveStartLocal(string? startTime, string? date, DateTime nowLocal)
     {
-        if (!DateTime.TryParse(startTime, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start))
+        // Read as written, never converted: see TenantTime.ParseWallClock for how a stray "Z"
+        // used to move the booking by the server's own UTC offset.
+        if (TenantTime.ParseWallClock(startTime) is not { } start)
             return null;
 
         return ResolveRequestedDate(date, nowLocal) is { } day
@@ -337,10 +456,9 @@ public class AiToolsController : ControllerBase
 
         // Anything with a digit is a real date the agent (or caller) spelled out. Words are handled
         // below: parsing them as dates is what turns "may" into the first of May.
+        // Read as written, so a date-time with a "Z" on it cannot be converted onto the day before.
         if (text.Any(char.IsDigit))
-            return DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var exact)
-                ? exact.Date
-                : null;
+            return TenantTime.ParseWallClock(value)?.Date;
 
         if (text.StartsWith("today") || text.StartsWith("tonight") || text.StartsWith("this ")) return today;
         if (text.StartsWith("tomorrow")) return today.AddDays(1);
@@ -463,12 +581,14 @@ public class AiToolsController : ControllerBase
         if (ctx is null) return error!;
 
         var nowLocal = TenantTime.NowLocal(ctx.Tz);
-        var name = Str(ctx.Args, "name");
-        var phone = Str(ctx.Args, "phone");
+        var name = Str(ctx.Args, "name")?.Trim();
         var serviceName = Str(ctx.Args, "service");
-        if (name is null || phone is null || serviceName is null ||
+        if (string.IsNullOrWhiteSpace(name) || serviceName is null ||
             ResolveStartLocal(Str(ctx.Args, "start_time"), Str(ctx.Args, "date"), nowLocal) is not { } startLocal)
-            return Speak(new { result = "Missing details — ask for name, phone, service and a confirmed start time." }, ctx);
+            return Speak(new { result = "Missing details — ask for their name, the service and a confirmed start time." }, ctx);
+
+        var (phone, phoneProblem) = await ResolvePhoneAsync(ctx);
+        if (phone is null) return Speak(new { result = phoneProblem }, ctx);
 
         if (startLocal <= nowLocal)
             return Speak(new
@@ -526,7 +646,10 @@ public class AiToolsController : ControllerBase
             assignment = SlotAssignment.Any(onDuty.Select(e => e.Id));
         }
 
-        var customer = await _customers.FindReturningAsync(orgId, phone, null, name);
+        // The booking goes to the person who gave their name. A number already on file under
+        // someone else is a shared phone, not a returning customer, so they get their own record
+        // rather than being booked in as the other person.
+        var customer = await FindCustomerAsync(orgId, phone, name);
         var customerId = customer?.Id ?? await _customers.CreateAsync(new Customer
         {
             OrganizationId = orgId, Name = name, Phone = phone,
@@ -574,7 +697,8 @@ public class AiToolsController : ControllerBase
 
         return Speak(new
         {
-            result = $"Booked: {service.Name} on {SpokenTime(startUtc, ctx.Tz)} for {name}." +
+            result = $"Booked: {service.Name} on {SpokenTime(startUtc, ctx.Tz)} for {name}, " +
+                     $"on the number ending {Ending(PhoneUtil.Normalize(phone))}." +
                      (assignedTo is null ? "" : $" {assignedTo} will be looking after them.") +
                      (string.IsNullOrWhiteSpace(serviceAddress) ? "" : $" Technician will attend {serviceAddress}.") +
                      $" Confirmation number {appointmentId}." +
@@ -719,9 +843,40 @@ public class AiToolsController : ControllerBase
         }, ctx);
     }
 
-    // There is deliberately no pricing tool here. The service and product catalogues are uploaded to
-    // the Retell knowledge base on every sync, so the agent already has them in context and a
-    // round-trip per price question bought nothing but a pause in the conversation.
+    /// <summary>
+    /// A fact about the business — a price, a service, the hours, a policy, an FAQ — looked up the
+    /// moment a caller asks for it, from the same rows the dashboard edits.
+    ///
+    /// This is what stands in for Retell's knowledge base: the prompt carries only a short index of
+    /// what is on file, and the detail arrives when it is wanted, two or three entries at a time.
+    /// The question is only ever compared against this tenant's own entries in memory — it is not
+    /// part of any query — and nothing about any customer is in what it can return.
+    /// </summary>
+    [HttpPost("lookup_info")]
+    public async Task<IActionResult> LookupInfo(int orgId)
+    {
+        var (ctx, error) = await ReadAsync(orgId);
+        if (ctx is null) return error!;
+
+        var question = Str(ctx.Args, "question")?.Trim();
+        if (string.IsNullOrEmpty(question))
+            return Speak(new { result = "Say what the caller wants to know, in a few words." }, ctx);
+        if (question.Length > 300) question = question[..300];
+
+        var matches = await _lookup.SearchAsync(orgId, question);
+        if (matches.Count == 0)
+            return Speak(new
+            {
+                result = "Nothing on file answers that. Do not guess: say you will get it checked and have someone " +
+                         "call them back, or offer to put them through to a colleague.",
+            }, ctx);
+
+        return Speak(new
+        {
+            result = "From the business's own records. Answer from this in your own words — never read it out " +
+                     "word for word, and never add to it:\n" + string.Join("\n", matches.Select(m => "- " + m.Text)),
+        }, ctx);
+    }
 
     /// <summary>Resolves which appointment the caller means. Requires phone; optionally
     /// verifies the caller's name (cancel/reschedule); disambiguates by date and/or
@@ -729,20 +884,28 @@ public class AiToolsController : ControllerBase
     private async Task<(Appointment? appt, string message)> FindCallerAppointmentAsync(
         int orgId, ToolContext ctx, bool requireName)
     {
-        var phone = Str(ctx.Args, "phone");
+        var (phone, problem) = await ResolvePhoneAsync(ctx);
         if (phone is null)
-            return (null, "Ask for the caller's phone number first.");
+            return (null, problem!);
 
-        var customer = await _customers.FindReturningAsync(orgId, phone, null, null);
-        if (customer is null)
+        var onNumber = await _customers.ListByPhoneAsync(orgId, phone);
+        if (onNumber.Count == 0)
             return (null, "No customer found with that phone number.");
 
-        if (requireName && !NameMatches(Str(ctx.Args, "name"), customer.Name))
+        // Several people can share a number, so the name decides whose appointment this is. Only a
+        // look-up on the caller's own line, with one person on it, may go ahead without one: anyone
+        // can say somebody else's number, and a change never goes ahead on a number alone.
+        var name = Str(ctx.Args, "name");
+        var ownLine = ctx.CallerNumber is not null && SameNumber(phone, ctx.CallerNumber);
+        var customer = onNumber.Count == 1 && !requireName && ownLine
+            ? onNumber[0]
+            : onNumber.FirstOrDefault(c => NameMatches(name, c.Name));
+        if (customer is null)
             return (null, "The name does not match this phone number's record. Ask the caller to confirm " +
                           "the full name on the appointment; if it still does not match, transfer to a human.");
 
         DateTime? fromUtc = null, toUtc = null;
-        if (DateTime.TryParse(Str(ctx.Args, "date"), out var d))
+        if (ResolveRequestedDate(Str(ctx.Args, "date"), TenantTime.NowLocal(ctx.Tz)) is { } d)
         {
             fromUtc = TenantTime.ToUtc(d.Date, ctx.Tz);
             toUtc = TenantTime.ToUtc(d.Date.AddDays(1), ctx.Tz);

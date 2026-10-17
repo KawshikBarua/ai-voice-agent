@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
 import { Card, Chip, EmptyState, PillButton, compactAction, statusTone } from '../components/ui'
+import { formatInZone, parseUtc, zonedParts, zonedToUtc } from '../lib/format'
+import { useBusinessTimeZone } from '../lib/businessTime'
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December']
@@ -20,11 +22,15 @@ export default function CalendarPage() {
   // almost always this one, and an empty panel below the grid looks like a page that failed.
   const [selected, setSelected] = useState(() => new Date().getDate())
 
-  const monthStart = cursor
-  const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
+  // The month is the business's month: its first and last moments are midnight on the business's
+  // clock, so a booking late on the 31st in New York is not read as the 1st from further east.
+  const timeZone = useBusinessTimeZone()
+  const ym = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+  const monthStart = zonedToUtc(ym(cursor), '00:00', timeZone)
+  const monthEnd = zonedToUtc(ym(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)), '00:00', timeZone)
 
   const { data } = useQuery({
-    queryKey: ['appointments', 'month', cursor.toISOString()],
+    queryKey: ['appointments', 'month', cursor.toISOString(), timeZone],
     queryFn: () =>
       api.get('/appointments', {
         params: { from: monthStart.toISOString(), to: monthEnd.toISOString(), pageSize: 100 },
@@ -40,13 +46,14 @@ export default function CalendarPage() {
   const byDay = useMemo(() => {
     const map = {}
     for (const a of data?.items ?? []) {
-      const day = new Date(a.startAt).getDate()
-      ;(map[day] ??= []).push(a)
+      const p = zonedParts(a.startAt, timeZone)
+      if (!p || p.year !== cursor.getFullYear() || p.month - 1 !== cursor.getMonth()) continue
+      ;(map[p.day] ??= []).push(a)
     }
     // Earliest first: a day's list is read as a running order, not as a set.
-    for (const list of Object.values(map)) list.sort((x, y) => new Date(x.startAt) - new Date(y.startAt))
+    for (const list of Object.values(map)) list.sort((x, y) => parseUtc(x.startAt) - parseUtc(y.startAt))
     return map
-  }, [data])
+  }, [data, timeZone, cursor])
 
   /** Closures falling inside the month on screen, keyed by day number. */
   const closureByDay = useMemo(() => {
@@ -68,7 +75,9 @@ export default function CalendarPage() {
     return out
   }, [cursor])
 
-  const today = new Date()
+  // Today at the business, held as a plain local date so it compares with the grid's cells.
+  const nowThere = zonedParts(new Date(), timeZone)
+  const today = new Date(nowThere.year, nowThere.month - 1, nowThere.day)
   const isToday = (d) => d === today.getDate() && sameMonth(cursor, today)
 
   /** Moving months lands on today when that is the month being shown, and on nothing otherwise —
@@ -84,7 +93,7 @@ export default function CalendarPage() {
     setSelected(today.getDate())
   }
 
-  const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const fmtTime = (iso) => formatInZone(iso, timeZone, { hour: '2-digit', minute: '2-digit' })
   const selectedAppts = selected ? byDay[selected] ?? [] : []
   const selectedClosure = selected ? closureByDay[selected] : null
 

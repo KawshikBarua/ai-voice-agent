@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
+import { formatInZone, zonedToUtc } from '../lib/format'
+import { useBusinessTimeZone } from '../lib/businessTime'
 import {
   Card, CardTitle, PageHeader, PillButton, Chip, Avatar, EmptyState, compactAction, statusTone,
 } from '../components/ui'
@@ -25,6 +27,7 @@ function locationPrecision(appointment) {
 
 function NewAppointmentForm({ onDone }) {
   const qc = useQueryClient()
+  const timeZone = useBusinessTimeZone()
   const { data: customers } = useQuery({
     queryKey: ['customers', 'all'],
     queryFn: () => api.get('/customers', { params: { pageSize: 100 } }).then(unwrap),
@@ -57,7 +60,8 @@ function NewAppointmentForm({ onDone }) {
   const submit = (e) => {
     e.preventDefault()
     const service = services?.items?.find((s) => s.id === Number(form.serviceId))
-    const startAt = new Date(`${form.date}T${form.time}`)
+    // The time typed is a time at the business, not wherever this browser happens to be.
+    const startAt = zonedToUtc(form.date, form.time, timeZone)
     const endAt = new Date(startAt.getTime() + (service?.durationMinutes ?? 30) * 60000)
     create.mutate({
       customerId: Number(form.customerId),
@@ -120,6 +124,7 @@ function NewAppointmentForm({ onDone }) {
 
 export default function Appointments() {
   const qc = useQueryClient()
+  const timeZone = useBusinessTimeZone()
   const [showForm, setShowForm] = useState(false)
   const [params] = useSearchParams()
   // Seeded from the dashboard stat tiles (/appointments?status=…)
@@ -154,8 +159,9 @@ export default function Appointments() {
     }
   }
 
+  // On the business's clock: what the caller was told is what the diary shows.
   const fmt = (iso) =>
-    new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    formatInZone(iso, timeZone, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
   return (
     <div className="mx-auto max-w-5xl">

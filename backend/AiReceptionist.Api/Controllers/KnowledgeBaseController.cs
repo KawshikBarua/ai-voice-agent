@@ -14,15 +14,17 @@ public class KnowledgeBaseController : ControllerBase
 {
     private readonly IKnowledgeRepository _knowledge;
     private readonly IPromptBuilderService _prompts;
+    private readonly IKnowledgeLookupService _lookup;
     private readonly ITenantProvider _tenant;
     private readonly IAuditRepository _audit;
     private readonly IRetellSyncQueue _retellSync;
 
     public KnowledgeBaseController(IKnowledgeRepository knowledge, IPromptBuilderService prompts,
-        ITenantProvider tenant, IAuditRepository audit, IRetellSyncQueue retellSync)
+        IKnowledgeLookupService lookup, ITenantProvider tenant, IAuditRepository audit, IRetellSyncQueue retellSync)
     {
         _knowledge = knowledge;
         _prompts = prompts;
+        _lookup = lookup;
         _tenant = tenant;
         _audit = audit;
         _retellSync = retellSync;
@@ -33,14 +35,23 @@ public class KnowledgeBaseController : ControllerBase
         Ok(ApiResponse<IEnumerable<KnowledgeBaseEntry>>.Ok(await _knowledge.ListAsync(_tenant.OrganizationId)));
 
     /// <summary>Read-only preview of what the AI receives (SRS §13): the always-in-context
-    /// general prompt and each call state's prompt, plus the documents uploaded to Retell's
-    /// knowledge base for on-demand retrieval. Never editable by clients.</summary>
+    /// general prompt and each call state's prompt, plus what the lookup_info tool answers from
+    /// when a caller asks — grouped the way a person would read it. Never editable by clients.</summary>
     [HttpGet("final-prompt")]
     public async Task<IActionResult> FinalPrompt()
     {
         var orgId = _tenant.OrganizationId;
         var prompt = (await _prompts.BuildAgentPromptAsync(orgId)).Render();
-        var docs = await _prompts.BuildKnowledgeDocumentsAsync(orgId);
+        var items = await _lookup.ListItemsAsync(orgId);
+
+        var docs = items
+            .GroupBy(i => i.Kind)
+            .Select(g => new
+            {
+                Title = KindTitle(g.Key),
+                Text = string.Join("\n\n", g.Select(i => i.Text)),
+            })
+            .ToList();
 
         return Ok(ApiResponse<object>.Ok(new
         {
@@ -49,6 +60,17 @@ public class KnowledgeBaseController : ControllerBase
             knowledgeDocuments = docs.Select(d => new { d.Title, d.Text, characters = d.Text.Length }),
             knowledgeCharacters = docs.Sum(d => d.Text.Length),
         }));
+
+        static string KindTitle(string kind) => kind switch
+        {
+            InfoKinds.Service => "Services and pricing",
+            InfoKinds.Product => "Product catalogue",
+            InfoKinds.Hours => "Opening hours and closures",
+            InfoKinds.Faq => "Frequently asked questions",
+            InfoKinds.Policy => "Business policies",
+            InfoKinds.About => "About the business",
+            _ => "Additional information",
+        };
     }
 
     [HttpPost]

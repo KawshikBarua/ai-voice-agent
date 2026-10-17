@@ -12,6 +12,13 @@ public class Organization
     public string Currency { get; set; } = "USD";
     public decimal TaxRate { get; set; }
     public string Timezone { get; set; } = "UTC";
+
+    /// <summary><see cref="Timezone"/> as an IANA id, for the dashboard. Every time the API returns
+    /// is UTC, and the browser has to show it on the business's clock rather than its own — but
+    /// <c>Intl</c> only understands IANA ids, while Timezone may hold a Windows one. Read-only, so
+    /// it is never bound from a request.</summary>
+    public string TimezoneIana => Common.TenantTime.IanaId(Timezone);
+
     public string? BusinessHoursJson { get; set; }
     /// <summary>How many appointments may overlap at once (e.g. number of staff/rooms).</summary>
     public int MaxConcurrentAppointments { get; set; } = 1;

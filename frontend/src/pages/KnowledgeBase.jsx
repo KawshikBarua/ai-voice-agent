@@ -80,15 +80,16 @@ export default function KnowledgeBase() {
               finalPrompt && (
                 <div className="flex flex-wrap gap-2">
                   <Chip tone="lavender">Prompt {finalPrompt.promptCharacters.toLocaleString()} chars</Chip>
-                  <Chip tone="mint">Knowledge {finalPrompt.knowledgeCharacters.toLocaleString()} chars</Chip>
+                  <Chip tone="mint">Lookup {finalPrompt.knowledgeCharacters.toLocaleString()} chars</Chip>
                 </div>
               )
             }
           />
           <p className="mb-3 text-xs text-muted">
             Rules, conversation flow and business details stay in the <strong>system prompt</strong> (sent on
-            every turn). Catalogues, FAQs and policies go to Retell's <strong>knowledge base</strong>, which the
-            AI searches only when it needs them — keeping calls fast and cheap.
+            every turn). Prices, opening hours, FAQs and policies stay on Frontly — the AI <strong>looks up</strong> just
+            the entry a caller asks about, mid-call, so the prompt stays small and an edit here is live on the very
+            next call.
           </p>
 
           <p className="mb-1.5 text-xs font-semibold text-ink-soft">System prompt</p>
@@ -97,7 +98,7 @@ export default function KnowledgeBase() {
           </pre>
 
           <p className="mb-1.5 text-xs font-semibold text-ink-soft">
-            Knowledge base documents ({finalPrompt?.knowledgeDocuments?.length ?? 0})
+            Looked up when asked ({finalPrompt?.knowledgeDocuments?.length ?? 0})
           </p>
           <div className="space-y-2">
             {finalPrompt?.knowledgeDocuments?.map((d) => (

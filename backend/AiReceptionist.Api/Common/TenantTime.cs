@@ -23,6 +23,26 @@ public static class TenantTime
 
     public static DateTime NowLocal(TimeZoneInfo tz) => ToLocal(DateTime.UtcNow, tz);
 
+    /// <summary>
+    /// The clock time a model wrote — "14:30", "2:30 PM", "2026-10-16T14:30:00" — exactly as
+    /// written, as a local time with no zone. Null when it cannot be read.
+    ///
+    /// The agent is told every time is the tenant's local time, but models tack a "Z" or an offset
+    /// onto ISO times out of habit. <see cref="DateTime.TryParse(string?, out DateTime)"/> answers
+    /// those by converting to this server's own timezone, which moves the booking by the gap
+    /// between the server and the tenant — a caller who agreed half past two lands at some other
+    /// hour. The offset is therefore discarded and the wall-clock reading kept: the time the
+    /// caller said is the time that gets booked.
+    /// </summary>
+    public static DateTime? ParseWallClock(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return DateTimeOffset.TryParse(value.Trim(), CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var parsed)
+            ? DateTime.SpecifyKind(parsed.DateTime, DateTimeKind.Unspecified)
+            : null;
+    }
+
     /// <summary>Whether this server can resolve the id at all. <see cref="Resolve"/> answers a bad
     /// id with UTC, which is indistinguishable from a tenant genuinely on UTC — every time the
     /// agent quotes is then silently shifted, and it looks exactly like the agent not knowing what

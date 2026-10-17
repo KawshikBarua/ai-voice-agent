@@ -171,7 +171,7 @@ public class CallIntentService : ICallIntentService
 
             var action = Norm(Str(el, "action"), "None");
             var start = Str(el, "start_time");
-            DateTime? startLocal = DateTime.TryParse(start, out var d) ? DateTime.SpecifyKind(d, DateTimeKind.Unspecified) : null;
+            DateTime? startLocal = TenantTime.ParseWallClock(start);
 
             return new CallIntentResult(
                 Action: action,

@@ -8,7 +8,9 @@ import {
 import { StackedColumns, AreaTrend, GaugeMeter, BarMeter, Sparkline, HourHeat, Legend } from '../components/charts'
 import {
   MONTHS, compact, money, moneyExact, minutes as fmtMinutes, duration, talkTime, pctChange, whenLabel,
+  formatInZone, parseUtc, zonedParts, zonedToUtc,
 } from '../lib/format'
+import { useBusinessTimeZone } from '../lib/businessTime'
 import { useUsage } from '../api/usage'
 import { AttentionCard } from '../components/alerts'
 
@@ -126,7 +128,7 @@ const PASS_GRACE_MS = 4000
 
 const agoLabel = (iso) => {
   if (!iso) return 'not yet'
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000))
+  const seconds = Math.max(0, Math.round((Date.now() - parseUtc(iso)) / 1000))
   if (seconds < 45) return 'just now'
   const mins = Math.round(seconds / 60)
   return mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`
@@ -324,24 +326,26 @@ export default function Dashboard() {
   )
   const [callView, setCallView] = useState('chart')
   const [apptRange, setApptRange] = useState('today')
+  const timeZone = useBusinessTimeZone()
 
   const { data: stats, isError, isLoading, isPaused, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.get('/dashboard/stats').then(unwrap),
   })
 
+  // "Today" is the business's today, bounded by midnight on its clock rather than the browser's.
   const { from, to } = useMemo(() => {
     const r = APPT_RANGES[apptRange]
-    const start = new Date()
-    start.setHours(0, 0, 0, 0)
-    if (r.offset) start.setDate(start.getDate() + r.offset)
-    const end = new Date(start)
-    end.setDate(end.getDate() + r.days)
-    return { from: start.toISOString(), to: end.toISOString() }
-  }, [apptRange])
+    const now = zonedParts(new Date(), timeZone)
+    const day = (offset) => {
+      const d = new Date(Date.UTC(now.year, now.month - 1, now.day + offset))
+      return zonedToUtc(d.toISOString().slice(0, 10), '00:00', timeZone).toISOString()
+    }
+    return { from: day(r.offset ?? 0), to: day((r.offset ?? 0) + r.days) }
+  }, [apptRange, timeZone])
 
   const { data: appts } = useQuery({
-    queryKey: ['appointments', 'dashboard', apptRange],
+    queryKey: ['appointments', 'dashboard', apptRange, timeZone],
     queryFn: () => api.get('/appointments', { params: { from, to, pageSize: 5 } }).then(unwrap),
   })
 
@@ -422,7 +426,7 @@ export default function Dashboard() {
   const answerRate = s.totalCalls > 0 ? ((s.totalCalls - s.missedCalls) / s.totalCalls) * 100 : 0
 
   const todayAppts = appts?.items ?? []
-  const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const fmtTime = (iso) => formatInZone(iso, timeZone, { hour: '2-digit', minute: '2-digit' })
 
   const submitSearch = (e) => {
     e.preventDefault()
