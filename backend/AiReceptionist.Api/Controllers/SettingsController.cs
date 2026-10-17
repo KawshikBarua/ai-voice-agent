@@ -77,7 +77,7 @@ public class SettingsController : ControllerBase
     // ---------- holiday closures ----------
 
     /// <summary>Dates the business is shut. These override the weekly hours: the agent will not
-    /// offer or book a slot on them, and they are stated in the prompt and knowledge base.</summary>
+    /// offer or book a slot on them, and lookup_info states them when a caller asks.</summary>
     [HttpGet("holidays")]
     public async Task<IActionResult> GetHolidays() =>
         Ok(ApiResponse<IEnumerable<Holiday>>.Ok(await _holidays.ListAsync(_tenant.OrganizationId)));

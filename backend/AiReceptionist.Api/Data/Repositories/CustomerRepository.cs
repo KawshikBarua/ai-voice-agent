@@ -6,7 +6,7 @@ namespace AiReceptionist.Api.Data.Repositories;
 
 public interface ICustomerRepository
 {
-    Task<PagedResult<Customer>> ListAsync(int orgId, string? search, int page, int pageSize);
+    Task<CursorPage<Customer>> ListAsync(int orgId, string? search, KeysetCursor? after, int pageSize);
     Task<Customer?> GetAsync(int orgId, int id);
     Task<Customer?> FindReturningAsync(int orgId, string? phone, string? email, string? name);
     /// <summary>Everyone on record under a phone number, most recently seen first. A household or
@@ -25,18 +25,50 @@ public class CustomerRepository : ICustomerRepository
     private readonly IDbConnectionFactory _db;
     public CustomerRepository(IDbConnectionFactory db) => _db = db;
 
-    public async Task<PagedResult<Customer>> ListAsync(int orgId, string? search, int page, int pageSize)
+    // Keyset paging: each page seeks straight to where the last one ended, so page 20,000 costs
+    // the same as page 1. OFFSET had to read and discard every earlier row, and the COUNT(*)
+    // beside it scanned the whole tenant on every request.
+    //
+    // The order is LastVisit DESC, Id DESC, and LastVisit is nullable. Customers who have never
+    // visited sort last, so the list is read as two ordered runs — visited, then never visited —
+    // each of which is a plain range on IX_Customers_Org_LastVisit.
+    public async Task<CursorPage<Customer>> ListAsync(int orgId, string? search, KeysetCursor? after, int pageSize)
     {
+        var filter = "OrganizationId = @orgId AND IsDeleted = 0" +
+                     (string.IsNullOrWhiteSpace(search) ? "" : " AND (Name LIKE @s OR Phone LIKE @s OR Email LIKE @s)");
+
+        var runs = new List<string>(2);
+        if (after is null)
+            runs.Add(Run("LastVisit IS NOT NULL", "LastVisit DESC, Id DESC"));
+        else if (after.Value.At is not null)
+            // "<= AND (< OR)" rather than "< OR (= AND <)": the leading comparison is one the
+            // index can seek on, where a top-level OR would fall back to scanning.
+            runs.Add(Run("LastVisit <= @lv AND (LastVisit < @lv OR Id < @id)", "LastVisit DESC, Id DESC"));
+        runs.Add(Run("LastVisit IS NULL" + (after is { At: null } ? " AND Id < @id" : ""), "Id DESC"));
+
+        var p = new DynamicParameters();
+        p.Add("orgId", orgId);
+        p.Add("s", $"%{SqlUtil.EscapeLike(search ?? "")}%");
+        // One more than asked for: its presence is what says another page exists.
+        p.Add("take", pageSize + 1);
+        p.Add("id", after?.Id, System.Data.DbType.Int32);
+        // Typed explicitly: left to inference this is sent as DATETIME, whose 3ms rounding would
+        // stop the cursor comparing equal to the row it was taken from.
+        p.Add("lv", after?.At, System.Data.DbType.DateTime2);
+
         using var conn = _db.Create();
-        var where = "OrganizationId = @orgId AND IsDeleted = 0" +
-                    (string.IsNullOrWhiteSpace(search) ? "" : " AND (Name LIKE @s OR Phone LIKE @s OR Email LIKE @s)");
-        var p = new { orgId, s = $"%{search}%", skip = (page - 1) * pageSize, take = pageSize };
+        var rows = (await conn.QueryAsync<Customer>(
+            $"SELECT TOP (@take) * FROM ({string.Join(" UNION ALL ", runs)}) c ORDER BY LastVisit DESC, Id DESC", p)).AsList();
 
-        var total = await conn.ExecuteScalarAsync<int>($"SELECT COUNT(*) FROM Customers WHERE {where}", p);
-        var items = await conn.QueryAsync<Customer>(
-            $"SELECT * FROM Customers WHERE {where} ORDER BY LastVisit DESC, Id DESC OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY", p);
+        var items = rows.Take(pageSize).ToList();
+        return new CursorPage<Customer>
+        {
+            Items = items,
+            NextCursor = rows.Count > pageSize ? new KeysetCursor(items[^1].LastVisit, items[^1].Id).ToString() : null,
+        };
 
-        return new PagedResult<Customer> { Items = items, Page = page, PageSize = pageSize, TotalCount = total };
+        string Run(string range, string order) =>
+            $"SELECT * FROM (SELECT TOP (@take) * FROM Customers WHERE {filter} AND {range} ORDER BY {order}) r";
     }
 
     public async Task<Customer?> GetAsync(int orgId, int id)

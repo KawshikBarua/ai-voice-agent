@@ -22,10 +22,26 @@ public class CustomersController : ControllerBase
         _audit = audit;
     }
 
+    private const int MaxSearchLength = 100;
+
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 20) =>
-        Ok(ApiResponse<PagedResult<Customer>>.Ok(
-            await _customers.ListAsync(_tenant.OrganizationId, search, page, Math.Clamp(pageSize, 1, 100))));
+    public async Task<IActionResult> List([FromQuery] string? search, [FromQuery] string? cursor, [FromQuery] int pageSize = 20)
+    {
+        KeysetCursor? after = null;
+        if (!string.IsNullOrEmpty(cursor))
+        {
+            if (!KeysetCursor.TryParse(cursor, out var parsed))
+                return BadRequest(ApiResponse<object>.Fail("Invalid cursor."));
+            after = parsed;
+        }
+
+        // Bounded so a caller cannot hand the database an arbitrarily long pattern to match.
+        search = search?.Trim();
+        if (search?.Length > MaxSearchLength) search = search[..MaxSearchLength];
+
+        return Ok(ApiResponse<CursorPage<Customer>>.Ok(
+            await _customers.ListAsync(_tenant.OrganizationId, search, after, Math.Clamp(pageSize, 1, 100))));
+    }
 
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)

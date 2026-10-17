@@ -77,6 +77,12 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Customers_Org_Phone')
 CREATE INDEX IX_Customers_Org_Phone ON Customers(OrganizationId, Phone);
 GO
+-- The customer list reads in exactly this order, so each page is a seek to where the last one
+-- ended. Name/Phone/Email ride along so a search is answered from the index alone.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Customers_Org_LastVisit')
+CREATE INDEX IX_Customers_Org_LastVisit ON Customers(OrganizationId, LastVisit DESC, Id DESC)
+    INCLUDE (Name, Phone, Email) WHERE IsDeleted = 0;
+GO
 
 IF OBJECT_ID('Services') IS NULL
 CREATE TABLE Services (
@@ -259,6 +265,15 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CallLogs_Org_Unbilled'
 CREATE INDEX IX_CallLogs_Org_Unbilled
 ON CallLogs (OrganizationId, BilledPeriodEnd, StartedAt)
 INCLUDE (DurationSeconds, IsDeleted);
+GO
+
+-- The Calls list reads in exactly this order, so each page is a seek to where the last one
+-- ended, and the included columns are every one a row of that list shows.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CallLogs_Org_Started')
+CREATE INDEX IX_CallLogs_Org_Started
+ON CallLogs (OrganizationId, StartedAt DESC, Id DESC)
+INCLUDE (CustomerId, FromNumber, Status, DurationSeconds)
+WHERE IsDeleted = 0;
 GO
 
 -- Dates the business is closed, overriding Organizations.BusinessHoursJson for that day.

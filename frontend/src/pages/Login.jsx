@@ -227,8 +227,8 @@ function Field({ label, hint, ...rest }) {
 }
 
 export default function Login() {
-  const [email, setEmail] = useState('admin@demo.com')
-  const [password, setPassword] = useState('Admin123!')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   // Ticked by default: most people sign in on their own machine. Clearing it makes the refresh
   // cookie a session cookie, so closing the browser signs out — see AuthController.

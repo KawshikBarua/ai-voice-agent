@@ -85,9 +85,20 @@ public class CallsController : ControllerBase
         }));
 
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] int page = 1, [FromQuery] int pageSize = 20) =>
-        Ok(ApiResponse<PagedResult<CallLog>>.Ok(
-            await _calls.ListAsync(_tenant.OrganizationId, page, Math.Clamp(pageSize, 1, 100))));
+    public async Task<IActionResult> List([FromQuery] string? cursor, [FromQuery] int pageSize = 20)
+    {
+        KeysetCursor? after = null;
+        if (!string.IsNullOrEmpty(cursor))
+        {
+            // A call always has a start time, so a cursor without one was not issued here.
+            if (!KeysetCursor.TryParse(cursor, out var parsed) || parsed.At is null)
+                return BadRequest(ApiResponse<object>.Fail("Invalid cursor."));
+            after = parsed;
+        }
+
+        return Ok(ApiResponse<CursorPage<CallLog>>.Ok(
+            await _calls.ListAsync(_tenant.OrganizationId, after, Math.Clamp(pageSize, 1, 100))));
+    }
 
     [HttpGet("{id:int}")]
     public async Task<IActionResult> Get(int id)

@@ -319,7 +319,7 @@ public class BusinessLocation
 
 /// <summary>A single calendar date the business is closed — a public holiday, a shutdown day
 /// or a staff day. Overrides the weekly business hours for that date: the AI refuses to offer
-/// or book any time on it, and the closure is stated in the prompt and knowledge base so the
+/// or book any time on it, and lookup_info states the closure so the
 /// agent can tell callers why.</summary>
 public class Holiday
 {

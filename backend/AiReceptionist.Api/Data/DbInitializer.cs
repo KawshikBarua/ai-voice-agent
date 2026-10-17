@@ -353,6 +353,16 @@ public static class DbInitializer
         INCLUDE (DurationSeconds, IsDeleted);
         """,
 
+        // The Calls list reads in exactly this order, so each page is a seek to where the last one
+        // ended, and the included columns are every one a row of that list shows.
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_CallLogs_Org_Started')
+        CREATE INDEX IX_CallLogs_Org_Started
+        ON CallLogs (OrganizationId, StartedAt DESC, Id DESC)
+        INCLUDE (CustomerId, FromNumber, Status, DurationSeconds)
+        WHERE IsDeleted = 0;
+        """,
+
         // A call answered during a free trial, which is never billed.
         //
         // The trial promises "answering at no charge", but its calls used to be left unbilled like
@@ -462,6 +472,11 @@ CREATE TABLE Customers (
 );
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Customers_Org_Phone')
 CREATE INDEX IX_Customers_Org_Phone ON Customers(OrganizationId, Phone);
+-- The customer list reads in exactly this order, so each page is a seek to where the last one
+-- ended. Name/Phone/Email ride along so a search is answered from the index alone.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_Customers_Org_LastVisit')
+CREATE INDEX IX_Customers_Org_LastVisit ON Customers(OrganizationId, LastVisit DESC, Id DESC)
+    INCLUDE (Name, Phone, Email) WHERE IsDeleted = 0;
 
 IF OBJECT_ID('Services') IS NULL
 CREATE TABLE Services (

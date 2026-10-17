@@ -169,6 +169,23 @@ export function EmptyState({ message }) {
   )
 }
 
+/** Cell classes for the data tables (Customers, Calls). The table itself is border-separate so
+ *  the sticky header keeps its bottom rule while the rows scroll beneath it. */
+export const tableHead = 'border-b border-line px-4 py-3 text-xs font-semibold uppercase tracking-wide text-muted'
+export const tableCell = 'border-b border-line/70 px-4 py-3'
+
+/** The scrolling box a data table sits in: the header row sticks to its top and only the rows move. */
+export const tableScroller = 'max-h-[calc(100dvh-15rem)] min-h-64 overflow-y-auto rounded-2xl border border-line'
+
+export function Chevron({ open }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"
+      className={`h-4 w-4 text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  )
+}
+
 export function statusTone(status) {
   switch (status) {
     case 'Confirmed':

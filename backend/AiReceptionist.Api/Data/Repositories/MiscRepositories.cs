@@ -8,7 +8,7 @@ namespace AiReceptionist.Api.Data.Repositories;
 
 public interface ICallRepository
 {
-    Task<PagedResult<CallLog>> ListAsync(int orgId, int page, int pageSize);
+    Task<CursorPage<CallLog>> ListAsync(int orgId, KeysetCursor? after, int pageSize);
     Task<CallLog?> GetAsync(int orgId, int id);
 
     /// <summary>Records a call. Returns 0 when this Retell call is already on record — the
@@ -76,18 +76,36 @@ public class CallRepository : ICallRepository
     private readonly IDbConnectionFactory _db;
     public CallRepository(IDbConnectionFactory db) => _db = db;
 
-    public async Task<PagedResult<CallLog>> ListAsync(int orgId, int page, int pageSize)
+    // Keyset paging on (StartedAt DESC, Id DESC) — see CustomerRepository.ListAsync for why.
+    //
+    // The row here is the summary only. Transcript, Summary and RecordingUrl are left out: a page
+    // of fifty full transcripts is megabytes nobody reads, and GetAsync supplies them for the one
+    // call that is opened. What is left is answered entirely from IX_CallLogs_Org_Started.
+    public async Task<CursorPage<CallLog>> ListAsync(int orgId, KeysetCursor? after, int pageSize)
     {
+        var p = new DynamicParameters();
+        p.Add("orgId", orgId);
+        // One more than asked for: its presence is what says another page exists.
+        p.Add("take", pageSize + 1);
+        p.Add("id", after?.Id, System.Data.DbType.Int32);
+        p.Add("at", after?.At, System.Data.DbType.DateTime2);
+
         using var conn = _db.Create();
-        var p = new { orgId, skip = (page - 1) * pageSize, take = pageSize };
-        var total = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM CallLogs WHERE OrganizationId=@orgId AND IsDeleted=0", p);
-        var items = await conn.QueryAsync<CallLog>(@"
-            SELECT cl.*, c.Name AS CustomerName FROM CallLogs cl
+        var rows = (await conn.QueryAsync<CallLog>($@"
+            SELECT TOP (@take) cl.Id, cl.OrganizationId, cl.CustomerId, cl.FromNumber, cl.Status,
+                   cl.DurationSeconds, cl.StartedAt, c.Name AS CustomerName
+            FROM CallLogs cl
             LEFT JOIN Customers c ON c.Id = cl.CustomerId
             WHERE cl.OrganizationId=@orgId AND cl.IsDeleted=0
-            ORDER BY cl.StartedAt DESC OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY", p);
-        return new PagedResult<CallLog> { Items = items, Page = page, PageSize = pageSize, TotalCount = total };
+            {(after is null ? "" : "AND cl.StartedAt <= @at AND (cl.StartedAt < @at OR cl.Id < @id)")}
+            ORDER BY cl.StartedAt DESC, cl.Id DESC", p)).AsList();
+
+        var items = rows.Take(pageSize).ToList();
+        return new CursorPage<CallLog>
+        {
+            Items = items,
+            NextCursor = rows.Count > pageSize ? new KeysetCursor(items[^1].StartedAt, items[^1].Id).ToString() : null,
+        };
     }
 
     public async Task<CallLog?> GetAsync(int orgId, int id)
