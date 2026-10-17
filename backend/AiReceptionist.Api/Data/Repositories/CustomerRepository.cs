@@ -9,6 +9,10 @@ public interface ICustomerRepository
     Task<PagedResult<Customer>> ListAsync(int orgId, string? search, int page, int pageSize);
     Task<Customer?> GetAsync(int orgId, int id);
     Task<Customer?> FindReturningAsync(int orgId, string? phone, string? email, string? name);
+    /// <summary>Everyone on record under a phone number, most recently seen first. A household or
+    /// a business shares one number between several people, so a number alone does not say who
+    /// is calling; the live-call tools pick among these by name.</summary>
+    Task<List<Customer>> ListByPhoneAsync(int orgId, string? phone);
     Task<int> CreateAsync(Customer customer);
     Task UpdateAsync(Customer customer);
     Task SoftDeleteAsync(int orgId, int id);
@@ -72,6 +76,26 @@ public class CustomerRepository : ICustomerRepository
             var digits = normalized.TrimStart('+');
             return digits.Length <= 9 ? digits : digits[^9..];
         }
+    }
+
+    public async Task<List<Customer>> ListByPhoneAsync(int orgId, string? phone)
+    {
+        var normalized = PhoneUtil.Normalize(phone);
+        if (normalized.TrimStart('+').Length == 0) return [];
+
+        // The same two readings FindReturningAsync makes — exact, then the trailing digits so a
+        // missing country code on either side still matches — but every row, not the first one.
+        var digits = normalized.TrimStart('+');
+        var tail = digits.Length <= 9 ? digits : digits[^9..];
+
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync<Customer>(@"
+            SELECT TOP 10 * FROM Customers
+            WHERE OrganizationId = @orgId AND IsDeleted = 0
+              AND (Phone = @normalized OR (LEN(@tail) >= 7 AND REPLACE(Phone,'+','') LIKE '%' + @tail))
+            ORDER BY CASE WHEN Phone = @normalized THEN 0 ELSE 1 END, LastVisit DESC, Id DESC",
+            new { orgId, normalized, tail });
+        return rows.AsList();
     }
 
     public async Task<int> CreateAsync(Customer c)

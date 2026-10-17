@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, unwrap } from '../api/client'
 import { PillButton, Chip } from './ui'
+import { parseUtc } from '../lib/format'
 
 /**
  * Things that happened while nobody was looking.
@@ -184,7 +185,7 @@ function Toast({ toast, onDismiss }) {
 /* ------------------------------------------------------------- attention queue */
 
 const sinceLabel = (iso) => {
-  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
+  const minutes = Math.round((Date.now() - (parseUtc(iso)?.getTime() ?? Date.now())) / 60000)
   if (minutes < 1) return 'just now'
   if (minutes < 60) return `${minutes} min ago`
   const hours = Math.round(minutes / 60)

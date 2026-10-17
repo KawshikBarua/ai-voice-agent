@@ -63,6 +63,76 @@ export const signedPct = (v) => `${v > 0 ? '+' : ''}${v.toFixed(v <= -10 || v >=
 
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
+/* ---------------------------------------------------------------- business time */
+
+/**
+ * A moment the API sent, as a Date.
+ *
+ * Every moment is stored and returned in UTC, but written without a "Z" ("2026-10-16T18:30:00"),
+ * and JavaScript reads a date-time with no offset as the browser's own local time. That is how a
+ * 14:30 New York booking (18:30 UTC) was shown as 18:30: the UTC clock, presented as local.
+ * Anything that already carries an offset is read as it is. Only for moments — a plain calendar
+ * date such as a closure is not one, and has no zone to convert.
+ */
+export function parseUtc(value) {
+  if (value == null || value === '') return null
+  if (value instanceof Date) return value
+  const s = String(value)
+  const hasOffset = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s)
+  const d = new Date(hasOffset || !s.includes('T') ? s : `${s}Z`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** Intl options with the business's zone, dropping a zone id the browser does not know so a bad
+ *  setting degrades to the browser's clock instead of throwing on every render. */
+function zoned(options, timeZone) {
+  if (!timeZone) return options
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone })
+    return { ...options, timeZone }
+  } catch {
+    return options
+  }
+}
+
+/** A moment on the business's clock — what the caller was told on the phone — whatever the zone
+ *  of the browser looking at it. */
+export function formatInZone(value, timeZone, options = { dateStyle: 'medium', timeStyle: 'short' }) {
+  const d = parseUtc(value)
+  return d ? d.toLocaleString(undefined, zoned(options, timeZone)) : '—'
+}
+
+/** The business-local calendar fields of a moment: { year, month (1–12), day, hour, minute }. */
+export function zonedParts(value, timeZone) {
+  const d = parseUtc(value)
+  if (!d) return null
+  const parts = new Intl.DateTimeFormat('en-US', zoned({
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+    hourCycle: 'h23',
+  }, timeZone)).formatToParts(d)
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value)
+  return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour') % 24, minute: get('minute'), second: get('second') }
+}
+
+/**
+ * The UTC moment at which the business's clock reads `date` ("2026-10-16") at `time` ("14:30").
+ * A booking typed into the dashboard is a time at the business, not wherever the person typing
+ * happens to be. The zone's offset is read back from Intl twice, so a DST change between the first
+ * guess and the answer still lands on the right hour.
+ */
+export function zonedToUtc(date, time, timeZone) {
+  const [y, m, d] = String(date).split('-').map(Number)
+  const [hh, mm] = String(time || '00:00').split(':').map(Number)
+  const wall = Date.UTC(y, m - 1, d, hh || 0, mm || 0)
+  const offset = (instant) => {
+    const p = zonedParts(new Date(instant), timeZone)
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(instant / 1000) * 1000
+  }
+  let utc = wall - offset(wall)
+  utc = wall - offset(utc)
+  return new Date(utc)
+}
+
 /** "In 9 days" / "Tomorrow" / "Today" — how a closure is worth reading. */
 export function whenLabel(daysAway) {
   if (daysAway <= 0) return 'Today'
